@@ -412,8 +412,11 @@ public struct RemoteLibraryClient: Sendable {
     /// uses the receiver's committed offsets; the final receipt proves only
     /// verified staging on Mac, not catalog import or migration completion.
     public func uploadMigrationArchive(
-        at archiveRoot: URL, pairedDeviceID: UUID? = nil
+        at archiveRoot: URL, pairedDeviceID: UUID? = nil,
+        beforeChunk: @Sendable () async throws -> Void = {}
     ) async throws -> ImageAllMigrationTransferSealReceipt {
+        try Task.checkCancellation()
+        try await beforeChunk()
         let (header, firstVerification) = try ImageAllMigrationArchive.readVerifiedHeader(
             at: archiveRoot
         )
@@ -438,10 +441,13 @@ public struct RemoteLibraryClient: Sendable {
             let digest = try Self.migrationFileDigest(at: file)
             _ = try await uploadMigrationFile(
                 at: file, migrationID: header.migrationID, relativePath: path,
-                byteCount: digest.bytes, sha256: digest.sha256, sourceInstallID: header.sourceDeviceID
+                byteCount: digest.bytes, sha256: digest.sha256, sourceInstallID: header.sourceDeviceID,
+                beforeChunk: beforeChunk
             )
             if path.hasPrefix("resources/"), let pairedDeviceID,
                capabilities.capabilities.contains(.migrationResourceVerification) {
+                try Task.checkCancellation()
+                try await beforeChunk()
                 _ = try await verifyMigrationResource(
                     migrationID: header.migrationID, deviceID: pairedDeviceID,
                     request: .init(relativePath: path, byteCount: digest.bytes, sha256: digest.sha256))
@@ -450,6 +456,8 @@ public struct RemoteLibraryClient: Sendable {
         guard try ImageAllMigrationArchive.verify(at: archiveRoot) == firstVerification else {
             throw RemoteAPIError(code: .conflict, message: "archive changed during transfer")
         }
+        try Task.checkCancellation()
+        try await beforeChunk()
         let receipt = try await sealMigrationTransfer(migrationID: header.migrationID)
         guard receipt.migrationID == header.migrationID,
               receipt.manifestSHA256 == firstVerification.manifestSHA256,
@@ -1096,6 +1104,11 @@ public struct RemoteLibraryClient: Sendable {
         var request = URLRequest(url: url)
         request.httpMethod = method
         request.timeoutInterval = 15
+        if trimmed.hasPrefix("/v1/migration-transfers/") {
+            // Enforced by URLSession even if the network changes after the
+            // caller's path check or while a chunk is in flight.
+            request.allowsCellularAccess = false
+        }
         if sendAuthorization, !endpoint.accessToken.isEmpty {
             request.setValue(
                 RemoteHTTPHeaders.bearerPrefix + endpoint.accessToken,

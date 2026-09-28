@@ -1714,6 +1714,8 @@ private struct LocalShareScopeView: View {
 
     private var archiveSection: some View {
         Section("本机原件归档") {
+            Text("归档仅通过 Wi-Fi 或有线网络发送。切到蜂窝或断网后保留已接收进度，恢复网络后可重试原批次。")
+                .font(.footnote).foregroundStyle(.secondary)
             Button(isStreamingArchive ? "正在处理逐资源批次…" : "所选项目逐资源传到 Mac（减少暂存）") {
                 guard !isStreamingArchive else { return }
                 isStreamingArchive = true

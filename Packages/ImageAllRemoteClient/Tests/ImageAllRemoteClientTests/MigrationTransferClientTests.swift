@@ -97,6 +97,16 @@ final class MigrationTransferClientTests: XCTestCase {
         try streamRecord.save(in: planning)
         XCTAssertEqual(try ImageAllMigrationStreamRecord.read(in: planning), streamRecord)
         try resourceBytes.write(to: resourceURL)
+        let networkGate = PreparedFileGate()
+        do {
+            _ = try await client.uploadMigrationArchive(at: source, pairedDeviceID: deviceID,
+                beforeChunk: { try await networkGate.check() })
+            XCTFail("whole-archive transfer ignored a suspended network gate")
+        } catch is CancellationError { }
+        let retained = try await store.status(migrationID: migrationID, authenticatedDeviceID: deviceID)
+        XCTAssertEqual(retained.files.first { $0.relativePath == path }?.committedBytes,
+                       Int64(resourceBytes.count))
+        XCTAssertEqual(try Data(contentsOf: resourceURL), resourceBytes)
         let receipt = try await client.uploadMigrationArchive(at: source, pairedDeviceID: deviceID)
         XCTAssertEqual(receipt.migrationID, migrationID)
         XCTAssertEqual(receipt.resourceCount, 1)
@@ -300,6 +310,11 @@ private struct TransferFixtureTransport: RemoteHTTPTransporting {
             throw RemoteAPIError(code: .unauthorized, message: "missing bearer")
         }
         let path = url.path
+        if path.hasPrefix("/v1/migration-transfers/") {
+            XCTAssertFalse(request.allowsCellularAccess, "all migration requests must deny cellular fallback")
+        } else if path == RemoteHTTPPaths.capabilities {
+            XCTAssertTrue(request.allowsCellularAccess, "ordinary control requests retain their existing policy")
+        }
         let migrationID: UUID? = {
             let parts = path.split(separator: "/")
             guard parts.count >= 3 else { return nil }

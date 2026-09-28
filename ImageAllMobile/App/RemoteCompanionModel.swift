@@ -117,6 +117,7 @@ final class RemoteCompanionModel: ObservableObject {
     )
     private var networkPathSignature: String?
     private var networkAvailable = true
+    private var networkUsesCellular = false
     private var isForeground = true
     private var assetQueryGeneration: UInt64 = 0
     private var reviewQueryGeneration: UInt64 = 0
@@ -650,7 +651,27 @@ final class RemoteCompanionModel: ObservableObject {
         )
     }
 
+    private func validateMigrationNetwork() throws {
+        guard networkPathSignature != nil, networkAvailable else {
+            throw RemoteAPIError(code: .conflict, message: "迁移已暂停：等待可用的 Wi-Fi 或有线网络；恢复后可重试原批次。")
+        }
+        guard !networkUsesCellular else {
+            throw RemoteAPIError(code: .conflict, message: "迁移已暂停：不使用蜂窝网络传输归档；连接 Wi-Fi 或有线网络后重试原批次。")
+        }
+    }
+
+    private func validateMigrationConnection(hostID: UUID, deviceID: UUID) throws {
+        try validateMigrationNetwork()
+        guard isConnected, client != nil, let sessionTokens, let capabilities,
+              capabilities.capabilities.contains(.migrationTransfer),
+              capabilities.hostID == hostID, sessionTokens.hostID == hostID,
+              sessionTokens.deviceID == deviceID else {
+            throw RemoteAPIError(code: .conflict, message: "迁移连接或配对已变化，请重新连接原 Mac 后重试。")
+        }
+    }
+
     func migrationStreamingConnection() throws -> (client: RemoteLibraryClient, hostID: UUID, deviceID: UUID) {
+        try validateMigrationNetwork()
         guard isConnected, let client, let sessionTokens, let capabilities,
               capabilities.hostID == sessionTokens.hostID,
               capabilities.capabilities.contains(.migrationTransfer),
@@ -679,7 +700,11 @@ final class RemoteCompanionModel: ObservableObject {
                 message: "请先连接已设置网络归档接收目录的 Mac"
             )
         }
-        return try await client.uploadMigrationArchive(at: archiveRoot, pairedDeviceID: sessionTokens.deviceID)
+        try validateMigrationConnection(hostID: sessionTokens.hostID, deviceID: sessionTokens.deviceID)
+        return try await client.uploadMigrationArchive(at: archiveRoot, pairedDeviceID: sessionTokens.deviceID,
+            beforeChunk: { [self] in
+                try await validateMigrationConnection(hostID: sessionTokens.hostID, deviceID: sessionTokens.deviceID)
+            })
     }
 
     func submitLocalLibraryTagDecision(
@@ -2217,6 +2242,7 @@ final class RemoteCompanionModel: ObservableObject {
     private func startNetworkMonitoring() {
         pathMonitor.pathUpdateHandler = { [weak self] path in
             let isAvailable = path.status == .satisfied
+            let usesCellular = path.usesInterfaceType(.cellular)
             let signature = [
                 String(describing: path.status),
                 path.usesInterfaceType(.wifi) ? "wifi" : "",
@@ -2226,17 +2252,18 @@ final class RemoteCompanionModel: ObservableObject {
             Task { @MainActor [weak self] in
                 self?.applyNetworkPath(
                     signature: signature,
-                    isAvailable: isAvailable
+                    isAvailable: isAvailable, usesCellular: usesCellular
                 )
             }
         }
         pathMonitor.start(queue: pathMonitorQueue)
     }
 
-    private func applyNetworkPath(signature: String, isAvailable: Bool) {
+    private func applyNetworkPath(signature: String, isAvailable: Bool, usesCellular: Bool) {
         let previous = networkPathSignature
         networkPathSignature = signature
         networkAvailable = isAvailable
+        networkUsesCellular = usesCellular
         guard previous != nil, previous != signature, isConnected else { return }
         if isAvailable {
             resumeEventRecoveryIfNeeded()
