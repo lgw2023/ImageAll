@@ -10,6 +10,7 @@ struct FullLibrarySuggestionsHandlerDependencies: Sendable {
     let queue: GRDBJobQueue
     let featureLoader: any SyncFeatureVectorLoading
     let clock: any JobClock
+    var multiFrameFeatureLoader: (any SyncFeatureVectorLoading)? = nil
     var minimumScoreForTag: (@Sendable (UUID) throws -> Double)? = nil
     /// Optional bounded seam for focused retention tests. Production keeps every
     /// above-threshold result and relies on paged review reads for presentation.
@@ -235,6 +236,7 @@ struct FullLibrarySuggestionsHandler: LeaseBoundJobHandler, Sendable {
                 do {
                     let feature = try loadFeature(
                         assetID: assetID,
+                        representation: decodedPayload.representation,
                         heartbeat: heartbeatIfNeeded
                     )
                     guard feature.identity.contentRevision == context.contentRevision else {
@@ -302,6 +304,7 @@ struct FullLibrarySuggestionsHandler: LeaseBoundJobHandler, Sendable {
                         try dependencies.publishFailureInjector?()
                         try catalog.publishModelRevision(
                             ModelRevisionRegistration(
+                                representation: decodedPayload.representation,
                                 tagID: decodedPayload.tagID,
                                 mediaKind: decodedPayload.mediaKind,
                                 revision: modelRevision,
@@ -613,7 +616,7 @@ struct FullLibrarySuggestionsHandler: LeaseBoundJobHandler, Sendable {
         var loadedNegatives: [PersonalizedSuggestionScoringCore.LoadedSample] = []
 
         for sample in payload.frozenPositiveSamples {
-            let feature = try loadFeature(assetID: sample.assetID, heartbeat: heartbeat)
+            let feature = try loadFeature(assetID: sample.assetID, representation: payload.representation, heartbeat: heartbeat)
             guard feature.identity.contentRevision == sample.contentRevision else { continue }
             loadedPositives.append(
                 PersonalizedSuggestionScoringCore.LoadedSample(
@@ -625,7 +628,7 @@ struct FullLibrarySuggestionsHandler: LeaseBoundJobHandler, Sendable {
             )
         }
         for sample in payload.frozenNegativeSamples {
-            let feature = try loadFeature(assetID: sample.assetID, heartbeat: heartbeat)
+            let feature = try loadFeature(assetID: sample.assetID, representation: payload.representation, heartbeat: heartbeat)
             guard feature.identity.contentRevision == sample.contentRevision else { continue }
             loadedNegatives.append(
                 PersonalizedSuggestionScoringCore.LoadedSample(
@@ -654,22 +657,31 @@ struct FullLibrarySuggestionsHandler: LeaseBoundJobHandler, Sendable {
             negativeValues: loadedNegatives.map(\.values),
             sampleRegistrations: PersonalizedSuggestionScoringCore.registrations(
                 positives: loadedPositives,
-                negatives: loadedNegatives
+                negatives: loadedNegatives,
+                representation: payload.representation
             )
         )
     }
 
     private func loadFeature(
         assetID: UUID,
+        representation: PersonalizationRepresentation,
         heartbeat: () throws -> Void
     ) throws -> FeatureVectorPayload {
         try heartbeat()
-        let result = Result {
-            try dependencies.featureLoader.loadOrGenerateSync(assetID: assetID)
+        let loader: any SyncFeatureVectorLoading
+        switch representation {
+        case .legacy: loader = dependencies.featureLoader
+        case .videoMultiFrame:
+            guard let selected = dependencies.multiFrameFeatureLoader else {
+                throw PersonalizedSuggestionError.incompatibleFeatureIdentity
+            }
+            loader = selected
         }
+        let result = Result { try loader.loadOrGenerateSync(assetID: assetID) }
         try heartbeat()
         let payload = try result.get()
-        try PersonalizedSuggestionScoringCore.validateIdentity(payload, assetID: assetID)
+        try PersonalizedSuggestionScoringCore.validateIdentity(payload, assetID: assetID, representation: representation)
         return payload
     }
 

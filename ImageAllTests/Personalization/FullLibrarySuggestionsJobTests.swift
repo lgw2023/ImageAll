@@ -2894,6 +2894,47 @@ final class FullLibrarySuggestionsJobTests: XCTestCase {
         XCTAssertEqual(completion.skippedCount, metrics["skippedCount"] as? Int)
     }
 
+    func testFrozenMultiFrameJobPublishesVersionTwoWithoutUsingLegacyLoader() throws {
+        let fixture = try makeLargeLibraryFixture(assetCount: 8)
+        try fixture.database.pool.write { db in
+            try db.execute(sql: "UPDATE asset SET media_kind = 'video', media_type = 'public.mpeg-4', duration_ms = 2000")
+        }
+        let queue = JobTestSupport.makeQueue(database: fixture.database, nowMs: fixture.cutoffMs, retryDelayMs: 0)
+        let loader = StubSyncFeatureVectorLoader(database: fixture.database, vectors: fixture.loader.vectors,
+            preprocessingRevision: 2)
+        let handler = FullLibrarySuggestionsHandler(dependencies: FullLibrarySuggestionsHandlerDependencies(
+            database: fixture.database, queue: queue, featureLoader: fixture.loader,
+            clock: FixedJobClock(nowMs: fixture.cutoffMs), multiFrameFeatureLoader: loader))
+        let command = try FullLibrarySuggestionsJobEnqueue.makeEnqueueCommand(jobID: UUID(), tagID: fixture.tagID,
+            mediaKind: .video, representation: .videoMultiFrame, sourceIDs: [fixture.sourceID],
+            catalogCutoffMs: fixture.cutoffMs, modelRevision: 1,
+            frozenPositiveSamples: fixture.positiveIDs.map { .init(assetID: $0, contentRevision: 1) },
+            frozenNegativeSamples: fixture.negativeIDs.map { .init(assetID: $0, contentRevision: 1) },
+            notBeforeMs: fixture.cutoffMs)
+        let job = try queue.enqueue(command)
+        let frozen = try FullLibrarySuggestionsCodec.decodePayload(job.payload)
+        XCTAssertEqual(frozen.contractVersion, 2)
+        XCTAssertEqual(frozen.representation, .videoMultiFrame)
+        let coordinator = makeCoordinator(database: fixture.database, handler: handler, queue: queue)
+        _ = try coordinator.claimAndExecuteOnce(personalizationClaim())
+        XCTAssertEqual(try queue.fetchJob(id: job.id).state, .completed)
+        let versions = try fixture.database.pool.read { db in
+            (try Int.fetchOne(db, sql: "SELECT preprocessing_revision FROM tag_model_revision WHERE media_kind = 'video'"),
+             try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM tag_model_sample WHERE preprocessing_revision = 2"),
+             try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM tag_model_sample WHERE preprocessing_revision = 1"))
+        }
+        XCTAssertEqual(versions.0, 2)
+        XCTAssertEqual(versions.1, fixture.positiveIDs.count + fixture.negativeIDs.count)
+        XCTAssertEqual(versions.2, 0)
+        var legacy = try XCTUnwrap(JSONSerialization.jsonObject(with: job.payload) as? [String: Any])
+        legacy["contractVersion"] = 1
+        legacy.removeValue(forKey: "representation")
+        let old = try FullLibrarySuggestionsCodec.decodePayload(JSONSerialization.data(withJSONObject: legacy))
+        XCTAssertEqual(old.representation, .legacy)
+        legacy["contractVersion"] = 2
+        XCTAssertThrowsError(try FullLibrarySuggestionsCodec.decodePayload(JSONSerialization.data(withJSONObject: legacy)))
+    }
+
     func testVideoFeatureKnnJobUsesVideoSamplesAndKeepsPhotoSlotEmpty() async throws {
         let fixture = try makeLargeLibraryFixture(assetCount: 8)
         try await fixture.database.pool.write { db in
@@ -5551,6 +5592,7 @@ private final class ClockAdvancingFeatureLoader: SyncFeatureVectorLoading, @unch
 private struct StubSyncFeatureVectorLoader: SyncFeatureVectorLoading {
     let database: CatalogDatabase
     let vectors: [UUID: [Float]]
+    var preprocessingRevision: Int = 1
 
     func loadOrGenerateSync(assetID: UUID) throws -> FeatureVectorPayload {
         let values = vectors[assetID] ?? [9, 9]
@@ -5566,7 +5608,7 @@ private struct StubSyncFeatureVectorLoader: SyncFeatureVectorLoading {
             Data(bytes: buffer.baseAddress!, count: buffer.count * MemoryLayout<Float>.size)
         }
         let digest = Data(SHA256.hash(data: data))
-        let identity = FeatureIdentity(assetID: assetID, contentRevision: contentRevision)
+        let identity = FeatureIdentity(assetID: assetID, preprocessingRevision: preprocessingRevision, contentRevision: contentRevision)
         let canonical = assetID.uuidString.lowercased()
         let shard = String(canonical.replacingOccurrences(of: "-", with: "").prefix(2))
         try GRDBPersonalizationRepository(database: database).registerFeature(

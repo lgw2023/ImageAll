@@ -65,3 +65,9 @@ V058 新表按资产保存当前表示的完整特征，关联修订、来源身
 PersonalizationRepresentation 固定 legacy=1、videoMultiFrame=2，对应 preprocessing_revision。provider 仍为 vision-feature-print、Vision request revision 仍为 2；预处理 2 精确对应 videoFrames.uniform5.512.jpeg80.v1/vision-r2/mean-unit-v1。VideoMultiFrameFeatureLoader 仅加载视频，实际调用受来源复核的多帧服务，将聚合向量注册到既有 feature/安全向量缓存；不支持来源报错，不回退单封面。
 
 直接 PersonalizedSuggestionService 必须显式选择 videoMultiFrame，样本和候选均校验相同表示，照片域拒绝该策略；ModelRevisionRegistration/发布仓储保存所选版本，并逐个匹配样本。旧默认保持版本 1、历史 Run 不改写。全库后台任务目前仍冻结旧流程，训练 artifact 与 Mac 正式策略选择尚待接入，不将直接服务通过等同于完整训练流水线交付。
+
+## 后台冻结合同
+
+FullLibrarySuggestions 合同 1 绑定 legacy，合同 2 绑定 videoMultiFrame 且仅视频域。表示写入 payload 而非运行时读取 UI 偏好。新字段旧合同可省略，新合同不可省略；保留 job envelope version，使旧 handler 依据旧 contractVersion 门禁明确拒绝新合同。采样/候选与模型发布全部取同一冻结表示，生产 dependencies 注入独立多帧 loader。
+
+当前 tag/media coalescing key 保持原契约。正式用户切换入口必须在已有同标签媒体任务未结束时处理策略冲突，不得把不同策略静默合并成“已按新策略提交”；该入口和训练 Run 冻结配置将下一步实施。默认旧任务行为不变。

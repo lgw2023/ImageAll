@@ -67,12 +67,14 @@ enum PersonalizedSuggestionScoringCore {
 
     static func registrations(
         positives: [LoadedSample],
-        negatives: [LoadedSample]
+        negatives: [LoadedSample],
+        representation: PersonalizationRepresentation = .legacy
     ) -> [ModelSampleRegistration] {
         positives.enumerated().map { index, sample in
             ModelSampleRegistration(
                 identity: FeatureIdentity(
                     assetID: sample.assetID,
+                    preprocessingRevision: representation.preprocessingRevision,
                     contentRevision: sample.contentRevision
                 ),
                 role: .positive,
@@ -82,6 +84,7 @@ enum PersonalizedSuggestionScoringCore {
             ModelSampleRegistration(
                 identity: FeatureIdentity(
                     assetID: sample.assetID,
+                    preprocessingRevision: representation.preprocessingRevision,
                     contentRevision: sample.contentRevision
                 ),
                 role: .negative,

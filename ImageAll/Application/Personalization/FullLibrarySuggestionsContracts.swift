@@ -28,6 +28,7 @@ struct FrozenSampleIdentity: Equatable, Sendable, Codable {
 
 struct FullLibrarySuggestionsPayload: Equatable, Sendable, Codable {
     let contractVersion: Int
+    let representation: PersonalizationRepresentation
     let mediaKind: MediaKind
     let tagID: UUID
     let sourceIDs: [UUID]
@@ -38,6 +39,7 @@ struct FullLibrarySuggestionsPayload: Equatable, Sendable, Codable {
 
     init(
         contractVersion: Int,
+        representation: PersonalizationRepresentation = .legacy,
         mediaKind: MediaKind = .image,
         tagID: UUID,
         sourceIDs: [UUID],
@@ -47,6 +49,7 @@ struct FullLibrarySuggestionsPayload: Equatable, Sendable, Codable {
         frozenNegativeSamples: [FrozenSampleIdentity]
     ) {
         self.contractVersion = contractVersion
+        self.representation = representation
         self.mediaKind = mediaKind
         self.tagID = tagID
         self.sourceIDs = sourceIDs
@@ -58,6 +61,7 @@ struct FullLibrarySuggestionsPayload: Equatable, Sendable, Codable {
 
     private enum CodingKeys: String, CodingKey {
         case contractVersion
+        case representation
         case mediaKind
         case tagID
         case sourceIDs
@@ -70,6 +74,7 @@ struct FullLibrarySuggestionsPayload: Equatable, Sendable, Codable {
     init(from decoder: Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
         contractVersion = try values.decode(Int.self, forKey: .contractVersion)
+        representation = try values.decodeIfPresent(PersonalizationRepresentation.self, forKey: .representation) ?? .legacy
         mediaKind = try values.decodeIfPresent(MediaKind.self, forKey: .mediaKind) ?? .image
         tagID = try values.decode(UUID.self, forKey: .tagID)
         sourceIDs = try values.decode([UUID].self, forKey: .sourceIDs)
@@ -113,7 +118,9 @@ enum FullLibrarySuggestionsCodec {
 
     static func decodePayload(_ data: Data) throws -> FullLibrarySuggestionsPayload {
         let payload = try JSONDecoder().decode(FullLibrarySuggestionsPayload.self, from: data)
-        guard payload.contractVersion == FullLibrarySuggestionsJobFactory.contractVersion,
+        guard (payload.contractVersion == 1 && payload.representation == .legacy)
+                || (payload.contractVersion == 2 && payload.representation == .videoMultiFrame),
+              payload.representation.supports(payload.mediaKind),
               !payload.sourceIDs.isEmpty,
               payload.catalogCutoffMs >= 0,
               payload.modelRevision > 0,

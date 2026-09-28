@@ -563,3 +563,10 @@
 - 直接建议服务显式选择策略并对样本/候选统一校验；模型发布和 sample 注册写入实际 preprocessing 版本。照片域拒绝视频多帧策略。旧默认不变，不改历史 Run。
 - `video-model-version-build.log` TEST BUILD SUCCEEDED；`video-model-version-tests.log` 4/4 PASS。真实多帧向量注册/解码一致；合成向量直接建议生成 1 条视频预测，model revision 和 4 个样本均版本 2；旧模式/照片域拒绝；旧建议及混用门禁回归通过。合成向量训练测试不代表真实视频模型效果。
 - 仍需将策略写入冻结后台任务、训练 artifact 和 Mac 正式选择入口，正式审核时间点绑定尚未完成；Photos 多帧及整页验收也仍未完成。P5 及整体保持 active。
+
+## P5 后台任务冻结多帧策略（2026-09-28）
+
+- FullLibrarySuggestionsPayload 新增冻结 representation。合同 1 仅旧表示（旧 JSON 缺字段默认 legacy），合同 2 仅视频多帧；新合同缺策略/照片域组合拒绝。任务 envelope 版本保持原值，旧 worker 的合同校验会拒绝 2，不会忽略字段降级执行。
+- 后台样本/候选加载根据载荷选择专用 loader，统一校验表示；样本注册和模型发布使用被冻结的 preprocessing revision。CompositionRoot 注入真实多帧 loader，无配置时明确失败，不退回封面。
+- `video-frozen-model-build.log` TEST BUILD SUCCEEDED；`video-frozen-model-tests.log` 3/3 PASS。真实队列多帧合同发布模型/样本版本 2，旧合同兼容且不完整新合同拒绝；旧视频 KNN/照片隔离、旧训练 Run 成功和 artifact 回归通过。新队列测试使用合成向量，不冒称真实视频训练质量。
+- 正式 enqueue/review 服务仍需接用户策略选择、同一标签已有任务的冲突处理和新策略训练 Run/配置 artifact；本轮未把现有默认全库任务自动改为多帧。审核时间点绑定、Photos 多帧和 UI 验收仍待完成，整体 active。

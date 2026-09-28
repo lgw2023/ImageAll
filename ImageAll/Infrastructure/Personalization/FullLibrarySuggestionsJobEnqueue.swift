@@ -5,6 +5,7 @@ enum FullLibrarySuggestionsJobEnqueue {
         jobID: UUID,
         tagID: UUID,
         mediaKind: MediaKind = .image,
+        representation: PersonalizationRepresentation = .legacy,
         sourceIDs: [UUID],
         catalogCutoffMs: Int64,
         modelRevision: Int,
@@ -13,7 +14,8 @@ enum FullLibrarySuggestionsJobEnqueue {
         notBeforeMs: Int64
     ) throws -> EnqueueJobCommand {
         let payload = FullLibrarySuggestionsPayload(
-            contractVersion: FullLibrarySuggestionsJobFactory.contractVersion,
+            contractVersion: representation == .legacy ? 1 : 2,
+            representation: representation,
             mediaKind: mediaKind,
             tagID: tagID,
             sourceIDs: sourceIDs.sorted { $0.uuidString.lowercased() < $1.uuidString.lowercased() },

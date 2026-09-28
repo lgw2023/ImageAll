@@ -224,6 +224,9 @@ struct CompositionRoot {
                 queue: runtime.jobQueue,
                 featureLoader: featurePrintService,
                 clock: clock,
+                multiFrameFeatureLoader: VideoMultiFrameFeatureLoader(
+                    analysis: FolderVideoAnalysisService(database: runtime.database, sourceAccess: sourceAccess, clock: clock),
+                    cachesDirectory: runtime.paths.cachesDirectory),
                 minimumScoreForTag: { tagID in
                     try suggestionThresholds.effectiveMinScore(tagID: tagID, method: .featureKnn)
                 }
