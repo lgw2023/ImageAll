@@ -1670,6 +1670,23 @@ actor RemoteHTTPServer {
                         throw Self.transferAPIError(error)
                     }
                 } else if method == "POST",
+                          let migrationID = Self.migrationTransferID(from: path, suffix: "verify-resource") {
+                    guard case let .deviceBearer(deviceID) = requestAuthentication else {
+                        throw RemoteAPIError(code: .unauthorized, message: "paired bearer required")
+                    }
+                    guard let migrationTransferStore else {
+                        throw RemoteAPIError(code: .notFound, message: "migration transfer unavailable")
+                    }
+                    let request = try jsonDecoder.decode(
+                        ImageAllMigrationResourceVerificationRequest.self, from: body)
+                    do {
+                        let receipt = try await migrationTransferStore.verifyResource(
+                            migrationID: migrationID, authenticatedDeviceID: deviceID, request: request)
+                        await respondJSON(connection, status: 200, value: receipt, timeoutTask: timeoutTask)
+                    } catch let error as ImageAllMigrationTransferError {
+                        throw Self.transferAPIError(error)
+                    }
+                } else if method == "POST",
                           let migrationID = Self.migrationTransferID(from: path, suffix: "seal") {
                     guard case let .deviceBearer(deviceID) = requestAuthentication else {
                         throw RemoteAPIError(code: .unauthorized, message: "paired bearer required")

@@ -242,6 +242,52 @@ final class ImageAllMigrationTransferStoreTests: XCTestCase {
         XCTAssertTrue(progress.files.isEmpty)
     }
 
+    func testResourceVerificationPersistsFrozenExtentAndRechecksReceiverBytes() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let id = UUID(), device = UUID()
+        let path = "resources/\(UUID().uuidString.lowercased()).bin"
+        let bytes = Data(repeating: 0x3a, count: 90_001)
+        let request = ImageAllMigrationResourceVerificationRequest(
+            relativePath: path, byteCount: Int64(bytes.count), sha256: hash(bytes))
+        let store = try ImageAllMigrationTransferStore(root: root)
+        _ = try await store.begin(migrationID: id, authenticatedDeviceID: device)
+        _ = try await store.append(migrationID: id, authenticatedDeviceID: device,
+            relativePath: path, offset: 0, bytes: bytes, sha256: hash(bytes))
+        do {
+            _ = try await store.verifyResource(migrationID: id, authenticatedDeviceID: UUID(), request: request)
+            XCTFail("wrong owner accepted")
+        } catch ImageAllMigrationTransferError.identityConflict {}
+        do {
+            _ = try await store.verifyResource(migrationID: id, authenticatedDeviceID: device,
+                request: .init(relativePath: path, byteCount: Int64(bytes.count), sha256: String(repeating: "0", count: 64)))
+            XCTFail("wrong expected digest accepted")
+        } catch ImageAllMigrationTransferError.changedChunk {}
+        let first = try await store.verifyResource(migrationID: id, authenticatedDeviceID: device, request: request)
+        XCTAssertEqual(first.resource, request)
+        XCTAssertEqual(first.deviceID, device)
+        let resumed = try ImageAllMigrationTransferStore(root: root)
+        let second = try await resumed.verifyResource(migrationID: id, authenticatedDeviceID: device, request: request)
+        XCTAssertEqual(first, second)
+        _ = try await resumed.append(migrationID: id, authenticatedDeviceID: device,
+            relativePath: path, offset: 0, bytes: bytes, sha256: hash(bytes))
+        do {
+            let tail = Data([9])
+            _ = try await resumed.append(migrationID: id, authenticatedDeviceID: device,
+                relativePath: path, offset: Int64(bytes.count), bytes: tail, sha256: hash(tail))
+            XCTFail("verified extent extended after reopening")
+        } catch ImageAllMigrationTransferError.sealed {}
+        let progress = try await resumed.status(migrationID: id, authenticatedDeviceID: device)
+        XCTAssertFalse(progress.sealed, "resource confirmation is not whole archive seal")
+        let file = root.appendingPathComponent(".imageall-transfer-\(id.uuidString.lowercased())/package/\(path)")
+        try Data(repeating: 0x2b, count: bytes.count).write(to: file)
+        do {
+            _ = try await resumed.verifyResource(migrationID: id, authenticatedDeviceID: device, request: request)
+            XCTFail("cached receipt bypassed actual receiver digest")
+        } catch ImageAllMigrationTransferError.changedChunk {}
+    }
+
     private func hash(_ bytes: Data) -> String {
         Data(SHA256.hash(data: bytes)).map { String(format: "%02x", $0) }.joined()
     }

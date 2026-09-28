@@ -71,12 +71,16 @@ final class MigrationTransferClientTests: XCTestCase {
         XCTAssertFalse(uploaded.sealed)
         XCTAssertEqual(uploaded.files.first { $0.relativePath == path }?.committedBytes,
                        Int64(resourceBytes.count))
+        let resourceReceipt = try await client.verifyMigrationResource(
+            migrationID: migrationID, deviceID: deviceID,
+            request: .init(relativePath: path, byteCount: Int64(resourceBytes.count), sha256: hash(resourceBytes)))
+        XCTAssertEqual(resourceReceipt.resource.sha256, hash(resourceBytes))
         // Simulate the one-resource window being released, then regenerated for
         // an archive retry. The receiver must retain exactly the first copy.
         try FileManager.default.removeItem(at: resourceURL)
         try resourceBytes.write(to: resourceURL)
         try manifest.write(to: manifestURL)
-        let receipt = try await client.uploadMigrationArchive(at: source)
+        let receipt = try await client.uploadMigrationArchive(at: source, pairedDeviceID: deviceID)
         XCTAssertEqual(receipt.migrationID, migrationID)
         XCTAssertEqual(receipt.resourceCount, 1)
         XCTAssertEqual(receipt.verifiedBytes, Int64(resourceBytes.count))
@@ -97,7 +101,7 @@ final class MigrationTransferClientTests: XCTestCase {
             )]
         ), to: factFile)
         _ = try ImageAllMigrationFacts.publish(from: factFile, into: source)
-        let updatedReceipt = try await client.uploadMigrationArchive(at: source)
+        let updatedReceipt = try await client.uploadMigrationArchive(at: source, pairedDeviceID: deviceID)
         XCTAssertNotNil(updatedReceipt.factsSHA256)
         XCTAssertEqual(updatedReceipt.verifiedBytes, receipt.verifiedBytes)
         let (_, updatedVerification) = try await store.sealVerifiedArchive(
@@ -227,7 +231,7 @@ private struct TransferFixtureTransport: RemoteHTTPTransporting {
         let payload: Data
         if path == RemoteHTTPPaths.capabilities {
             payload = try JSONEncoder().encode(RemoteCapabilities(
-                hostAppVersion: "test", capabilities: [.migrationTransfer]
+                hostAppVersion: "test", capabilities: [.migrationTransfer, .migrationResourceVerification]
             ))
         } else if let migrationID,
                   path == RemoteHTTPPaths.migrationTransfer(migrationID),
@@ -247,6 +251,13 @@ private struct TransferFixtureTransport: RemoteHTTPTransporting {
                 sha256: request.value(forHTTPHeaderField: "X-ImageAll-SHA256") ?? ""
             )
             payload = try JSONEncoder().encode(progress)
+        } else if let migrationID,
+                  path == RemoteHTTPPaths.migrationTransferVerifyResource(migrationID),
+                  request.httpMethod == "POST" {
+            let resource = try JSONDecoder().decode(ImageAllMigrationResourceVerificationRequest.self,
+                from: request.httpBody ?? Data())
+            payload = try JSONEncoder().encode(try await store.verifyResource(
+                migrationID: migrationID, authenticatedDeviceID: deviceID, request: resource))
         } else if let migrationID,
                   path == RemoteHTTPPaths.migrationTransferSeal(migrationID),
                   request.httpMethod == "POST" {

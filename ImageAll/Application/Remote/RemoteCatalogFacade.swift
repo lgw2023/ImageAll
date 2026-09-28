@@ -82,7 +82,7 @@ actor RemoteCatalogFacade {
                    .localLibraryTagChanges, .localLibraryCollectionMembership, .localLibraryCollectionRename,
                    .localLibraryCollectionChanges, .localLibraryFavoriteTarget,
                    .localLibraryFavoriteChanges] : [])
-                + (supportsMigrationTransfer ? [.migrationTransfer] : []),
+                + (supportsMigrationTransfer ? [.migrationTransfer, .migrationResourceVerification] : []),
             listenPort: listenPort,
             usesTLS: usesTLS,
             hostID: hostID,

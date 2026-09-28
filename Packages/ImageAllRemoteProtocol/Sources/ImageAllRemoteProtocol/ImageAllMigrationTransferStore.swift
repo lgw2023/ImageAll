@@ -48,6 +48,25 @@ public struct ImageAllMigrationTransferSealReceipt: Codable, Sendable, Equatable
     }
 }
 
+/// A per-resource check of receiver-owned bytes, not an archive completion receipt.
+public struct ImageAllMigrationResourceVerificationRequest: Codable, Sendable, Equatable {
+    public let relativePath: String
+    public let byteCount: Int64
+    public let sha256: String
+
+    public init(relativePath: String, byteCount: Int64, sha256: String) {
+        self.relativePath = relativePath
+        self.byteCount = byteCount
+        self.sha256 = sha256
+    }
+}
+
+public struct ImageAllMigrationResourceVerificationReceipt: Codable, Sendable, Equatable {
+    public let migrationID: UUID
+    public let deviceID: UUID
+    public let resource: ImageAllMigrationResourceVerificationRequest
+}
+
 public struct ImageAllMigrationTransferSealedArchive: Sendable, Equatable, Identifiable {
     public let id: UUID
     public let packageURL: URL
@@ -75,6 +94,7 @@ public actor ImageAllMigrationTransferStore {
         let deviceID: UUID
         var chunksByPath: [String: [Chunk]]
         var sealed: Bool
+        var verifiedResources: [String: ImageAllMigrationResourceVerificationReceipt]? = nil
     }
 
     private let root: URL
@@ -194,6 +214,9 @@ public actor ImageAllMigrationTransferStore {
             }
             return progress(session)
         }
+        guard session.verifiedResources?[relativePath] == nil else {
+            throw ImageAllMigrationTransferError.sealed
+        }
         guard offset == committed, offset >= 0,
               Int64(bytes.count) <= Int64.max - committed else {
             throw ImageAllMigrationTransferError.offsetConflict
@@ -225,6 +248,62 @@ public actor ImageAllMigrationTransferStore {
         try persist(session)
         loaded[migrationID] = session
         return progress(session)
+    }
+
+    /// Re-read one resource independently of the phone. Persistently freeze its
+    /// extent after verification; replay of existing chunks remains idempotent.
+    /// Final archive sealing still checks all resources and the manifest again.
+    public func verifyResource(
+        migrationID: UUID, authenticatedDeviceID: UUID,
+        request: ImageAllMigrationResourceVerificationRequest
+    ) throws -> ImageAllMigrationResourceVerificationReceipt {
+        guard request.relativePath.hasPrefix("resources/"), Self.isAllowed(request.relativePath),
+              request.byteCount > 0, request.sha256.count == 64,
+              request.sha256.allSatisfy({ $0.isASCII && $0.isHexDigit }) else {
+            throw ImageAllMigrationTransferError.unsafePath
+        }
+        guard var session = try load(migrationID: migrationID),
+              session.deviceID == authenticatedDeviceID else {
+            throw ImageAllMigrationTransferError.identityConflict
+        }
+        try validateDirectories(for: migrationID)
+        let file = packageDirectory(migrationID).appendingPathComponent(request.relativePath)
+        let parent = try file.deletingLastPathComponent().resourceValues(
+            forKeys: [.isDirectoryKey, .isSymbolicLinkKey])
+        guard parent.isDirectory == true, parent.isSymbolicLink != true else {
+            throw ImageAllMigrationTransferError.unsafePath
+        }
+        guard let chunks = session.chunksByPath[request.relativePath],
+              try Self.repairFile(at: file, chunks: chunks) == request.byteCount else {
+            throw ImageAllMigrationTransferError.offsetConflict
+        }
+        let handle = try FileHandle(forReadingFrom: file)
+        defer { try? handle.close() }
+        var digest = SHA256()
+        var count: Int64 = 0
+        while let bytes = try handle.read(upToCount: 64 * 1_024), !bytes.isEmpty {
+            try Task.checkCancellation()
+            guard Int64(bytes.count) <= request.byteCount - count else {
+                throw ImageAllMigrationTransferError.changedChunk
+            }
+            digest.update(data: bytes)
+            count += Int64(bytes.count)
+        }
+        let hash = Self.hex(Data(digest.finalize()))
+        guard count == request.byteCount, hash == request.sha256.lowercased() else {
+            throw ImageAllMigrationTransferError.changedChunk
+        }
+        let receipt = ImageAllMigrationResourceVerificationReceipt(
+            migrationID: migrationID, deviceID: authenticatedDeviceID,
+            resource: .init(relativePath: request.relativePath, byteCount: count, sha256: hash))
+        if let prior = session.verifiedResources?[request.relativePath], prior != receipt {
+            throw ImageAllMigrationTransferError.identityConflict
+        }
+        session.verifiedResources = (session.verifiedResources ?? [:]).merging(
+            [request.relativePath: receipt]) { _, new in new }
+        try persist(session)
+        loaded[migrationID] = session
+        return receipt
     }
 
     /// Reserve a receiver-owned temporary file for one HTTP request body.

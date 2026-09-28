@@ -196,6 +196,22 @@ public struct RemoteLibraryClient: Sendable {
         return try decoder.decode(ImageAllMigrationTransferProgress.self, from: data)
     }
 
+    public func verifyMigrationResource(
+        migrationID: UUID, deviceID: UUID,
+        request: ImageAllMigrationResourceVerificationRequest
+    ) async throws -> ImageAllMigrationResourceVerificationReceipt {
+        let receipt: ImageAllMigrationResourceVerificationReceipt = try await postJSON(
+            path: RemoteHTTPPaths.migrationTransferVerifyResource(migrationID),
+            body: encoder.encode(request))
+        guard receipt.migrationID == migrationID, receipt.deviceID == deviceID,
+              receipt.resource.relativePath == request.relativePath,
+              receipt.resource.byteCount == request.byteCount,
+              receipt.resource.sha256 == request.sha256.lowercased() else {
+            throw RemoteAPIError(code: .conflict, message: "resource verification receipt mismatch")
+        }
+        return receipt
+    }
+
     public func sealMigrationTransfer(
         migrationID: UUID
     ) async throws -> ImageAllMigrationTransferSealReceipt {
@@ -313,7 +329,7 @@ public struct RemoteLibraryClient: Sendable {
     /// uses the receiver's committed offsets; the final receipt proves only
     /// verified staging on Mac, not catalog import or migration completion.
     public func uploadMigrationArchive(
-        at archiveRoot: URL
+        at archiveRoot: URL, pairedDeviceID: UUID? = nil
     ) async throws -> ImageAllMigrationTransferSealReceipt {
         let (header, firstVerification) = try ImageAllMigrationArchive.readVerifiedHeader(
             at: archiveRoot
@@ -341,6 +357,12 @@ public struct RemoteLibraryClient: Sendable {
                 at: file, migrationID: header.migrationID, relativePath: path,
                 byteCount: digest.bytes, sha256: digest.sha256
             )
+            if path.hasPrefix("resources/"), let pairedDeviceID,
+               capabilities.capabilities.contains(.migrationResourceVerification) {
+                _ = try await verifyMigrationResource(
+                    migrationID: header.migrationID, deviceID: pairedDeviceID,
+                    request: .init(relativePath: path, byteCount: digest.bytes, sha256: digest.sha256))
+            }
         }
         guard try ImageAllMigrationArchive.verify(at: archiveRoot) == firstVerification else {
             throw RemoteAPIError(code: .conflict, message: "archive changed during transfer")

@@ -4324,6 +4324,7 @@ private func remoteCapabilityTitle(_ capability: RemoteCapability) -> String {
     case .localLibraryFavoriteTarget: "本机图库收藏目标提交"
     case .localLibraryFavoriteChanges: "共享收藏目标变化回传"
     case .migrationTransfer: "分片归档接收"
+    case .migrationResourceVerification: "归档资源独立校验"
     }
 }
 

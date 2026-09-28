@@ -38,6 +38,10 @@ public enum RemoteHTTPPaths {
         migrationTransfer(migrationID) + "/chunks"
     }
 
+    public static func migrationTransferVerifyResource(_ migrationID: UUID) -> String {
+        migrationTransfer(migrationID) + "/verify-resource"
+    }
+
     public static func migrationTransferSeal(_ migrationID: UUID) -> String {
         migrationTransfer(migrationID) + "/seal"
     }

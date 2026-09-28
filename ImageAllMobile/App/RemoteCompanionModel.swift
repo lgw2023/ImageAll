@@ -662,7 +662,7 @@ final class RemoteCompanionModel: ObservableObject {
                 message: "请先连接已设置网络归档接收目录的 Mac"
             )
         }
-        return try await client.uploadMigrationArchive(at: archiveRoot)
+        return try await client.uploadMigrationArchive(at: archiveRoot, pairedDeviceID: sessionTokens.deviceID)
     }
 
     func submitLocalLibraryTagDecision(

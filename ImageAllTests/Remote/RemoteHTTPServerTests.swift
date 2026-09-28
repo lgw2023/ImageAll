@@ -207,6 +207,21 @@ final class RemoteHTTPServerTests: XCTestCase {
                 String(decoding: data, as: UTF8.self)
             )
         }
+        let verifyBody = try JSONEncoder().encode(ImageAllMigrationResourceVerificationRequest(
+            relativePath: relativePath, byteCount: Int64(bytes.count), sha256: hash(bytes)))
+        let verifyPath = RemoteHTTPPaths.migrationTransferVerifyResource(migrationID)
+        let (resourceData, resourceResponse) = try await URLSession.shared.data(
+            for: request(verifyPath, method: "POST", body: verifyBody))
+        XCTAssertEqual(try XCTUnwrap(resourceResponse as? HTTPURLResponse).statusCode, 200)
+        let resourceReceipt = try JSONDecoder().decode(
+            ImageAllMigrationResourceVerificationReceipt.self, from: resourceData)
+        XCTAssertEqual(resourceReceipt.migrationID, migrationID)
+        XCTAssertEqual(resourceReceipt.deviceID, tokens.deviceID)
+        XCTAssertEqual(resourceReceipt.resource.sha256, hash(bytes))
+        var unauthenticatedVerify = request(verifyPath, method: "POST", body: verifyBody)
+        unauthenticatedVerify.setValue(nil, forHTTPHeaderField: "Authorization")
+        let (_, deniedVerify) = try await URLSession.shared.data(for: unauthenticatedVerify)
+        XCTAssertEqual(try XCTUnwrap(deniedVerify as? HTTPURLResponse).statusCode, 401)
         let (sealedData, sealedResponse) = try await URLSession.shared.data(
             for: request(RemoteHTTPPaths.migrationTransferSeal(migrationID),
                          method: "POST", body: Data())
