@@ -10,7 +10,7 @@
 - P4–P6 聚焦 Mac 完整视频精确去重、安全比较、多帧证据、内容相似候选与照片／视频混合故事。
 - P7 仅进行 Mac 所需集成、构建、回归、运行证据和本地工程交付；Web 生成资源集成、Web／iPhone 联调及设备验收退出本目标完成条件。
 - 已有 Web／iOS 源码、提交和其他会话工作原样保留；不回滚、不继续扩展。
-- P4 文件夹视频精确组计划、保留副本物理复核与收藏保护、整组回收恢复已完成定向合成验证；PhotoKit 本地原件摘要、分组与跳过说明已接线；下一步是 Photos 精确组的执行前复核、编辑保护和系统删除／恢复验证。目标保持 active。
+- P4 文件夹视频精确组计划、保留副本物理复核与收藏保护、整组回收恢复已完成定向合成验证；PhotoKit 本地原件摘要、分组与跳过说明已接线；Photos 精确组执行前重读、编辑保护和系统删除／恢复语义已通过合成验证；下一步检查 Mac 比较呈现与必要运行证据。目标保持 active。
 
 ## 工作区与边界
 
@@ -30,7 +30,7 @@
 | P1 | IN_PROGRESS | 分切片 PASS；完整闭环未验 | 媒体契约已交付；Mac／iPhone 查看器构建／合成测试 PASS；Mac 原生完整运行闭环待验 |
 | P2 | IN_PROGRESS | 首切片 PASS | 文件夹元数据、查询／地图／回填、原生云端获取及 PhotoKit 播放后技术信息持久化已分切片验；Mac 智能推流与完整 UI 待验 |
 | P3 | IN_PROGRESS | 共享服务到真实质心模型和持久审核链 PASS；Mac 运行待验 | 继续全库建议、训练命令与审核持久事实闭环 |
-| P4 | IN_PROGRESS | 原件摘要／分组及 migration PASS；整组清理 12/12 PASS | 文件夹完整回收恢复已验；PhotoKit 原件流式摘要及比较、跳过说明已合成验证；Photos 清理与完整 Mac 运行待补 |
+| P4 | IN_PROGRESS | 原件摘要／分组及 migration PASS；整组清理 12/12 PASS | 文件夹完整回收恢复已验；PhotoKit 原件流式摘要及比较、跳过说明已合成验证；Photos 精确清理及恢复语义 14/14 PASS；完整 Mac 比较运行待补 |
 | P5 | NOT_STARTED | NOT_RUN | 版本化有限多帧与时间点证据、内容相似独立候选 |
 | P6 | NOT_STARTED | NOT_RUN | 显式片段与原声规则，合成混合故事可解码验证 |
 | P7 | NOT_STARTED | NOT_RUN | 必需集成、最终构建与人工路线 |
@@ -480,3 +480,12 @@
 - 首轮构建通过，但 5 项新测试中真实任务链测试失败，定位到错误复用仅文件夹的缩略图 generation context，修正为 Photos 自有上下文后完整链通过。`photos-original-video-build-final.log`：TEST BUILD SUCCEEDED；`photos-original-video-tests-final.log`：12/12 PASS，覆盖资源选择／流式摘要／取消、PhotoKit 合成 reader→任务→原件分组→云端与编辑提示、修订变化、旧策略、migration、文件夹暂停续跑和回收恢复回归。`photos-original-video-migration-replay.log`：历史 schema 修复重放 1/1 PASS。
 - 当前所有资源读取测试均为自建合成字节及注入 reader，策略测试不实例化或读取真实 Photos 资产；SDK adapter 编译通过不能代替真实 PhotoKit／iCloud 验收。没有真实下载、付费模型、生产 Photos 宿主或 Web／iOS 开发。
 - 保留未完成门禁：Photos 原件比较尚未接入自动清理计划。下一步必须在计划与执行层补资源重读、保留项证明、编辑资产保护及 PhotoKit 删除／恢复测试，之后补完整 Mac 比较运行证据；P4 与整体目标保持 IN_PROGRESS。
+
+## P4 Photos 精确视频组清理门禁（2026-09-28）
+
+- Photos 当前原件摘要进入计划，复核修订／来源／localIdentifier／资源描述／完整 SHA／大小／编辑状态。所有红心和已编辑的 Photos 视频均保留，分别计数；全组受保护时跳过，避免共同原件覆盖不同编辑效果。
+- 授权通过后才进行昂贵的原件重读。整组执行前、文件夹副本处理前、Photos 系统批次前核验相关保留项和待处理项；Photos 一律通过禁止网络的原始资源 reader 重读。长读取前后重查目录事实，Photos pending intent 事务再约束快照修订、媒体域和 localIdentifier。
+- 仍沿用系统确认与“最近删除”；Photos 恢复要求先在 Apple Photos 操作，再由 ImageAll 观察并确认。没有增加 Photos 永久删除或伪造自动恢复。混合来源操作不是全局原子，后续 Photos 复核失败时保留已完成文件夹回收记录及恢复能力。
+- `photos-video-cleanup-build.log`：TEST BUILD SUCCEEDED。`photos-video-cleanup-tests.log`：14/14 PASS，包括四个新测试（混合来源保留编辑／收藏→回收→模拟系统恢复；内容／资源身份／新编辑／云端变化拒绝；文件夹处理后保留 Photos 失效拦截；授权门禁先于原件读），以及文件夹真实合成 MP4 恢复解码、收藏策略、照片视觉重复、两类授权和原生预览模型回归。源码摘要见 `photos-video-cleanup-source-sha256.json`。
+- Photos reader 和 mutation port 均注入合成实现，未调用真实 Photos 删除、恢复或云端下载。真实 Photos／iCloud 与完整原生点击验收仍 NOT_RUN；不以测试替代这些运行证据。当前工作仅 Mac，无 Web／iOS 修改、无 push；LibraryWorkspace 75/5 与 project.pbxproj 4/0 并行差异保持。
+- 下一步是 Mac 精确比较中大小／时长／来源／保留依据的呈现核查与必要运行证据，再进入 P5 多帧与 P6 混合故事。P4 尚不标记完整验收，P0–P7 目标保持 active。

@@ -141,6 +141,7 @@ struct CompositionRoot {
             photosMutation: photosMutation,
             originalVideoDigest: OriginalVideoDigestService(
                 database: runtime.database, sourceAccess: sourceAccess, clock: clock),
+            photosVideoOriginals: photosAccess,
             pixelCachePurger: appOwnedAssetPixelCachePurger,
             interactiveIOGate: interactiveIOGate
         )

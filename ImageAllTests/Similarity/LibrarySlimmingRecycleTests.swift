@@ -7,6 +7,148 @@ import XCTest
 @testable import ImageAll
 
 final class LibrarySlimmingRecycleTests: XCTestCase {
+    func testPhotoKitVideoExactCleanupRetainsEditsAndFavoritesThenReconcilesSystemRestore() throws {
+        let env = try RecycleTestEnv(label: #function)
+        defer { env.cleanup() }
+        let bytes = Data(repeating: 33, count: 80_000)
+        let reader = RecyclePhotosVideoOriginalReader(bytes: bytes)
+        reader.editedIDs = ["edited"]
+        let edited = try env.seedPhotosVideo(localIdentifier: "edited", reader: reader)
+        let favorite = try env.seedPhotosVideo(localIdentifier: "favorite", reader: reader)
+        let ordinary = try env.seedPhotosVideo(localIdentifier: "ordinary", reader: reader)
+        let folder = try env.seedAsset(relativePath: "copy.mp4", contents: bytes)
+        try env.prepareOriginalVideoEvidence(assetID: folder.assetID)
+        try env.database.pool.write { db in
+            try db.execute(sql: """
+                INSERT INTO asset_favorite_state (asset_id, desired_value, photos_observed_value,
+                    sync_status, intent_revision, requested_at_ms, updated_at_ms)
+                VALUES (?, 1, NULL, 'localOnly', 1, 1, 1)
+                """, arguments: [favorite.uuidString.lowercased()])
+        }
+        let fake = FakePhotosLibraryMutationPort()
+        fake.presenceByID = ["edited": .available, "favorite": .available, "ordinary": .available]
+        let service = env.makeRecycleService(photosMutation: fake, photosVideoOriginals: reader)
+        let detected = try IdenticalDuplicateClusterService(database: env.database)
+            .clusterIdenticalDuplicates(assetIDs: [edited, favorite, ordinary, folder.assetID], mediaKind: .video)
+        let group = try XCTUnwrap(detected.first)
+        let cluster = SlimmingCluster(id: UUID(), kind: .byteIdentical,
+            memberAssetIDs: group.memberAssetIDs, representativeAssetID: group.representativeAssetID,
+            score: 0, modelIdentity: .featurePrintOnly)
+        let plan = try service.makeIdenticalCleanupPlan(clusters: [cluster])
+        XCTAssertEqual(Set(plan.survivorAssetIDs), Set([edited, favorite]))
+        XCTAssertEqual(plan.editProtectedRetainedAssetIDs, [edited])
+        XCTAssertEqual(plan.favoriteRetainedAssetIDs, [favorite])
+        XCTAssertEqual(plan.ordinaryRetainedAssetCount, 0)
+        XCTAssertEqual(Set(plan.assetIDsToRecycle), Set([ordinary, folder.assetID]))
+        let outcome = try service.moveIdenticalCleanupAssetsToRecycle(plan: plan, onProgress: { _ in })
+        XCTAssertTrue(outcome.failedAssetIDs.isEmpty)
+        XCTAssertEqual(outcome.recycledEntryIDs.count, 2)
+        XCTAssertEqual(fake.moveRequestBatches, [["ordinary"]])
+        XCTAssertEqual(fake.presenceByID["edited"], .available)
+        XCTAssertEqual(fake.presenceByID["favorite"], .available)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: folder.fileURL.path))
+        let entries = try service.listRecycledEntries()
+        let photosEntry = try XCTUnwrap(entries.first { $0.assetID == ordinary })
+        XCTAssertThrowsError(try service.restore(entryID: photosEntry.id)) {
+            XCTAssertEqual($0 as? LibrarySlimmingRecycleError, .photosRestoreRequiresPhotosApp)
+        }
+        fake.presenceByID["ordinary"] = .available // Simulates user restoration in Apple Photos.
+        for entry in entries { try service.restore(entryID: entry.id) }
+        XCTAssertTrue(try service.listRecycledEntries().isEmpty)
+        XCTAssertEqual(try Data(contentsOf: folder.fileURL), bytes)
+        XCTAssertEqual(try env.database.pool.read { db in
+            try String.fetchOne(db, sql: "SELECT availability FROM asset WHERE id = ?",
+                arguments: [ordinary.uuidString.lowercased()])
+        }, "available")
+    }
+
+    func testPhotoKitVideoCleanupRejectsChangedResourcesAndNewEditsBeforeMutation() throws {
+        for change in ["bytes", "identity", "edit", "cloud"] {
+            for immediate in [false, true] {
+                let env = try RecycleTestEnv(label: #function)
+                defer { env.cleanup() }
+                let bytes = Data(repeating: 51, count: 10_000)
+                let reader = RecyclePhotosVideoOriginalReader(bytes: bytes)
+                let photos = try env.seedPhotosVideo(localIdentifier: "photos", reader: reader)
+                let folder = try env.seedAsset(relativePath: "folder.mp4", contents: bytes)
+                try env.prepareOriginalVideoEvidence(assetID: folder.assetID)
+                let fake = FakePhotosLibraryMutationPort()
+                fake.presenceByID["photos"] = .available
+                let service = env.makeRecycleService(photosMutation: fake, photosVideoOriginals: reader)
+                let cluster = SlimmingCluster(id: UUID(), kind: .byteIdentical,
+                    memberAssetIDs: [photos, folder.assetID], representativeAssetID: photos,
+                    score: 0, modelIdentity: .featurePrintOnly)
+                let plan = try service.makeIdenticalCleanupPlan(clusters: [cluster])
+                XCTAssertFalse(plan.isEmpty)
+                switch change {
+                case "bytes": reader.bytes = Data(repeating: 52, count: bytes.count)
+                case "identity": reader.identitySuffix = "v2"
+                case "edit": reader.editedIDs = ["photos"]
+                default: reader.cloudIDs = ["photos"]
+                }
+                XCTAssertThrowsError(try immediate
+                    ? service.deleteIdenticalCleanupAssetsImmediately(plan: plan, onProgress: { _ in })
+                    : service.moveIdenticalCleanupAssetsToRecycle(plan: plan, onProgress: { _ in })) {
+                    XCTAssertEqual($0 as? LibrarySlimmingRecycleError, .cleanupPlanChanged)
+                }
+                XCTAssertTrue(fake.moveRequestBatches.isEmpty)
+                XCTAssertTrue(try service.listRecycleBinEntries().isEmpty)
+                XCTAssertEqual(try Data(contentsOf: folder.fileURL), bytes)
+            }
+        }
+    }
+
+    func testPhotoKitVideoBatchRechecksKeeperAfterFolderMutation() throws {
+        let env = try RecycleTestEnv(label: #function)
+        defer { env.cleanup() }
+        let bytes = Data(repeating: 61, count: 10_000)
+        let reader = RecyclePhotosVideoOriginalReader(bytes: bytes)
+        reader.editedIDs = ["keeper"]
+        let keeper = try env.seedPhotosVideo(localIdentifier: "keeper", reader: reader)
+        let photos = try env.seedPhotosVideo(localIdentifier: "remove", reader: reader)
+        let folder = try env.seedAsset(relativePath: "folder.mp4", contents: bytes)
+        try env.prepareOriginalVideoEvidence(assetID: folder.assetID)
+        let fake = FakePhotosLibraryMutationPort()
+        fake.presenceByID = ["keeper": .available, "remove": .available]
+        let service = env.makeRecycleService(photosMutation: fake, photosVideoOriginals: reader)
+        let cluster = SlimmingCluster(id: UUID(), kind: .byteIdentical,
+            memberAssetIDs: [keeper, photos, folder.assetID], representativeAssetID: keeper,
+            score: 0, modelIdentity: .featurePrintOnly)
+        let plan = try service.makeIdenticalCleanupPlan(clusters: [cluster])
+        XCTAssertEqual(plan.survivorAssetIDs, [keeper])
+        let outcome = try service.moveIdenticalCleanupAssetsToRecycle(plan: plan, onProgress: { progress in
+            if progress.phase == .photosSystemMutation { reader.cloudIDs = ["keeper"] }
+        })
+        XCTAssertEqual(outcome.recycledEntryIDs.count, 1)
+        XCTAssertEqual(outcome.sourceChangedAssetIDs, [photos])
+        XCTAssertTrue(fake.moveRequestBatches.isEmpty)
+        XCTAssertEqual(fake.presenceByID["remove"], .available)
+        let entry = try XCTUnwrap(try service.listRecycledEntries().first)
+        XCTAssertEqual(entry.assetID, folder.assetID)
+        try service.restore(entryID: entry.id)
+        XCTAssertEqual(try Data(contentsOf: folder.fileURL), bytes)
+    }
+
+    func testPhotoKitVideoAuthorizationGatePrecedesExpensiveOriginalReads() throws {
+        let env = try RecycleTestEnv(label: #function)
+        defer { env.cleanup() }
+        let reader = RecyclePhotosVideoOriginalReader(bytes: Data([1, 2, 3]))
+        let first = try env.seedPhotosVideo(localIdentifier: "a", reader: reader)
+        let second = try env.seedPhotosVideo(localIdentifier: "b", reader: reader)
+        let fake = FakePhotosLibraryMutationPort()
+        fake.authorization = .denied
+        let service = env.makeRecycleService(photosMutation: fake, photosVideoOriginals: reader)
+        let cluster = SlimmingCluster(id: UUID(), kind: .byteIdentical,
+            memberAssetIDs: [first, second], representativeAssetID: first,
+            score: 0, modelIdentity: .featurePrintOnly)
+        let plan = try service.makeIdenticalCleanupPlan(clusters: [cluster])
+        reader.calls = 0
+        let outcome = try service.moveIdenticalCleanupAssetsToRecycle(plan: plan, onProgress: { _ in })
+        XCTAssertEqual(outcome.authorizationDeniedPhotosAssetIDs.count, 1)
+        XCTAssertEqual(reader.calls, 0)
+        XCTAssertTrue(fake.moveRequestBatches.isEmpty)
+    }
+
     func testOriginalVideoExactGroupKeepsFavoritesRecyclesAndRestoresPlayableCopies() async throws {
         let env = try RecycleTestEnv(label: #function)
         defer { env.cleanup() }
@@ -3536,7 +3678,8 @@ private final class RecycleTestEnv {
         clock: any JobClock = FixedJobClock(nowMs: FolderReconcileTestSupport.baseTimeMs),
         mutationAccess: (any FolderMutationAccessing)? = nil,
         jobQueue: (any JobQueue)? = nil,
-        photosMutation: (any PhotosLibraryMutationPort)? = nil
+        photosMutation: (any PhotosLibraryMutationPort)? = nil,
+        photosVideoOriginals: (any PhotosOriginalVideoContentPort)? = nil
     ) -> LibrarySlimmingRecycleService {
         LibrarySlimmingRecycleService(
             database: database,
@@ -3547,6 +3690,7 @@ private final class RecycleTestEnv {
             jobQueue: jobQueue,
             photosMutation: photosMutation,
             originalVideoDigest: makeOriginalVideoDigest(clock: clock),
+            photosVideoOriginals: photosVideoOriginals,
             pixelCachePurger: makePixelCachePurger(clock: clock)
         )
     }
@@ -3714,6 +3858,17 @@ private final class RecycleTestEnv {
             )
         }
         return SeededAsset(assetID: assetID, fileURL: fileURL)
+    }
+
+    func seedPhotosVideo(localIdentifier: String, reader: any PhotosOriginalVideoContentPort) throws -> UUID {
+        let id = try seedPhotosAsset(localIdentifier: localIdentifier)
+        try database.pool.write { db in
+            try db.execute(sql: "UPDATE asset SET media_kind = 'video', media_type = 'public.mpeg-4', duration_ms = 1000 WHERE id = ?",
+                arguments: [id.uuidString.lowercased()])
+        }
+        try PhotosOriginalVideoDigestService(database: database, reader: reader,
+            clock: FixedJobClock(nowMs: FolderReconcileTestSupport.baseTimeMs)).complete(assetID: id)
+        return id
     }
 
     func seedPhotosAsset(localIdentifier: String = "local-id") throws -> UUID {
@@ -3895,4 +4050,21 @@ private func extendedAttribute(name: String, at url: URL) throws -> Data {
         throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno))
     }
     return data
+}
+
+private final class RecyclePhotosVideoOriginalReader: PhotosOriginalVideoContentPort, @unchecked Sendable {
+    var bytes: Data
+    var editedIDs = Set<String>()
+    var cloudIDs = Set<String>()
+    var identitySuffix = "v1"
+    var calls = 0
+    init(bytes: Data) { self.bytes = bytes }
+    func requestLocalOriginalVideoDigest(localIdentifier: String, checkCancellation: () throws -> Void,
+        onByteProgress: (Int64, Int64) -> Void) throws -> PhotosOriginalVideoDigest {
+        try checkCancellation()
+        calls += 1
+        if cloudIDs.contains(localIdentifier) { throw PhotosLibraryError.cloudOnly }
+        return PhotosOriginalVideoDigest(sha256: Data(SHA256.hash(data: bytes)), byteCount: Int64(bytes.count),
+            resourceIdentity: "\(localIdentifier)-\(identitySuffix)", hasAdjustments: editedIDs.contains(localIdentifier))
+    }
 }

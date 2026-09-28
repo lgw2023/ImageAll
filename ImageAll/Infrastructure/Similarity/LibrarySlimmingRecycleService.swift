@@ -160,6 +160,7 @@ struct LibrarySlimmingRecycleService: LibrarySlimmingRecyclePort {
     let database: CatalogDatabase
     let mutationAccess: any FolderMutationAccessing
     let originalVideoDigest: OriginalVideoDigestService?
+    let photosVideoOriginals: (any PhotosOriginalVideoContentPort)?
     let photosMutation: (any PhotosLibraryMutationPort)?
     let quarantineRootURL: URL
     let clock: any JobClock
@@ -177,6 +178,7 @@ struct LibrarySlimmingRecycleService: LibrarySlimmingRecyclePort {
         jobQueue: (any JobQueue)? = nil,
         photosMutation: (any PhotosLibraryMutationPort)? = nil,
         originalVideoDigest: OriginalVideoDigestService? = nil,
+        photosVideoOriginals: (any PhotosOriginalVideoContentPort)? = nil,
         pixelCachePurger: AppOwnedAssetPixelCachePurger? = nil,
         interactiveIOGate: InteractiveIOPriorityGate? = nil,
         quarantineIO: FolderQuarantineIO = FolderQuarantineIO(),
@@ -186,6 +188,7 @@ struct LibrarySlimmingRecycleService: LibrarySlimmingRecyclePort {
         self.mutationAccess = mutationAccess
         self.photosMutation = photosMutation
         self.originalVideoDigest = originalVideoDigest
+        self.photosVideoOriginals = photosVideoOriginals
         self.quarantineRootURL = quarantineRootURL
         self.clock = clock
         self.jobQueue = jobQueue
@@ -303,10 +306,11 @@ struct LibrarySlimmingRecycleService: LibrarySlimmingRecyclePort {
                         a.content_revision AS content_revision,
                         s.display_name AS source_display_name,
                         a.media_kind AS media_kind,
-                        original.descriptor_identity AS original_descriptor_identity,
-                        CASE WHEN a.media_kind = 'video' THEN original.sha256
+                        COALESCE(original.descriptor_identity, photos_video.resource_identity) AS original_descriptor_identity,
+                        COALESCE(photos_video.has_adjustments, 0) AS has_video_adjustments,
+                        CASE WHEN a.media_kind = 'video' THEN COALESCE(original.sha256, photos_video.sha256)
                              ELSE sf.content_sha256 END AS content_sha256,
-                        COALESCE(file_fingerprint.size_bytes, photos_original.byte_size)
+                        COALESCE(file_fingerprint.size_bytes, photos_video.size_bytes, photos_original.byte_size)
                             AS encoded_byte_count,
                         COALESCE(a.media_created_at_ms, a.media_modified_at_ms)
                             AS media_date_ms,
@@ -334,6 +338,13 @@ struct LibrarySlimmingRecycleService: LibrarySlimmingRecyclePort {
                      AND original.modified_at_ns = file_fingerprint.modified_at_ns
                      AND original.catalog_resource_id IS file_fingerprint.resource_id
                      AND original.provenance = 'folder-original-sha256-v1'
+                    LEFT JOIN asset_photos_original_video_digest photos_video
+                      ON photos_video.asset_id = a.id
+                     AND photos_video.content_revision = a.content_revision
+                     AND photos_video.source_id = a.source_id
+                     AND photos_video.photos_local_identifier = a.photos_local_identifier
+                     AND photos_video.status = 'verified'
+                     AND photos_video.provenance = 'photokit-video-resource-sha256-v1'
                     LEFT JOIN photos_original_cache_entry photos_original
                       ON photos_original.asset_id = a.id
                      AND photos_original.content_revision = a.content_revision
@@ -354,8 +365,9 @@ struct LibrarySlimmingRecycleService: LibrarySlimmingRecyclePort {
                         (a.media_kind = 'image'
                          AND sf.content_digest_origin = 'verifiedOriginalBytes'
                          AND sf.content_sha256 IS NOT NULL)
-                        OR (a.media_kind = 'video' AND a.locator_kind = 'file'
-                            AND original.sha256 IS NOT NULL)
+                        OR (a.media_kind = 'video' AND (
+                            (a.locator_kind = 'file' AND original.sha256 IS NOT NULL)
+                            OR (a.locator_kind = 'photos' AND photos_video.sha256 IS NOT NULL)))
                       )
                     """,
                     arguments: StatementArguments(chunk)
@@ -391,7 +403,8 @@ struct LibrarySlimmingRecycleService: LibrarySlimmingRecyclePort {
                                 sourceDisplayName: row["source_display_name"],
                                 encodedByteCount: row["encoded_byte_count"],
                                 mediaDateMs: row["media_date_ms"],
-                                isFavoriteProtected: (row["is_favorite_protected"] as Int) == 1
+                                isFavoriteProtected: (row["is_favorite_protected"] as Int) == 1,
+                                isEditProtected: (row["has_video_adjustments"] as Int) == 1
                             ),
                             proof: LibrarySlimmingIdenticalCleanupAssetProof(
                                 assetID: assetID,
@@ -402,6 +415,7 @@ struct LibrarySlimmingRecycleService: LibrarySlimmingRecyclePort {
                                 verifiedOriginalSHA256: sha256,
                                 mediaKind: MediaKind(rawValue: row["media_kind"]) ?? .image,
                                 originalDescriptorIdentity: row["original_descriptor_identity"],
+                                hasOriginalVideoAdjustments: (row["has_video_adjustments"] as Int) == 1,
                                 encodedByteCount: row["encoded_byte_count"],
                                 mediaDateMs: row["media_date_ms"],
                                 perceptualAlgoVersion: row["perceptual_algo_version"],
@@ -685,7 +699,8 @@ struct LibrarySlimmingRecycleService: LibrarySlimmingRecyclePort {
         assetIDs: [UUID],
         reporter: RecycleMoveProgressReporter,
         mode: LibrarySlimmingRemovalMode,
-        beforeAssetMutation: ((UUID) throws -> Void)? = nil
+        beforeAssetMutation: ((UUID) throws -> Void)? = nil,
+        beforePhotosMutation: (([UUID]) throws -> Void)? = nil
     ) throws -> LibrarySlimmingRecycleMoveOutcome {
         var outcome = LibrarySlimmingRecycleMoveOutcome(
             recycledEntryIDs: [],
@@ -771,6 +786,7 @@ struct LibrarySlimmingRecycleService: LibrarySlimmingRecyclePort {
             var reachedTerminalOutcome = true
             do {
                 reporter.report(.photosSystemMutation)
+                try beforePhotosMutation?(photosAssetIDs)
                 outcome.recycledEntryIDs.append(
                     contentsOf: try recyclePhotosAssets(photosAssets)
                 )
@@ -840,7 +856,9 @@ struct LibrarySlimmingRecycleService: LibrarySlimmingRecyclePort {
         let operation = {
             // Recheck after any wait for background I/O and before any mutation.
             try validateIdenticalCleanupProofs(plan)
+            reporter.report(.verifyingSource)
             try validateVideoCleanupEvidence(plan.assetProofs)
+            try validateIdenticalCleanupProofs(plan)
             return try moveAssetsToRecycleWithInteractivePriority(
                 assetIDs: plan.assetIDsToRecycle, reporter: reporter, mode: mode,
                 beforeAssetMutation: { assetID in
@@ -851,16 +869,26 @@ struct LibrarySlimmingRecycleService: LibrarySlimmingRecyclePort {
                     let proofs = plan.assetProofs.filter { ids.contains($0.assetID) }
                     guard proofs.contains(where: { $0.mediaKind == .video }) else { return }
                     do {
-                        let current = try loadIdenticalCleanupFacts(assetIDs: Array(ids))
-                        guard current.count == proofs.count,
-                              current.allSatisfy({ fact in
-                                  proofs.contains(fact.proof)
-                                    && (fact.proof.assetID != assetID || !fact.candidate.isFavoriteProtected)
-                              }) else { throw LibrarySlimmingRecycleError.cleanupPlanChanged }
-                        try validateVideoCleanupEvidence(proofs)
+                        try validateCurrentCleanupSubset(proofs, deletionIDs: [assetID])
+                        // Photos are re-read together immediately before their system batch.
+                        if proofs.first(where: { $0.assetID == assetID })?.sourceKind == .file {
+                            try validateVideoCleanupEvidence(proofs)
+                            try validateCurrentCleanupSubset(proofs, deletionIDs: [assetID])
+                        }
                     } catch {
                         throw LibrarySlimmingRecycleError.sourceChanged
                     }
+                }, beforePhotosMutation: { assetIDs in
+                    let deletionIDs = Set(assetIDs)
+                    let relevant = plan.decisions.filter { !Set($0.assetIDsToRecycle).isDisjoint(with: deletionIDs) }
+                    let ids = deletionIDs.union(relevant.flatMap(\.retainedAssetIDs))
+                    let proofs = plan.assetProofs.filter { ids.contains($0.assetID) }
+                    do {
+                        try validateCurrentCleanupSubset(proofs, deletionIDs: deletionIDs)
+                        reporter.report(.verifyingSource)
+                        try validateVideoCleanupEvidence(proofs)
+                        try validateCurrentCleanupSubset(proofs, deletionIDs: deletionIDs)
+                    } catch { throw LibrarySlimmingRecycleError.sourceChanged }
                 })
         }
         if let interactiveIOGate {
@@ -872,16 +900,37 @@ struct LibrarySlimmingRecycleService: LibrarySlimmingRecyclePort {
         return try operation()
     }
 
+    private func validateCurrentCleanupSubset(_ proofs: [LibrarySlimmingIdenticalCleanupAssetProof],
+        deletionIDs: Set<UUID>) throws {
+        let current = try loadIdenticalCleanupFacts(assetIDs: proofs.map(\.assetID))
+        guard current.count == proofs.count, current.allSatisfy({ fact in
+            proofs.contains(fact.proof) && (!deletionIDs.contains(fact.proof.assetID) || !fact.candidate.isProtected)
+        }) else { throw LibrarySlimmingRecycleError.cleanupPlanChanged }
+    }
+
     private func validateVideoCleanupEvidence(_ proofs: [LibrarySlimmingIdenticalCleanupAssetProof]) throws {
         for proof in proofs where proof.mediaKind == .video {
-            guard let originalVideoDigest, let identity = proof.originalDescriptorIdentity,
-                  proof.sourceKind == .file else {
+            guard let identity = proof.originalDescriptorIdentity else {
                 throw LibrarySlimmingRecycleError.cleanupPlanChanged
             }
             do {
-                try originalVideoDigest.validateFolderVideoEvidence(
-                    assetID: proof.assetID, contentRevision: proof.contentRevision,
-                    sha256: proof.verifiedOriginalSHA256, descriptorIdentity: identity)
+                switch proof.sourceKind {
+                case .file:
+                    guard let originalVideoDigest else { throw LibrarySlimmingRecycleError.cleanupPlanChanged }
+                    try originalVideoDigest.validateFolderVideoEvidence(
+                        assetID: proof.assetID, contentRevision: proof.contentRevision,
+                        sha256: proof.verifiedOriginalSHA256, descriptorIdentity: identity)
+                case .photos:
+                    guard let photosVideoOriginals else { throw LibrarySlimmingRecycleError.cleanupPlanChanged }
+                    let current = try photosVideoOriginals.requestLocalOriginalVideoDigest(
+                        localIdentifier: proof.locatorIdentity, checkCancellation: {}, onByteProgress: { _, _ in })
+                    guard current.sha256 == proof.verifiedOriginalSHA256,
+                          current.byteCount == proof.encodedByteCount,
+                          current.resourceIdentity == identity,
+                          current.hasAdjustments == proof.hasOriginalVideoAdjustments else {
+                        throw LibrarySlimmingRecycleError.cleanupPlanChanged
+                    }
+                }
             } catch {
                 throw LibrarySlimmingRecycleError.cleanupPlanChanged
             }
@@ -972,7 +1021,7 @@ struct LibrarySlimmingRecycleService: LibrarySlimmingRecyclePort {
         // Abort the entire plan before any file or PhotoKit mutation.
         let deletionIDs = Set(plan.assetIDsToRecycle)
         guard !current.contains(where: {
-            deletionIDs.contains($0.candidate.assetID) && $0.candidate.isFavoriteProtected
+            deletionIDs.contains($0.candidate.assetID) && $0.candidate.isProtected
         }) else {
             throw LibrarySlimmingRecycleError.cleanupPlanChanged
         }
@@ -1545,6 +1594,8 @@ struct LibrarySlimmingRecycleService: LibrarySlimmingRecyclePort {
         let assetID: UUID
         let sourceID: UUID
         let locatorKind: String
+        let contentRevision: Int
+        let mediaKind: String
         let relativePath: String?
         let photosLocalIdentifier: String?
         let fileName: String?
@@ -1962,6 +2013,9 @@ struct LibrarySlimmingRecycleService: LibrarySlimmingRecyclePort {
                     JOIN source ON source.id = asset.source_id
                     WHERE asset.id = ?
                       AND asset.source_id = ?
+                      AND asset.content_revision = ?
+                      AND asset.media_kind = ?
+                      AND asset.photos_local_identifier = ?
                       AND asset.locator_state = 'current'
                       AND asset.availability = 'available'
                       AND source.kind = 'photos'
@@ -1977,6 +2031,9 @@ struct LibrarySlimmingRecycleService: LibrarySlimmingRecyclePort {
                         now,
                         pending.asset.assetID.uuidString.lowercased(),
                         pending.asset.sourceID.uuidString.lowercased(),
+                        pending.asset.contentRevision,
+                        pending.asset.mediaKind,
+                        pending.localIdentifier,
                     ]
                 )
                 guard db.changesCount == 1 else {
@@ -2784,7 +2841,7 @@ struct LibrarySlimmingRecycleService: LibrarySlimmingRecyclePort {
                 db,
                 sql: """
                 SELECT
-                    a.id, a.source_id, a.locator_kind, a.relative_path,
+                    a.id, a.source_id, a.locator_kind, a.relative_path, a.content_revision, a.media_kind,
                     a.photos_local_identifier, a.file_name, a.availability,
                     f.size_bytes, f.modified_at_ns, f.resource_id,
                     CASE a.media_kind
@@ -2823,6 +2880,8 @@ struct LibrarySlimmingRecycleService: LibrarySlimmingRecyclePort {
                 assetID: id,
                 sourceID: sourceID,
                 locatorKind: row["locator_kind"],
+                contentRevision: row["content_revision"],
+                mediaKind: row["media_kind"],
                 relativePath: row["relative_path"],
                 photosLocalIdentifier: row["photos_local_identifier"],
                 fileName: row["file_name"],

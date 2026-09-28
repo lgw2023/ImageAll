@@ -273,6 +273,9 @@ struct LibrarySlimmingIdenticalCleanupCandidate: Sendable, Equatable {
     var encodedByteCount: Int64? = nil
     var mediaDateMs: Int64? = nil
     var isFavoriteProtected: Bool = false
+    var isEditProtected: Bool = false
+
+    var isProtected: Bool { isFavoriteProtected || isEditProtected }
 }
 
 struct LibrarySlimmingIdenticalCleanupAssetProof: Sendable, Equatable {
@@ -284,6 +287,7 @@ struct LibrarySlimmingIdenticalCleanupAssetProof: Sendable, Equatable {
     let verifiedOriginalSHA256: Data
     var mediaKind: MediaKind = .image
     var originalDescriptorIdentity: String? = nil
+    var hasOriginalVideoAdjustments: Bool = false
     var encodedByteCount: Int64? = nil
     var mediaDateMs: Int64? = nil
     var perceptualAlgoVersion: String? = nil
@@ -300,6 +304,7 @@ struct LibrarySlimmingIdenticalCleanupDecision: Sendable, Equatable {
     var matchKind: SlimmingClusterKind = .byteIdentical
     var additionalRetainedAssetIDs: [UUID] = []
     var favoriteRetainedAssetIDs: [UUID] = []
+    var editProtectedRetainedAssetIDs: [UUID] = []
 
     var retainedAssetIDs: [UUID] {
         [survivorAssetID] + additionalRetainedAssetIDs
@@ -358,8 +363,16 @@ struct LibrarySlimmingIdenticalCleanupPlan: Sendable, Equatable {
         Set(favoriteRetainedAssetIDs).count
     }
 
+    var editProtectedRetainedAssetIDs: [UUID] {
+        decisions.flatMap(\.editProtectedRetainedAssetIDs)
+    }
+
+    var editProtectedRetainedAssetCount: Int {
+        Set(editProtectedRetainedAssetIDs).count
+    }
+
     var ordinaryRetainedAssetCount: Int {
-        max(0, retainedAssetCount - favoriteRetainedAssetCount)
+        max(0, retainedAssetCount - Set(favoriteRetainedAssetIDs + editProtectedRetainedAssetIDs).count)
     }
 
     /// Exact count of distinct survivor asset IDs selected by the runtime plan.
@@ -484,9 +497,9 @@ enum LibrarySlimmingIdenticalCleanupPlanner {
             }
 
             let deletionOrder = resolved.sorted(by: shouldDeleteBefore)
-            let protected = deletionOrder.filter(\.isFavoriteProtected)
+            let protected = deletionOrder.filter(\.isProtected)
             if !protected.isEmpty {
-                let redundant = deletionOrder.filter { !$0.isFavoriteProtected }
+                let redundant = deletionOrder.filter { !$0.isProtected }
                 guard !redundant.isEmpty, let survivor = protected.last else {
                     skippedGroupCount += 1
                     protectedSkippedAssetCount += protected.count
@@ -501,7 +514,8 @@ enum LibrarySlimmingIdenticalCleanupPlanner {
                         assetIDsToRecycle: redundant.map(\.assetID),
                         matchKind: cluster.kind,
                         additionalRetainedAssetIDs: protected.dropLast().map(\.assetID),
-                        favoriteRetainedAssetIDs: protected.map(\.assetID)
+                        favoriteRetainedAssetIDs: protected.filter(\.isFavoriteProtected).map(\.assetID),
+                        editProtectedRetainedAssetIDs: protected.filter(\.isEditProtected).map(\.assetID)
                     )
                 )
                 continue

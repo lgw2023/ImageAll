@@ -779,7 +779,7 @@ struct LibrarySlimmingWorkspaceView: View {
                         .persistentHelp(
                             model.librarySlimmingIdenticalCleanupDisabledReason
                                 ?? (model.selectedMediaKind == .video
-                                    ? "仅处理已核验完整文件相同的文件夹视频；保留全部红心项，其他组按大小、日期选择保留项。代表帧相似不自动清理。"
+                                    ? "仅处理已核验原件相同的视频；保留全部红心及 Photos 已编辑项，其他组按大小、日期选择保留项。代表帧相似不自动清理。"
                                     : "处理原文件完全相同及视觉匹配 100% 的照片；保留全部红心项，其他组按大小、日期选择保留项。")
                         )
                     }
@@ -2704,7 +2704,7 @@ struct LibrarySlimmingInspectorView: View {
                     .font(.headline)
                 Text(
                     model.selectedMediaKind == .video
-                        ? "新分析读取文件夹视频与本地 Photos 原始视频资源，同时按代表帧查找视觉相似。Photos 原件不可用时跳过并说明，不自动下载。Photos 的原件相同不保证编辑结果相同；当前自动清理仅支持已核验的文件夹视频组。"
+                        ? "新分析读取文件夹视频与本地 Photos 原始视频资源，同时按代表帧查找视觉相似。Photos 原件不可用时跳过并说明，不自动下载。Photos 的原件相同不保证编辑结果相同；清理前会重新核验原件，Photos 已编辑视频始终保留。"
                         : "查找相同与相似照片。文件夹资产默认快速永久删除以释放来源空间，也可选择 ImageAll 的 30 天可恢复回收；Photos 使用系统“最近删除”。"
                 )
                     .font(.callout)
@@ -3270,8 +3270,9 @@ private struct LibrarySlimmingIdenticalCleanupConfirmationSheet: View {
             }
             Text(
                 "普通保留 \(plan.ordinaryRetainedAssetCount) 项；"
-                    + "全组红心而安全跳过 \(plan.protectedSkippedAssetCount) 项。"
-                    + "红心资产不会进入自动删除计划。"
+                    + "全组受保护而安全跳过 \(plan.protectedSkippedAssetCount) 项。"
+                    + "编辑保留 \(plan.editProtectedRetainedAssetCount) 项。"
+                    + "红心和已编辑的 Photos 视频不会进入自动删除计划。"
             )
                 .font(.caption)
                 .foregroundStyle(.secondary)
@@ -3372,7 +3373,7 @@ private struct LibrarySlimmingIdenticalCleanupConfirmationSheet: View {
             }
             .font(.callout)
             .frame(maxWidth: .infinity, alignment: .leading)
-            Text("红心媒体始终保留；无红心组优先保留编码文件最大者，大小相同时保留拍摄或媒体日期最早者；缺失值后置，仍相同时使用稳定顺序。")
+            Text("红心媒体和已编辑的 Photos 视频始终保留；无保护项的组优先保留编码文件最大者，大小相同时保留拍摄或媒体日期最早者；缺失值后置，仍相同时使用稳定顺序。")
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .padding(.top, 6)
