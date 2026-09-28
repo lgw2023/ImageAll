@@ -670,3 +670,11 @@
 - 混合故事总时长和分镜预览采用片段时间轴；分镜仍使用缩略图，界面明确引导从片段窗口播放真实内容，未冒称整条时间线已实时播放视频。
 - `story-clip-ui-build-final.log` TEST BUILD SUCCEEDED；`story-clip-ui-tests.log` 3/3 PASS：模型从请求选片到受控预览/确认写入/再次编辑，照片时长保护、配乐音量校验、已有输入锁和手动多片段回归。独立原生窗口加载实际合成视频资源，截图 `story-clip-ui/story-video-clip-editor.png` 已目视检查布局；AVPlayer图层未进入NSHostingView位图，截图黑区不作为播放画面证据，未自动点击全部控件。
 - 下一步混合包/OpenMontage协议升级、必要端到端操作与渲染验证。完整时间线视频预览能力及窗口取消/快速切换等运行证据继续纳入P7审计。整体 active，未真实媒体访问、未push。
+
+## P6 独立混合故事包0.2契约（2026-09-28）
+
+- 只读审计确认现有 adapter/executor/能力广告同时限定0.1、照片镜头和照片资源。新增独立 `scripts/openmontage/schemas/story_render_package_v0_2.schema.json`，保留旧schema及执行器默认，不向旧包偷偷添加可能被忽略的视频字段。
+- 新契约允许 video/mp4、video/quicktime 资源，要求源时长/是否有音轨；video镜头要求asset/fit/videoClip，冻结30fps入出帧及原声增益，禁止照片motion字段混入。非视频禁止videoClip，照片/音频资源禁止视频描述。
+- `mixed_story_contract.py` 校验文档结构、有限JSON数值、唯一身份、顺序/转场/总帧、资源类型及片段范围/源时长/镜头帧数一致。这是文档契约验证，不替代运行时文件摘要、路径/符号链接、解码和权限检查。
+- `story-mixed-contract-tests-final.log` 3/3 PASS（含12组非法变体）：混合/静音/无音轨结构、旧照片可读、旧0.1拒绝0.2及伪装0.1的新字段。新schema SHA256=2fbd8d755e7cd684b372b64ac221d90594d6b0baff82d6861af1019215030873。旧seed schema仍匹配既有integration-contract摘要；未修改Runtime种子。
+- 新契约尚未加入集成常量或生产执行器；下一步在独立可写引擎中接adapter/渲染/能力广告，再由integration-contract.json统一生成Swift身份、接Swift混合包导出并验收。P6/整体 active，不将单独schema测试视为协议交付。
