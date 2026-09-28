@@ -726,3 +726,11 @@
 - Swift输出 `story-mixed-swift/swift-mixed.storyrenderpackage` 通过Python0.2文档/实际媒体验证，2个资产、2个视频镜头，入出帧6...24与0...15，增益0.25/0；`python-validation.json`保存资源事实。Python契约/锁回归6/6 PASS（`story-mixed-integration-tests.log`）。
 - 本轮将已有未提交的中央契约基础、生成Swift文件及其Xcode引用纳入视频集成依赖，保留其中既有无关字段；任务客户端只纳入统一常量绑定，重试/诊断等并行实现不混入。其余界面、发布器等并行改动保留。当前构建是共享工作区结果，完整工程交付仍须P7核对依赖和运行证据。
 - 下一步用Swift生成/提交的混合包穿过真实执行器并由Mac客户端取回验证成片，再完成P6/P7剩余验收。整体 active；本轮未做App安装替换或发布，未访问真实媒体、未push。
+
+## P6 Swift客户端→真实执行器→客户端验收成片（2026-09-28）
+
+- 新增显式环境变量开启的直接XCTest，用独立rootProvider与合成照片/视频，但使用正式FileOpenMontageStoryTaskClient、包exporter、真实独立executor/后台render worker、状态轮询和verifiedResult；未伪造capability/heartbeat/result，也未修改导出JSON。
+- `story-mixed-roundtrip-build.log` TEST BUILD SUCCEEDED；`story-mixed-roundtrip-tests.log` 1/1 PASS，约11.05秒。照片0.5秒+视频0.2...0.8秒，按项目默认淡入转场重叠，规范化19帧；输出1920×1080、30fps、无音轨，客户端复核摘要/范围/媒体身份并由AVFoundation验证可播放及时长。
+- `story-mixed-mac-roundtrip/swift-roundtrip-verified.json`保存实际taskID、成片路径、19帧及SHA=c1b1aa07d2637b4b2402ae1077d41e6934ad6a9e4fbcc15476c74ee3bae5703c；任务submission/state/runs、源合成素材与引擎报告完整保留。不是完整Mac UI点击或真实图库验收，仍需P7入口/交互核验。
+- 清理时发现既有CLI stop只识别_daemon命令，对本次前台start误报already_stopped；用已确认runtime PID和完整命令确认仍存活后，仅SIGTERM本次87397，工具会话正常退出，runtime.running=false且PID不存在。日常任务进程未触碰。此CLI前台识别差异记录为运行限制，后续测试宜使用明确_daemon入口。
+- 下一步复核P6完整要求与P1–P5剩余入口/证据，进入P7工程收口；整体active，未运行生产Photos宿主、未真实媒体读写、未push。

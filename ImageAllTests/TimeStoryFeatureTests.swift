@@ -919,6 +919,54 @@ final class TimeStoryFeatureTests: XCTestCase {
         XCTAssertEqual(cancellableProject.shots.count, 2)
     }
 
+    func testMixedStoryRealExecutorRoundTripWhenRequested() async throws {
+        guard let path = ProcessInfo.processInfo.environment["IMAGEALL_MIXED_EXECUTOR_ROOT"] else {
+            throw XCTSkip("Requires an independently running synthetic task executor")
+        }
+        let root = URL(fileURLWithPath: path, isDirectory: true)
+        let inputs = root.appendingPathComponent("swift-inputs", isDirectory: true)
+        try FileManager.default.createDirectory(at: inputs, withIntermediateDirectories: false)
+        let photo = candidate(UUID().uuidString, time: timestamp(2024, 1, 1))
+        var video = candidate(UUID().uuidString, time: timestamp(2024, 1, 2))
+        video.mediaKind = .video; video.durationMs = 1000
+        let planner = TimeStoryPlanner()
+        var project = planner.makeFreeformProject(snapshot: makeSnapshot([photo, video]), nowMs: 1)
+        project.showsProjectTitle = false
+        project = try planner.manuallyInserting(photo, in: project, nowMs: 2)
+        project.shots[0].durationSeconds = 0.5
+        project = try planner.manuallyInserting(video, in: project, nowMs: 3,
+            videoClip: .init(inPointMs: 200, outPointMs: 800, sourceDurationMs: 1000, originalAudioGain: 0))
+        let source = inputs.appendingPathComponent("source.mp4")
+        try await FixtureMixedStoryMedia.makeMovingVideo(at: source)
+        let client = FileOpenMontageStoryTaskClient(rootProvider: FixtureOpenMontageRootProvider(root: root),
+            packageExporter: StoryRenderPackageExporter(media: FixtureMixedStoryMedia(
+                images: [photo.assetID: try edgeMarkedPNG(width: 300, height: 200)], video: source),
+                validator: PassingStoryValidator()), installationID: "synthetic-mixed-roundtrip", applicationVersion: "tests")
+        let submitted = try await client.submit(project: project, aspect: .landscape) { _ in }
+        var current = submitted
+        let deadline = Date().addingTimeInterval(180)
+        while !current.phase.isTerminal && Date() < deadline {
+            try await Task.sleep(for: .milliseconds(300))
+            current = try await client.task(taskID: submitted.taskID)
+        }
+        guard current.phase == .succeeded else {
+            if !current.phase.isTerminal { _ = try? await client.requestCancellation(taskID: submitted.taskID) }
+            XCTFail("Real mixed task did not succeed: \(current.phase) \(current.detail ?? "")")
+            return
+        }
+        let verified = try await client.verifiedResult(taskID: submitted.taskID)
+        let timeline = try TimeStoryTimeline.normalize(project: project, allowsVideoClips: true)
+        XCTAssertEqual(verified.totalFrames, timeline.totalFrames)
+        XCTAssertEqual(verified.fileSHA256, try fileSHA256(verified.fileURL))
+        XCTAssertEqual(verified.width, 1920)
+        XCTAssertEqual(verified.height, 1080)
+        try await assertPlayableVideo(verified.fileURL, expectsAudio: false, expectedDuration: timeline.durationSeconds)
+        try writeJSON(["taskID": submitted.taskID, "resultPath": verified.fileURL.path,
+                       "sha256": verified.fileSHA256, "frames": verified.totalFrames,
+                       "width": verified.width, "height": verified.height],
+                      to: root.appendingPathComponent("swift-roundtrip-verified.json"))
+    }
+
     func testMixedStoryPackageFreezesVideoAndPreservesIndependentClipRanges() async throws {
         let root = try temporaryDirectory("mixed-story-package")
         let photo = candidate(UUID().uuidString, time: timestamp(2024, 1, 1))
