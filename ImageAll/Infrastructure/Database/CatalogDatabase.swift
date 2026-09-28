@@ -112,6 +112,7 @@ struct CatalogDatabase: Sendable {
         V055AddOriginalContentDigestMigration.register(on: &migrator)
         V056AddPhotosOriginalVideoDigestMigration.register(on: &migrator)
         V057AddVideoAnalysisFramesMigration.register(on: &migrator)
+        V058AddVideoAnalysisFeaturesMigration.register(on: &migrator)
         return migrator
     }
 
@@ -3556,6 +3557,25 @@ enum V057AddVideoAnalysisFramesMigration {
                     PRIMARY KEY(asset_id, content_revision, policy, source_identity, requested_ms)
                 );
                 CREATE INDEX idx_video_analysis_frame_age ON video_analysis_frame(created_at_ms);
+                """)
+        }
+    }
+}
+
+enum V058AddVideoAnalysisFeaturesMigration {
+    static func register(on migrator: inout DatabaseMigrator) {
+        migrator.registerMigration(CatalogMigrationID.v058AddVideoAnalysisFeatures) { db in
+            try db.execute(sql: """
+                CREATE TABLE video_analysis_feature (
+                    asset_id TEXT PRIMARY KEY REFERENCES asset(id) ON DELETE CASCADE,
+                    content_revision INTEGER NOT NULL CHECK(content_revision > 0),
+                    source_identity TEXT NOT NULL,
+                    representation TEXT NOT NULL,
+                    input_sha256 BLOB NOT NULL CHECK(length(input_sha256) = 32),
+                    payload BLOB NOT NULL CHECK(length(payload) > 0 AND length(payload) <= 262144),
+                    payload_sha256 BLOB NOT NULL CHECK(length(payload_sha256) = 32),
+                    created_at_ms INTEGER NOT NULL
+                );
                 """)
         }
     }

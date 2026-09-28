@@ -90,6 +90,8 @@ enum CatalogMigrationID {
 
     static let v057AddVideoAnalysisFrames = "v057_add_video_analysis_frames"
 
+    static let v058AddVideoAnalysisFeatures = "v058_add_video_analysis_features"
+
     static let knownOrdered: [String] = [
         v001CreateCatalogCore,
         v002AddStage1CatalogQuerySupport,
@@ -148,5 +150,6 @@ enum CatalogMigrationID {
         v055AddOriginalContentDigest,
         v056AddPhotosOriginalVideoDigest,
         v057AddVideoAnalysisFrames,
+        v058AddVideoAnalysisFeatures,
     ]
 }

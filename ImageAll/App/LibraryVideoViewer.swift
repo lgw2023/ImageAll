@@ -238,12 +238,9 @@ struct LibraryVideoViewer: View {
         analysisRequest = request
         analysisTask = Task { @MainActor in
             let worker = Task.detached(priority: .userInitiated) {
-                let sampling = try service.analyze(assetID: selected.assetID, expectedRevision: selected.revision,
-                    forceRebuild: forceRebuild,
-                    checkCancellation: { try Task.checkCancellation() })
-                let features = try VideoMultiFrameFeatureSet.generate(sampling,
-                    checkCancellation: { try Task.checkCancellation() })
-                return (sampling, features.aggregate.count)
+                let result = try service.analyzeWithFeatures(assetID: selected.assetID, expectedRevision: selected.revision,
+                    forceRebuild: forceRebuild, checkCancellation: { try Task.checkCancellation() })
+                return (result.sampling, result.features.aggregate.count)
             }
             do {
                 let (sampling, dimensions) = try await withTaskCancellationHandler {

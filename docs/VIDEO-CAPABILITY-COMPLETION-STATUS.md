@@ -537,3 +537,10 @@
 - Mac 多帧菜单提供“复用有效帧”和“强制重建当前视频分析帧”。强制重建只删除当前 asset/revision/policy/source-identity 的检查点，旧封面和精确去重表不变；不触发全库或其他视频分析。
 - `video-rebuild-build.log` TEST BUILD SUCCEEDED；`video-rebuild-tests.log` 2/2 PASS。提前取消保留 3 帧缓存；强制重建复用 0、重新解码 3；另一视频仍复用 3 帧；时间点定位回归通过。菜单人工点击/渲染未验证。
 - 强制重建入口已补齐；新旧训练/推理策略的完整切换仍未交付，不能以本菜单代替。P5 仍缺模型/建议与证据持久化、Photos 多帧、内容候选服务/列表和完整 UI 验收，整体 active。
+
+## P5 完整特征证据持久化（2026-09-28）
+
+- 新 V058 video_analysis_feature 保存表示身份、来源物理身份、内容修订、输入帧摘要、帧级向量/实际时间点、聚合向量和载荷摘要，独立于旧封面、训练历史、标签和精确去重表。有效特征载荷全库上限 16 MiB、单项上限 256 KiB；不是 SQLite 文件总大小上限。
+- FolderVideoAnalysisService.analyzeWithFeatures 在持有授权文件描述符期间执行采样、特征复用/生成/保存，并在返回前复核来源和内容。Mac 查看器已使用该入口；强制重建同时重算帧和特征。
+- `video-feature-evidence-build.log` TEST BUILD SUCCEEDED；`video-feature-evidence-tests.log` 3/3 PASS。重开数据库后特征/时间点一致、零解码；载荷损坏后特征重算但帧复用；强制和修订变化均重新解码 3 帧、旧修订拒绝；既有帧续跑/重建及数据库幂等回归通过。
+- 这证明分析证据持久化，不证明正式标签建议已保存或训练/推理策略贯通；这些仍未完成。Photos 多帧、内容候选列表、新旧策略切换和完整 UI 验收仍为 P5 必需项。目标 active，未访问真实媒体，其他会话改动保留。

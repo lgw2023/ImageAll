@@ -351,7 +351,8 @@ struct FolderVideoAnalysisService: Sendable {
     let clock: any JobClock
 
     func analyze(assetID: UUID, expectedRevision: Int? = nil, forceRebuild: Bool = false, checkCancellation: () throws -> Void = {},
-                 onFrame: (VideoAnalysisFrame) throws -> Void = { _ in }) throws -> VideoAnalysisSamplingResult {
+                 onFrame: (VideoAnalysisFrame) throws -> Void = { _ in },
+                 onCompleted: (VideoAnalysisSamplingResult, VideoAnalysisFrameCache.Key) throws -> Void = { _, _ in }) throws -> VideoAnalysisSamplingResult {
         let repository = GRDBDerivedImageCacheRepository(database: database)
         guard let context = try repository.fetchGenerationContext(assetID: assetID),
               expectedRevision == nil || context.contentRevision == expectedRevision,
@@ -396,8 +397,32 @@ struct FolderVideoAnalysisService: Sendable {
                     try onFrame(frame)
                 })
             try validate()
+            try onCompleted(result, key)
+            try validate()
             return result
         }
+    }
+
+    func analyzeWithFeatures(assetID: UUID, expectedRevision: Int? = nil, forceRebuild: Bool = false,
+                             checkCancellation: () throws -> Void = {}) throws
+        -> (sampling: VideoAnalysisSamplingResult, features: VideoMultiFrameFeatureSet, reusedFeatures: Bool) {
+        var features: VideoMultiFrameFeatureSet?
+        var reused = false
+        let cache = VideoAnalysisFeatureCache(database: database, clock: clock)
+        let sampling = try analyze(assetID: assetID, expectedRevision: expectedRevision, forceRebuild: forceRebuild,
+            checkCancellation: checkCancellation, onCompleted: { result, key in
+                if !forceRebuild, let existing = try cache.load(key: key, sampling: result) {
+                    features = existing
+                    reused = true
+                } else {
+                    let generated = try VideoMultiFrameFeatureSet.generate(result, checkCancellation: checkCancellation)
+                    try checkCancellation()
+                    try cache.store(generated, key: key, sampling: result)
+                    features = generated
+                }
+            })
+        guard let features else { throw FeaturePrintError.generationFailed }
+        return (sampling, features, reused)
     }
 }
 
@@ -475,6 +500,65 @@ struct VideoAnalysisFrameCache {
             }
             while (try Int.fetchOne(db, sql: "SELECT COALESCE(SUM(length(jpeg)),0) FROM video_analysis_frame") ?? 0) > Self.maximumTotalBytes {
                 try db.execute(sql: "DELETE FROM video_analysis_frame WHERE rowid = (SELECT rowid FROM video_analysis_frame ORDER BY created_at_ms, rowid LIMIT 1)")
+            }
+        }
+    }
+}
+
+/// Rebuildable feature evidence; never a training run, tag decision or byte proof.
+struct VideoAnalysisFeatureCache {
+    let database: CatalogDatabase
+    let clock: any JobClock
+
+    private func inputHash(_ sampling: VideoAnalysisSamplingResult) -> Data {
+        var hasher = SHA256()
+        hasher.update(data: Data(sampling.policyIdentity.utf8))
+        for frame in sampling.frames {
+            hasher.update(data: Data("/\(frame.requestedTimeMs)/\(frame.actualTimeMs)/".utf8))
+            hasher.update(data: Data(SHA256.hash(data: frame.jpegBytes)))
+        }
+        return Data(hasher.finalize())
+    }
+
+    func load(key: VideoAnalysisFrameCache.Key, sampling: VideoAnalysisSamplingResult) throws -> VideoMultiFrameFeatureSet? {
+        try database.pool.read { db in
+            guard let row = try Row.fetchOne(db, sql: """
+                SELECT f.* FROM video_analysis_feature f JOIN asset a ON a.id = f.asset_id
+                JOIN source s ON s.id = a.source_id
+                WHERE f.asset_id = ? AND f.content_revision = ? AND f.source_identity = ? AND f.representation = ?
+                AND a.content_revision = f.content_revision AND a.media_kind = 'video'
+                AND a.locator_state = 'current' AND a.availability = 'available' AND s.state = 'active'
+                """, arguments: [key.assetID.uuidString.lowercased(), key.contentRevision, key.sourceIdentity,
+                    VideoMultiFrameFeatureSet.identity]),
+                  (row["input_sha256"] as Data) == inputHash(sampling) else { return nil }
+            let payload: Data = row["payload"]
+            guard Data(SHA256.hash(data: payload)) == (row["payload_sha256"] as Data),
+                  let value = try? JSONDecoder().decode(VideoMultiFrameFeatureSet.self, from: payload),
+                  value.representationIdentity == VideoMultiFrameFeatureSet.identity,
+                  value.frames.map(\.timeMs) == sampling.frames.map(\.actualTimeMs),
+                  !value.aggregate.isEmpty, value.aggregate.allSatisfy(\.isFinite),
+                  value.frames.allSatisfy({ $0.values.count == value.aggregate.count && $0.values.allSatisfy(\.isFinite) }) else { return nil }
+            return value
+        }
+    }
+
+    func store(_ value: VideoMultiFrameFeatureSet, key: VideoAnalysisFrameCache.Key,
+               sampling: VideoAnalysisSamplingResult) throws {
+        let payload = try JSONEncoder().encode(value)
+        guard payload.count <= 262_144, value.representationIdentity == VideoMultiFrameFeatureSet.identity else {
+            throw FeaturePrintError.cachePersistenceFailed
+        }
+        try database.pool.write { db in
+            try db.execute(sql: """
+                INSERT OR REPLACE INTO video_analysis_feature
+                SELECT a.id, a.content_revision, ?, ?, ?, ?, ?, ? FROM asset a JOIN source s ON s.id = a.source_id
+                WHERE a.id = ? AND a.content_revision = ? AND a.media_kind = 'video'
+                AND a.locator_state = 'current' AND a.availability = 'available' AND s.state = 'active'
+                """, arguments: [key.sourceIdentity, value.representationIdentity, inputHash(sampling), payload,
+                    Data(SHA256.hash(data: payload)), clock.nowMs, key.assetID.uuidString.lowercased(), key.contentRevision])
+            guard db.changesCount == 1 else { throw FeaturePrintError.sourceChanged }
+            while (try Int.fetchOne(db, sql: "SELECT COALESCE(SUM(length(payload)),0) FROM video_analysis_feature") ?? 0) > 16 * 1_024 * 1_024 {
+                try db.execute(sql: "DELETE FROM video_analysis_feature WHERE rowid = (SELECT rowid FROM video_analysis_feature ORDER BY created_at_ms, rowid LIMIT 1)")
             }
         }
     }

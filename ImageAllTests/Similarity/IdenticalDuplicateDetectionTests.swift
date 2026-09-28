@@ -8,6 +8,44 @@ import XCTest
 @testable import ImageAll
 
 final class IdenticalDuplicateDetectionTests: XCTestCase {
+    func testVideoFeatureEvidencePersistsAndRebuildsDamagedOrStaleResults() throws {
+        let env = try SimilarityTestSupport.Environment(label: #function)
+        defer { env.cleanup() }
+        let fixture = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+            .deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("docs/evidence/time-story-phase-1-20260918/synthetic-silent.mp4")
+        let item = try env.seedAsset(relativePath: "features.mp4", contents: Data(contentsOf: fixture),
+            mediaType: "public.mpeg-4", mediaKind: .video, durationMs: 1_000)
+        let base = env.makeCompletionService()
+        let service = FolderVideoAnalysisService(database: env.database, sourceAccess: base.sourceAccess, clock: base.clock)
+        let cold = try service.analyzeWithFeatures(assetID: item.assetID)
+        XCTAssertFalse(cold.reusedFeatures)
+        let reopened = try CatalogDatabase.open(at: env.root.appendingPathComponent("catalog.sqlite"))
+        let restarted = FolderVideoAnalysisService(database: reopened, sourceAccess: base.sourceAccess, clock: base.clock)
+        let warm = try restarted.analyzeWithFeatures(assetID: item.assetID)
+        XCTAssertTrue(warm.reusedFeatures)
+        XCTAssertEqual(warm.sampling.attemptedFrameCount, 0)
+        XCTAssertEqual(warm.features.aggregate, cold.features.aggregate)
+        XCTAssertEqual(warm.features.frames.map(\.timeMs), cold.features.frames.map(\.timeMs))
+        try env.database.pool.write { db in
+            try db.execute(sql: "UPDATE video_analysis_feature SET payload = ?", arguments: [Data("broken".utf8)])
+        }
+        let repaired = try service.analyzeWithFeatures(assetID: item.assetID)
+        XCTAssertFalse(repaired.reusedFeatures)
+        XCTAssertEqual(repaired.sampling.attemptedFrameCount, 0)
+        let forced = try service.analyzeWithFeatures(assetID: item.assetID, forceRebuild: true)
+        XCTAssertFalse(forced.reusedFeatures)
+        XCTAssertEqual(forced.sampling.attemptedFrameCount, 3)
+        try env.database.pool.write { db in
+            try db.execute(sql: "UPDATE asset SET content_revision = content_revision + 1 WHERE id = ?",
+                arguments: [item.assetID.uuidString.lowercased()])
+        }
+        let revised = try service.analyzeWithFeatures(assetID: item.assetID)
+        XCTAssertFalse(revised.reusedFeatures)
+        XCTAssertEqual(revised.sampling.attemptedFrameCount, 3)
+        XCTAssertThrowsError(try service.analyzeWithFeatures(assetID: item.assetID, expectedRevision: 1))
+    }
+
     func testLateTargetAndSharedCoverVideoControlsWithRealVision() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("VideoControls-\(UUID())")
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: false)
