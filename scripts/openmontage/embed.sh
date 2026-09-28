@@ -2,12 +2,17 @@
 set -euo pipefail
 BASE="$SRCROOT/Vendor/OpenMontage"
 [ -f "$BASE/runtime-version" ] || { echo 'error: Prepare OpenMontage runtime with scripts/openmontage/prepare.py first'; exit 1; }
-# Refresh checked-in integration overrides before hashing/copying the generated runtime.
-python3 -B -c 'import sys; from pathlib import Path; sys.path.insert(0, sys.argv[1]); import config_patch; config_patch.apply(Path(sys.argv[2]))' "$SRCROOT/scripts/openmontage" "$BASE/Runtime/engine"
+# Build/cache a private, verified release. Shared prepared dependencies are read-only.
+PAYLOAD_BUILD="$("$BASE/Runtime/python/bin/python3.12" -B "$SRCROOT/scripts/openmontage/build_payload.py" --cache "$DERIVED_FILE_DIR/OpenMontagePayloads")"
 HELPER="$TARGET_BUILD_DIR/$CONTENTS_FOLDER_PATH/Helpers/OpenMontage Helper.app"
 mkdir -p "$HELPER/Contents/MacOS" "$HELPER/Contents/Resources"
-/usr/bin/ditto "$BASE/Runtime" "$HELPER/Contents/Resources/payload"
-python3 -B "$SRCROOT/scripts/openmontage/payload_version.py" "$BASE/Runtime" > "$HELPER/Contents/Resources/payload-version"
+# Remove only the generated embedded payload to prevent stale files surviving a copy.
+if [ -d "$HELPER/Contents/Resources/payload" ]; then
+    rm -rf "$HELPER/Contents/Resources/payload"
+fi
+/usr/bin/ditto "$PAYLOAD_BUILD/payload" "$HELPER/Contents/Resources/payload"
+cp "$PAYLOAD_BUILD/payload-version" "$HELPER/Contents/Resources/payload-version"
+cp "$PAYLOAD_BUILD/runtime-integrity.json" "$HELPER/Contents/Resources/runtime-integrity.json"
 mkdir -p "$DERIVED_FILE_DIR/OpenMontage"
 cp "$SRCROOT/scripts/openmontage/Launcher.swift" "$DERIVED_FILE_DIR/OpenMontage/main.swift"
 /usr/bin/xcrun swiftc -O "$DERIVED_FILE_DIR/OpenMontage/main.swift" "$SRCROOT/ImageAll/Application/Story/OpenMontageConfiguration.swift" -o "$HELPER/Contents/MacOS/OpenMontageHelper"

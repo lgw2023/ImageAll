@@ -788,3 +788,12 @@
 - 新增非当前分页的视频revision7→8重新解析及照片身份拒绝测试；同时修复FakeLibraryWorkspaceService的Inspector和修订替换投影遗漏mediaKind，使合成替身忠实保留媒体类型。
 - slimming-video-identity-test-build.log TEST BUILD SUCCEEDED；slimming-video-identity-tests.log 5/5 PASS：身份解析、瘦身前后导航边界、视频标签操作/来源切换释放、迟到资源释放、云端原件修订与迟到变更拒绝。均为合成数据与直接XCTest，未生产Photos宿主、未真实云下载。
 - 修复证明入口传递真实修订并通过必要服务/模型回归；未将其称为瘦身完整界面点击或实际Photos操作验收。P7仍IN_PROGRESS，P1/P2/P3/P5/P6完整Mac交互、最终统一版本回归及依赖收口继续推进。保留并行改动，未push，目标active。
+
+## P7 构建依赖审计与仅提交输入的payload验证（2026-09-28）
+
+- 已提交embed.sh仍直接patch共享Runtime；当前成功构建依赖未提交build_payload.py和embed.sh。混合引擎明确拒绝种子写入，因此这是本目标必需交付缺口。纳入私有构建器与embed切换，不纳入并行Launcher验证/本地模型授权、发布/安装、字幕样式改动。
+- 第二项缺口是提交中creativePluginVersion=1.2.2，而已提交override VERSION=1.2.1。只纠正提交中的integration-contract.json与生成Swift为1.2.1；工作区1.2.2契约/Swift与插件并行改动保留。此差异明确可见，不把并行模型修复夹入视频目标。
+- 从7a9bd733逐文件git show提取已提交scripts、固定源码归档和生成Swift到payload-committed-inputs，仅叠加本轮构建器/脚本及正确版本契约；依赖Runtime为只读链接，补丁只作用新cache。没有字幕模块、没有未提交自动创作实现。不是新Git工作树、未修改原源码输入。
+- payload-committed-build.log独立构建成功；payload-committed-cache-hit.log第二次复用同一路径，完整payload内容摘要相符。payload-committed-contract-tests.log 2/2 PASS；独立复核runtime-integrity全部128项；bash -n embed.sh通过。
+- payload-committed-verification.json保存输入摘要、基线commit、payload路径/版本；payloadVersion=bf1271fd48cca6f7155fb67aa2228dcdad24dc3d7cf58f969bc56819033cd3ea。整个Runtime种子前后摘要均e4953686977be67bce9656b72b5e3158aa489e5084f766a73db3bccf62bcd9cb。一次相对路径核验命令因cwd不同失败，后以绝对路径重跑并比对成功，未据失败输出认定通过。
+- 本轮证明已提交依赖可独立生成混合payload且种子未变，不代表完整App纯提交版本Xcode构建、签名/发布安装或全界面验收。下一步是完整提交版本构建与同版本必要回归，随后继续P1–P6运行矩阵收口。目标active，未真实媒体、未付费调用、未启动或停止日常执行器、未push。
