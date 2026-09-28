@@ -1,4 +1,5 @@
 import CryptoKit
+import Darwin
 import Foundation
 import ImageAllRemoteProtocol
 
@@ -203,6 +204,111 @@ public struct RemoteLibraryClient: Sendable {
         )
     }
 
+    /// Uploads one prepared resource, manifest, or fact sidecar without requiring
+    /// a complete local archive. The receiver's offset supports retry after an
+    /// interrupted upload. This is a durable byte-count acknowledgement only;
+    /// callers must still seal and compare the complete archive before claiming
+    /// verification. This method never deletes or modifies the source file.
+    @discardableResult
+    public func uploadMigrationFile(
+        at file: URL, migrationID: UUID, relativePath: String,
+        byteCount: Int64, sha256: String,
+        beforeChunk: @Sendable () async throws -> Void = {}
+    ) async throws -> ImageAllMigrationTransferProgress {
+        guard byteCount > 0, sha256.count == 64,
+              sha256.allSatisfy({ $0.isASCII && $0.isHexDigit }) else {
+            throw RemoteAPIError(code: .badRequest, message: "invalid migration file descriptor")
+        }
+        let handle = try Self.openMigrationFile(file)
+        defer { try? handle.close() }
+        guard try handle.seekToEnd() == UInt64(byteCount) else {
+            throw RemoteAPIError(code: .conflict, message: "source file size changed")
+        }
+        try handle.seek(toOffset: 0)
+        try Task.checkCancellation()
+        try await beforeChunk()
+        var progress = try await beginMigrationTransfer(migrationID: migrationID)
+        func committedOffset(_ value: ImageAllMigrationTransferProgress) throws -> Int64 {
+            guard value.migrationID == migrationID,
+                  value.maximumChunkBytes > 0,
+                  value.maximumChunkBytes <= ImageAllMigrationTransferStore.defaultMaximumChunkBytes,
+                  Set(value.files.map(\.relativePath)).count == value.files.count,
+                  value.files.allSatisfy({ $0.committedBytes >= 0 }) else {
+                throw RemoteAPIError(code: .conflict, message: "invalid receiver progress")
+            }
+            let committed = value.files.first { $0.relativePath == relativePath }?.committedBytes ?? 0
+            guard committed <= byteCount else {
+                throw RemoteAPIError(code: .conflict, message: "receiver offset exceeds source file")
+            }
+            return committed
+        }
+        let committed = try committedOffset(progress)
+        var offset: Int64 = 0
+        var digest = SHA256()
+        while offset < byteCount {
+            try Task.checkCancellation()
+            try await beforeChunk()
+            // Read the skipped prefix too, so resumed sources are checked against
+            // their expected whole-file digest. Keep memory bounded independently
+            // of a host's advertised maximum.
+            let boundary = offset < committed ? committed : byteCount
+            let count = Int(min(Int64(min(progress.maximumChunkBytes, 64 * 1_024)), boundary - offset))
+            guard let bytes = try handle.read(upToCount: count), bytes.count == count else {
+                throw RemoteAPIError(code: .conflict, message: "source file changed during transfer")
+            }
+            digest.update(data: bytes)
+            if offset >= committed {
+                progress = try await uploadMigrationChunk(
+                    migrationID: migrationID, relativePath: relativePath, offset: offset, bytes: bytes
+                )
+                guard try committedOffset(progress) == offset + Int64(bytes.count) else {
+                    throw RemoteAPIError(code: .conflict, message: "receiver did not commit chunk")
+                }
+            }
+            offset += Int64(bytes.count)
+        }
+        try Task.checkCancellation()
+        try await beforeChunk()
+        guard try handle.read(upToCount: 1)?.isEmpty != false,
+              Self.migrationHex(digest.finalize()) == sha256.lowercased() else {
+            throw RemoteAPIError(code: .conflict, message: "source file digest changed during transfer")
+        }
+        return progress
+    }
+
+    private static func openMigrationFile(_ file: URL) throws -> FileHandle {
+        guard file.isFileURL else {
+            throw RemoteAPIError(code: .badRequest, message: "source must be a local file")
+        }
+        let descriptor = file.path.withCString { Darwin.open($0, O_RDONLY | O_NOFOLLOW | O_NONBLOCK) }
+        guard descriptor >= 0 else {
+            throw RemoteAPIError(code: .badRequest, message: "cannot open regular source file")
+        }
+        var info = stat()
+        guard fstat(descriptor, &info) == 0, (info.st_mode & S_IFMT) == S_IFREG else {
+            Darwin.close(descriptor)
+            throw RemoteAPIError(code: .badRequest, message: "source is not a regular file")
+        }
+        return FileHandle(fileDescriptor: descriptor, closeOnDealloc: true)
+    }
+
+    private static func migrationHex(_ digest: SHA256.Digest) -> String {
+        digest.map { String(format: "%02x", $0) }.joined()
+    }
+
+    private static func migrationFileDigest(at file: URL) throws -> (bytes: Int64, sha256: String) {
+        let handle = try openMigrationFile(file)
+        defer { try? handle.close() }
+        var digest = SHA256()
+        var count: Int64 = 0
+        while let bytes = try handle.read(upToCount: 64 * 1_024), !bytes.isEmpty {
+            try Task.checkCancellation()
+            digest.update(data: bytes)
+            count += Int64(bytes.count)
+        }
+        return (count, migrationHex(digest.finalize()))
+    }
+
     /// Sends a previously exported local package file by file. Resume always
     /// uses the receiver's committed offsets; the final receipt proves only
     /// verified staging on Mac, not catalog import or migration completion.
@@ -219,7 +325,6 @@ public struct RemoteLibraryClient: Sendable {
         guard capabilities.capabilities.contains(.migrationTransfer) else {
             throw RemoteAPIError(code: .notFound, message: "host cannot receive migration archives")
         }
-        var progress = try await beginMigrationTransfer(migrationID: header.migrationID)
         let manager = FileManager.default
         var paths = [ImageAllMigrationArchive.manifestFilename]
         for directoryName in ["resources", ImageAllMigrationFacts.sidecarDirectoryName] {
@@ -231,39 +336,18 @@ public struct RemoteLibraryClient: Sendable {
         }
         for path in paths {
             let file = archiveRoot.appendingPathComponent(path)
-            let handle = try FileHandle(forReadingFrom: file)
-            defer { try? handle.close() }
-            let attributes = try manager.attributesOfItem(atPath: file.path)
-            guard let sizeValue = attributes[.size] as? NSNumber else {
-                throw RemoteAPIError(code: .badRequest, message: "archive file size unavailable")
-            }
-            let size = sizeValue.int64Value
-            let committed = progress.files.first(where: { $0.relativePath == path })?.committedBytes ?? 0
-            guard committed >= 0, committed <= size else {
-                throw RemoteAPIError(code: .conflict, message: "receiver offset exceeds source file")
-            }
-            try handle.seek(toOffset: UInt64(committed))
-            var offset = committed
-            while offset < size {
-                let count = Int(min(Int64(progress.maximumChunkBytes), size - offset))
-                guard count > 0, let bytes = try handle.read(upToCount: count), !bytes.isEmpty else {
-                    throw RemoteAPIError(code: .conflict, message: "archive changed during transfer")
-                }
-                progress = try await uploadMigrationChunk(
-                    migrationID: header.migrationID, relativePath: path,
-                    offset: offset, bytes: bytes
-                )
-                offset += Int64(bytes.count)
-                guard progress.files.first(where: { $0.relativePath == path })?.committedBytes == offset else {
-                    throw RemoteAPIError(code: .conflict, message: "receiver did not commit chunk")
-                }
-            }
+            let digest = try Self.migrationFileDigest(at: file)
+            _ = try await uploadMigrationFile(
+                at: file, migrationID: header.migrationID, relativePath: path,
+                byteCount: digest.bytes, sha256: digest.sha256
+            )
         }
         guard try ImageAllMigrationArchive.verify(at: archiveRoot) == firstVerification else {
             throw RemoteAPIError(code: .conflict, message: "archive changed during transfer")
         }
         let receipt = try await sealMigrationTransfer(migrationID: header.migrationID)
-        guard receipt.manifestSHA256 == firstVerification.manifestSHA256,
+        guard receipt.migrationID == header.migrationID,
+              receipt.manifestSHA256 == firstVerification.manifestSHA256,
               receipt.itemCount == firstVerification.itemCount,
               receipt.resourceCount == firstVerification.resourceCount,
               receipt.verifiedBytes == firstVerification.verifiedBytes,
