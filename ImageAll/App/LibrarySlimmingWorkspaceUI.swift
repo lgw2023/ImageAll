@@ -2253,6 +2253,7 @@ struct LibrarySlimmingWorkspaceView: View {
         switch problem {
         case .sourceAuthorizationRequired: "需要文件夹回收权限"
         case .sourceAuthorizationInvalid: "原有文件夹回收权限已失效"
+        case .migrationProtected: "迁移归档、恢复副本或备份受保护，未执行删除"
         case .sourceChanged: "来源文件已变化，已停止处理以避免误删"
         case .photosAuthorizationRequired: "需要 Apple Photos 完整读写权限"
         case .photosAssetNotFound: "Photos 中已找不到同一媒体，未提交删除"
@@ -2281,6 +2282,8 @@ struct LibrarySlimmingWorkspaceView: View {
             return switch entry.problem {
             case .sourceAuthorizationRequired, .sourceAuthorizationInvalid:
                 "原文件未因本次失败而被修改"
+            case .migrationProtected:
+                "此目录不能通过图库瘦身清理；重复分析不会解除保护"
             case .sourceChanged:
                 "原文件未删除；刷新来源并重新分析后再试"
             case .photosAuthorizationRequired,

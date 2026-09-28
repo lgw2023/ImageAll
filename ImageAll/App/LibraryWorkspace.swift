@@ -4051,6 +4051,8 @@ final class LibraryWorkspaceModel: ObservableObject {
             "文件操作尚未开始，原文件没有修改。请更新来源回收权限后回到分析结果重试；也可以移除这条失败记录。"
         case .sourceAuthorizationInvalid:
             "已保存的来源回收权限失效。请重新选择原来源更新权限，再回到分析结果重试。"
+        case .migrationProtected:
+            "迁移归档、恢复副本或备份受保护，原文件未删除。重复分析不会解除保护。"
         case .sourceChanged:
             "目录中的文件与分析时记录不一致，ImageAll 已停止删除以避免误删。请刷新来源、等待完成、重新分析后再试。"
         case .photosAuthorizationRequired:

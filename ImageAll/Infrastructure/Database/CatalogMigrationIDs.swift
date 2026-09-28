@@ -98,6 +98,7 @@ enum CatalogMigrationID {
 
     static let v061AddPhoneAlbumCatalog = "v061_add_phone_album_catalog"
 
+    static let v063ProtectMigrationLocations = "v063_protect_migration_locations"
     static let v062AddIndependentMigrationBackup = "v062_add_independent_migration_backup"
 
     static let knownOrdered: [String] = [
@@ -163,5 +164,6 @@ enum CatalogMigrationID {
         v060AddPhoneAlbumUnavailableReason,
         v061AddPhoneAlbumCatalog,
         v062AddIndependentMigrationBackup,
+        v063ProtectMigrationLocations,
     ]
 }

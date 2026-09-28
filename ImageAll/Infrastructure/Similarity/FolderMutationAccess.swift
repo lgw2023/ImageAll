@@ -118,10 +118,18 @@ struct FolderMutationAuthorizationCoordinator: FolderMutationAuthorizationPort {
 }
 
 protocol FolderMutationAccessing: Sendable {
+    func withReadableSourceRoot<T>(sourceID: UUID, perform: (URL) throws -> T) throws -> T
+
     func withWritableSourceRoot<T>(
         sourceID: UUID,
         perform: (URL) throws -> T
     ) throws -> T
+}
+
+extension FolderMutationAccessing {
+    func withReadableSourceRoot<T>(sourceID: UUID, perform: (URL) throws -> T) throws -> T {
+        try withWritableSourceRoot(sourceID: sourceID, perform: perform)
+    }
 }
 
 /// Resolves only the independently granted write-capable bookmark. The durable
@@ -136,6 +144,20 @@ struct FolderMutationAccessService: FolderMutationAccessing {
     ) {
         self.database = database
         self.bookmarkPort = bookmarkPort
+    }
+
+    func withReadableSourceRoot<T>(sourceID: UUID, perform: (URL) throws -> T) throws -> T {
+        let bookmark = try database.pool.read { db in
+            try Data.fetchOne(db, sql: "SELECT bookmark FROM source WHERE id = ? AND kind = 'folder' AND state = 'active'",
+                arguments: [sourceID.uuidString.lowercased()])
+        }
+        guard let bookmark else { throw LibrarySlimmingRecycleError.notFound }
+        let resolved = try bookmarkPort.resolveBookmark(bookmark)
+        guard bookmarkPort.startAccessing(resolved.url) else {
+            throw LibrarySlimmingRecycleError.mutationAuthorizationInvalid
+        }
+        defer { bookmarkPort.stopAccessing(resolved.url) }
+        return try perform(resolved.url)
     }
 
     func withWritableSourceRoot<T>(

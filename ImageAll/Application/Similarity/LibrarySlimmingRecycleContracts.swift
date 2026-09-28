@@ -20,6 +20,7 @@ enum RecycleFailureCode {
     static let mutationAuthorizationRequired = "mutationAuthorizationRequired"
     static let mutationAuthorizationInvalid = "mutationAuthorizationInvalid"
     static let sourceChanged = "sourceChanged"
+    static let migrationProtected = "migrationProtected"
     static let ioFailure = "ioFailure"
     static let photosAuthorizationRequired = "photosAuthorizationRequired"
     static let photosAssetNotFound = "photosAssetNotFound"
@@ -33,6 +34,7 @@ enum RecycleFailureCode {
 enum RecycleEntryProblem: Sendable, Equatable, Hashable {
     case sourceAuthorizationRequired
     case sourceAuthorizationInvalid
+    case migrationProtected
     case sourceChanged
     case photosAuthorizationRequired
     case photosAssetNotFound
@@ -123,6 +125,8 @@ struct RecycleEntryRecord: Identifiable, Sendable, Equatable {
             return .sourceAuthorizationRequired
         case RecycleFailureCode.mutationAuthorizationInvalid:
             return .sourceAuthorizationInvalid
+        case RecycleFailureCode.migrationProtected:
+            return .migrationProtected
         case RecycleFailureCode.sourceChanged:
             return .sourceChanged
         case RecycleFailureCode.photosAuthorizationRequired:

@@ -9,6 +9,53 @@ import XCTest
 @testable import ImageAll
 
 final class LibrarySlimmingRecycleTests: XCTestCase {
+    func testMigrationReservationsExcludePlansAndBlockStalePhysicalCleanup() throws {
+        let env = try RecycleTestEnv(label: #function)
+        defer { env.cleanup() }
+        let bytes = Data(repeating: 29, count: 8000)
+        let archive = try env.seedAsset(relativePath: "Backup/photo.jpg", contents: bytes)
+        let ordinary = try env.seedAsset(relativePath: "Backup-other/photo.jpg", contents: bytes)
+        let hash = Data(SHA256.hash(data: bytes))
+        for id in [archive.assetID, ordinary.assetID] {
+            try env.seedVerifiedSimilarityFingerprint(assetID: id, sha256: hash)
+        }
+        let service = env.makeRecycleService()
+        let cluster = SlimmingCluster(id: UUID(), kind: .byteIdentical,
+            memberAssetIDs: [archive.assetID, ordinary.assetID], representativeAssetID: ordinary.assetID,
+            score: 0, modelIdentity: .featurePrintOnly)
+        let stale = try service.makeIdenticalCleanupPlan(clusters: [cluster])
+        XCTAssertEqual(stale.assetIDsToRecycle.count, 1)
+        let protectedRoot = archive.fileURL.deletingLastPathComponent()
+        try MigrationCleanupProtection.reserve(database: env.database, root: protectedRoot,
+            parentBookmark: nil, purpose: "recovery")
+        let plan = try service.makeIdenticalCleanupPlan(clusters: [cluster])
+        XCTAssertTrue(plan.assetIDsToRecycle.isEmpty)
+        XCTAssertEqual(plan.skippedGroupCount, 1)
+        XCTAssertThrowsError(try service.moveIdenticalCleanupAssetsToRecycle(plan: stale, onProgress: { _ in })) {
+            XCTAssertEqual($0 as? LibrarySlimmingRecycleError, .cleanupPlanChanged)
+        }
+        XCTAssertTrue(try MigrationCleanupProtection.isProtected(database: env.database, url: archive.fileURL))
+        XCTAssertFalse(try MigrationCleanupProtection.isProtected(database: env.database, url: ordinary.fileURL))
+        // Direct selection and plans made before reservation use the same final gate.
+        let recycled = try service.moveAssetsToRecycle(assetIDs: [archive.assetID])
+        XCTAssertEqual(recycled.failedAssetIDs, [archive.assetID])
+        XCTAssertEqual(try service.listRecycleBinEntries().first?.problem, .migrationProtected)
+        let deleted = try service.deleteAssetsImmediately(assetIDs: [archive.assetID], onProgress: { _ in })
+        XCTAssertEqual(deleted.failedAssetIDs, [archive.assetID])
+        XCTAssertEqual(try Data(contentsOf: archive.fileURL), bytes)
+        let reopened = try CatalogDatabase.open(at: env.root.appendingPathComponent("catalog.sqlite"))
+        XCTAssertTrue(try MigrationCleanupProtection.isProtected(database: reopened, url: archive.fileURL))
+        // A moved directory remains protected even in a different catalog.
+        try Data("reserved".utf8).write(to: protectedRoot.appendingPathComponent(MigrationCleanupProtection.markerName))
+        let moved = env.root.appendingPathComponent("MovedBackup")
+        try FileManager.default.moveItem(at: protectedRoot, to: moved)
+        let otherDB = try CatalogDatabase.open(at: env.root.appendingPathComponent("other.sqlite"))
+        XCTAssertTrue(try MigrationCleanupProtection.isProtected(database: otherDB, url: moved.appendingPathComponent("photo.jpg")))
+        // A same-prefix sibling remains independently usable.
+        let normal = try service.moveAssetsToRecycle(assetIDs: [ordinary.assetID])
+        XCTAssertEqual(normal.recycledEntryIDs.count, 1)
+    }
+
     @MainActor
     func testNativeVideoCleanupComparisonRendersCatalogEvidenceAndRetentionReasons() async throws {
         let env = try RecycleTestEnv(label: #function)

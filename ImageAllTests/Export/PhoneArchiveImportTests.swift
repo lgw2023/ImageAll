@@ -243,6 +243,10 @@ final class PhoneArchiveImportTests: XCTestCase {
             try XCTUnwrap(resource.relativePath)
         )), Data("network-stage-original".utf8))
         XCTAssertNotNil(recovery.integrity.phoneSyncCheckpoint)
+        XCTAssertTrue(try MigrationCleanupProtection.isProtected(database: importer.database,
+            url: recovery.recoveredCatalogURL))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: recovery.recoveredCatalogURL
+            .deletingLastPathComponent().appendingPathComponent(MigrationCleanupProtection.markerName).path))
         XCTAssertEqual(try restoredImporter.importedBatches().first?.appleAlbumCoverage, coverage)
         XCTAssertEqual(try restoredImporter.importedBatches().first?.appleAlbumCatalog, catalog)
         if coverage == .unavailableLimitedAuthorization {

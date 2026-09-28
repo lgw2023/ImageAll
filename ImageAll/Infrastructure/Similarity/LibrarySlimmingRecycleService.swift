@@ -238,7 +238,9 @@ struct LibrarySlimmingRecycleService: LibrarySlimmingRecyclePort {
             )
         }
 
-        let facts = try loadIdenticalCleanupFacts(assetIDs: assetIDs)
+        let facts = try loadIdenticalCleanupFacts(assetIDs: assetIDs).filter {
+            !isKnownMigrationProtected($0.proof)
+        }
         let factsByAssetID = Dictionary(
             facts.map { ($0.proof.assetID, $0) },
             uniquingKeysWith: { first, _ in first }
@@ -275,6 +277,16 @@ struct LibrarySlimmingRecycleService: LibrarySlimmingRecyclePort {
             assetProofs: proofs,
             protectedSkippedAssetCount: basePlan.protectedSkippedAssetCount
         )
+    }
+
+    private func isKnownMigrationProtected(_ proof: LibrarySlimmingIdenticalCleanupAssetProof) -> Bool {
+        guard proof.sourceKind == .file else { return false }
+        // Preview can still show inaccessible sources for the existing permission
+        // flow. A failed lookup never authorizes I/O: the final gate is throwing.
+        return (try? mutationAccess.withReadableSourceRoot(sourceID: proof.sourceID) { root in
+            try MigrationCleanupProtection.isProtected(database: database,
+                url: root.appendingPathComponent(proof.locatorIdentity))
+        }) ?? false
     }
 
     private struct IdenticalCleanupFact {
@@ -872,6 +884,9 @@ struct LibrarySlimmingRecycleService: LibrarySlimmingRecyclePort {
                     }) else { throw LibrarySlimmingRecycleError.cleanupPlanChanged }
                     let ids = Set(decision.retainedAssetIDs + [assetID])
                     let proofs = plan.assetProofs.filter { ids.contains($0.assetID) }
+                    guard !proofs.contains(where: { isKnownMigrationProtected($0) }) else {
+                        throw LibrarySlimmingRecycleError.cleanupPlanChanged
+                    }
                     guard proofs.contains(where: { $0.mediaKind == .video }) else { return }
                     do {
                         try validateCurrentCleanupSubset(proofs, deletionIDs: [assetID])
@@ -908,6 +923,9 @@ struct LibrarySlimmingRecycleService: LibrarySlimmingRecyclePort {
     private func validateCurrentCleanupSubset(_ proofs: [LibrarySlimmingIdenticalCleanupAssetProof],
         deletionIDs: Set<UUID>) throws {
         let current = try loadIdenticalCleanupFacts(assetIDs: proofs.map(\.assetID))
+        guard !current.contains(where: { isKnownMigrationProtected($0.proof) }) else {
+            throw LibrarySlimmingRecycleError.cleanupPlanChanged
+        }
         guard current.count == proofs.count, current.allSatisfy({ fact in
             proofs.contains(fact.proof) && (!deletionIDs.contains(fact.proof.assetID) || !fact.candidate.isProtected)
         }) else { throw LibrarySlimmingRecycleError.cleanupPlanChanged }
@@ -1022,6 +1040,9 @@ struct LibrarySlimmingRecycleService: LibrarySlimmingRecyclePort {
             throw LibrarySlimmingRecycleError.cleanupPlanChanged
         }
         let current = try loadIdenticalCleanupFacts(assetIDs: Array(plannedAssetIDs))
+        guard !current.contains(where: { isKnownMigrationProtected($0.proof) }) else {
+            throw LibrarySlimmingRecycleError.cleanupPlanChanged
+        }
         // Favorites can change after preview without changing content identity.
         // Abort the entire plan before any file or PhotoKit mutation.
         let deletionIDs = Set(plan.assetIDsToRecycle)
@@ -1709,14 +1730,20 @@ struct LibrarySlimmingRecycleService: LibrarySlimmingRecyclePort {
                     existingBytesCopied(copiedBytes)
                     reporter.recordCopiedBytes(copiedBytes)
                 }
-                try instrumentedIO.moveIntoQuarantine(
-                    sourceRootURL: sourceRoot,
-                    sourceRelativePath: relativePath,
-                    quarantineRootURL: quarantineRootURL,
-                    quarantineRelativePath: quarantineRelative,
-                    expectedIdentity: expectedIdentity
-                )
+                try MigrationCleanupProtection.withUnprotectedFile(database: database,
+                    url: sourceRoot.appendingPathComponent(relativePath)) {
+                    try instrumentedIO.moveIntoQuarantine(
+                        sourceRootURL: sourceRoot,
+                        sourceRelativePath: relativePath,
+                        quarantineRootURL: quarantineRootURL,
+                        quarantineRelativePath: quarantineRelative,
+                        expectedIdentity: expectedIdentity
+                    )
+                }
             }
+        } catch MigrationCleanupProtection.ProtectionError.protectedLocation {
+            try markFailed(entryID: entryID, code: RecycleFailureCode.migrationProtected)
+            throw MigrationCleanupProtection.ProtectionError.protectedLocation
         } catch LibrarySlimmingRecycleError.mutationAuthorizationRequired {
             try markFailed(
                 entryID: entryID,
@@ -1841,12 +1868,18 @@ struct LibrarySlimmingRecycleService: LibrarySlimmingRecyclePort {
                 instrumentedIO.onPhaseCompleted = { phase, elapsedMs in
                     existingCompleted(phase, elapsedMs)
                 }
-                try instrumentedIO.deleteSourceImmediately(
-                    sourceRootURL: sourceRoot,
-                    sourceRelativePath: relativePath,
-                    expectedIdentity: expectedIdentity
-                )
+                try MigrationCleanupProtection.withUnprotectedFile(database: database,
+                    url: sourceRoot.appendingPathComponent(relativePath)) {
+                    try instrumentedIO.deleteSourceImmediately(
+                        sourceRootURL: sourceRoot,
+                        sourceRelativePath: relativePath,
+                        expectedIdentity: expectedIdentity
+                    )
+                }
             }
+        } catch MigrationCleanupProtection.ProtectionError.protectedLocation {
+            try markFailed(entryID: entryID, code: RecycleFailureCode.migrationProtected)
+            throw MigrationCleanupProtection.ProtectionError.protectedLocation
         } catch LibrarySlimmingRecycleError.mutationAuthorizationRequired {
             try markFailed(
                 entryID: entryID,

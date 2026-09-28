@@ -738,6 +738,11 @@ struct VerifiedPhoneArchiveImporter: Sendable {
         if let capacity, capacity < requiredBytes {
             throw PhoneArchiveImportError.insufficientRecoverySpace
         }
+        try MigrationCleanupProtection.reserve(database: database, root: emptyDirectory,
+            parentBookmark: try? emptyDirectory.bookmarkData(options: [.withSecurityScope],
+                includingResourceValuesForKeys: nil, relativeTo: nil), purpose: "recovery")
+        try Data("ImageAll migration recovery or backup; retained after failure.\n".utf8)
+            .write(to: emptyDirectory.appendingPathComponent(MigrationCleanupProtection.markerName), options: .atomic)
         let catalogURL = emptyDirectory.appendingPathComponent("recovered-catalog.sqlite")
         let recovered = VerifiedPhoneArchiveImporter(
             database: try CatalogDatabase.open(at: catalogURL)
@@ -2873,6 +2878,9 @@ struct VerifiedPhoneArchiveImporter: Sendable {
             return false
         }
 
+        try MigrationCleanupProtection.reserve(database: database, root: final,
+            parentBookmark: targetBookmark, relativeComponent: final.lastPathComponent, purpose: "archive")
+
         if FileManager.default.fileExists(atPath: final.path) {
             guard try ImageAllMigrationArchive.verify(at: final).hasSameMedia(as: verification) else {
                 throw PhoneArchiveImportError.publishedCopyChanged
@@ -2886,6 +2894,12 @@ struct VerifiedPhoneArchiveImporter: Sendable {
                 throw PhoneArchiveImportError.publishedCopyChanged
             }
         }
+        // Track the directory itself after publication, so a rename/move does
+        // not reduce protection to the original parent's fixed child name.
+        try MigrationCleanupProtection.reserve(database: database, root: final,
+            parentBookmark: try? final.bookmarkData(options: [.withSecurityScope],
+                includingResourceValuesForKeys: nil, relativeTo: nil),
+            purpose: "archive", replaceBookmark: true)
         try afterPublication?()
 
         if alreadyCommitted {

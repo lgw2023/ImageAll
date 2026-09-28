@@ -196,3 +196,113 @@ extension VerifiedPhoneArchiveImporter {
         return original
     }
 }
+
+/// Separate from successful validation/backup receipts. Failed and historical
+/// copies retain protection. Only explicit future retirement may remove it.
+enum MigrationCleanupProtection {
+    static let markerName = ".imageall-migration-protected"
+    private static let lock = NSRecursiveLock()
+
+    enum ProtectionError: LocalizedError {
+        case protectedLocation
+        var errorDescription: String? { "迁移归档、恢复副本或备份受保护，不能通过图库瘦身移除。" }
+    }
+
+    static func reserve(database: CatalogDatabase, root: URL, parentBookmark: Data?,
+                        relativeComponent: String = "", purpose: String, replaceBookmark: Bool = false) throws {
+        lock.lock()
+        defer { lock.unlock() }
+        try database.pool.write { db in
+            try db.execute(sql: """
+                INSERT INTO migration_protected_location
+                    (root_path, parent_bookmark, relative_component, purpose, created_at_ms)
+                VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(root_path) DO NOTHING
+                """, arguments: [root.standardizedFileURL.path, parentBookmark,
+                    relativeComponent, purpose, Int64(Date().timeIntervalSince1970 * 1_000)])
+            if replaceBookmark, let parentBookmark {
+                try db.execute(sql: "UPDATE migration_protected_location SET parent_bookmark = ?, relative_component = ? WHERE root_path = ?",
+                    arguments: [parentBookmark, relativeComponent, root.standardizedFileURL.path])
+            }
+        }
+    }
+
+    /// Holds the same process lock as reservations through the actual mutation.
+    /// The caller's anchored filesystem primitive still owns path/identity checks.
+    static func withUnprotectedFile<T>(database: CatalogDatabase, url: URL,
+                                       perform: () throws -> T) throws -> T {
+        lock.lock()
+        defer { lock.unlock() }
+        guard try !isProtected(database: database, url: url) else {
+            throw ProtectionError.protectedLocation
+        }
+        return try perform()
+    }
+
+    static func isProtected(database: CatalogDatabase, url: URL) throws -> Bool {
+        struct Location {
+            let path: String
+            let bookmark: Data?
+            let component: String
+        }
+        let locations: [Location] = try database.pool.read { db in
+            var result = try Row.fetchAll(db, sql: "SELECT root_path, parent_bookmark, relative_component FROM migration_protected_location").map {
+                Location(path: $0["root_path"], bookmark: $0["parent_bookmark"], component: $0["relative_component"])
+            }
+            // Include pre-V063 records without rewriting previous migrations.
+            for row in try Row.fetchAll(db, sql: "SELECT archive_path, target_bookmark FROM migration_import") {
+                let path: String = row["archive_path"]
+                result.append(Location(path: path, bookmark: row["target_bookmark"],
+                    component: URL(fileURLWithPath: path).lastPathComponent))
+            }
+            for row in try Row.fetchAll(db, sql: "SELECT recovery_catalog_path, recovery_parent_bookmark FROM migration_import_validation") {
+                let path: String = row["recovery_catalog_path"]
+                result.append(Location(path: URL(fileURLWithPath: path).deletingLastPathComponent().path,
+                    bookmark: row["recovery_parent_bookmark"], component: ""))
+            }
+            for data in try Data.fetchAll(db, sql: "SELECT record_json FROM migration_independent_backup") {
+                let record = try JSONDecoder().decode(PhoneArchiveIndependentBackup.self, from: data)
+                result.append(Location(path: URL(fileURLWithPath: record.backupCatalogPath).deletingLastPathComponent().path,
+                    bookmark: record.parentBookmark, component: ""))
+            }
+            return result
+        }
+        let candidate = url.standardizedFileURL.resolvingSymlinksInPath()
+        func contains(_ root: URL) -> Bool {
+            let path = root.standardizedFileURL.resolvingSymlinksInPath().path
+            return candidate.path == path || candidate.path.hasPrefix(path + "/")
+        }
+        for location in locations {
+            if contains(URL(fileURLWithPath: location.path)) { return true }
+            if let bookmark = location.bookmark {
+                var stale = false
+                // An unresolvable protected bookmark must not silently become
+                // permission to delete an archive that moved or was remounted.
+                let parent = try URL(resolvingBookmarkData: bookmark,
+                    options: [.withSecurityScope, .withoutUI], relativeTo: nil,
+                    bookmarkDataIsStale: &stale)
+                if contains(location.component.isEmpty ? parent : parent.appendingPathComponent(location.component)) {
+                    return true
+                }
+            }
+        }
+        // A recovery directory carries this marker when moved or opened from a
+        // separate/recovered catalog, including a partially copied directory.
+        var ancestor = candidate.deletingLastPathComponent()
+        while true {
+            let name = ancestor.lastPathComponent
+            for prefix in ["ImageAll-Archive-", ".imageall-archive-staging-", ".imageall-transfer-"] {
+                if name.hasPrefix(prefix), UUID(uuidString: String(name.dropFirst(prefix.count))) != nil {
+                    return true
+                }
+            }
+            let marker = ancestor.appendingPathComponent(markerName)
+            if FileManager.default.fileExists(atPath: marker.path) { return true }
+            if ancestor.path == "/" || ancestor.path.isEmpty { break }
+            let next = ancestor.deletingLastPathComponent()
+            if next.path == ancestor.path { break }
+            ancestor = next
+        }
+        return false
+    }
+}

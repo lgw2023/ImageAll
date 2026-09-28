@@ -117,6 +117,7 @@ struct CatalogDatabase: Sendable {
         V060AddPhoneAlbumUnavailableReasonMigration.register(on: &migrator)
         V061AddPhoneAlbumCatalogMigration.register(on: &migrator)
         V062AddIndependentMigrationBackup.register(on: &migrator)
+        V063ProtectMigrationLocations.register(on: &migrator)
         return migrator
     }
 
@@ -3631,6 +3632,23 @@ enum V062AddIndependentMigrationBackup {
                     created_at_ms INTEGER NOT NULL CHECK(created_at_ms >= 0)
                 ) STRICT;
                 CREATE INDEX migration_independent_backup_batch ON migration_independent_backup(migration_id, created_at_ms);
+                """)
+        }
+    }
+}
+
+/// Reservations survive a failed copy and are not completion evidence.
+enum V063ProtectMigrationLocations {
+    static func register(on migrator: inout DatabaseMigrator) {
+        migrator.registerMigration(CatalogMigrationID.v063ProtectMigrationLocations) { db in
+            try db.execute(sql: """
+                CREATE TABLE migration_protected_location (
+                    root_path TEXT PRIMARY KEY CHECK(length(root_path) > 1),
+                    parent_bookmark BLOB,
+                    relative_component TEXT NOT NULL,
+                    purpose TEXT NOT NULL CHECK(purpose IN ('archive', 'recovery')),
+                    created_at_ms INTEGER NOT NULL CHECK(created_at_ms >= 0)
+                ) STRICT
                 """)
         }
     }
