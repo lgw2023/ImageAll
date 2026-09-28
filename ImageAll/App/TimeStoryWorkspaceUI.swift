@@ -225,6 +225,7 @@ final class TimeStoryWorkspaceModel: ObservableObject {
         }
     }
     @Published var message: String?
+    @Published var videoClipRequest: StoryVideoClipEditRequest?
 
     private var creativePlugin: StoryCreativePlugin {
         StoryCreativePlugin(rootProvider: runtime.creativeRootProvider,
@@ -632,7 +633,7 @@ final class TimeStoryWorkspaceModel: ObservableObject {
         guard !isInputLocked else { return }
         guard var edited = project, !ids.isEmpty else { return }
         for index in edited.shots.indices where ids.contains(edited.shots[index].id) {
-            if let duration, duration.isFinite { edited.shots[index].durationSeconds = min(12, max(1.5, duration)); edited.shots[index].durationEdited = true }
+            if let duration, duration.isFinite, edited.shots[index].videoClip == nil { edited.shots[index].durationSeconds = min(12, max(1.5, duration)); edited.shots[index].durationEdited = true }
             if let mode { edited.shots[index].presentationMode = mode }
             if let locked {
                 edited.shots[index].isLocked = locked
@@ -672,6 +673,7 @@ final class TimeStoryWorkspaceModel: ObservableObject {
         guard var project,
               let index = project.shots.firstIndex(where: { $0.id == shotID })
         else { return }
+        guard project.shots[index].videoClip == nil else { return }
         project.shots[index].durationSeconds = min(12, max(1.5, seconds))
         project.shots[index].durationEdited = true
         project.shots[index].isUserEdited = true
@@ -721,6 +723,8 @@ final class TimeStoryWorkspaceModel: ObservableObject {
         else { return }
         let previousAssetID = project.shots[index].assetID
         project.excludedAssetIDs.insert(previousAssetID)
+        project.shots[index].videoClip = nil
+        project.shots[index].durationSeconds = TimeStoryConstants.defaultShotDurationSeconds
         project.shots[index].assetID = candidate.assetID
         project.shots[index].contentRevision = candidate.contentRevision
         project.shots[index].caption = candidate.placeName ?? project.subjectTagDisplayName
@@ -744,7 +748,7 @@ final class TimeStoryWorkspaceModel: ObservableObject {
             return TimeStoryMusicSelection(
                 displayName: $0.lastPathComponent,
                 filePath: $0.path,
-                securityScopedBookmark: bookmark
+                securityScopedBookmark: bookmark, volume: 0.22
             )
         }
         project.updatedAtMs = runtime.clock.nowMs
@@ -763,9 +767,59 @@ final class TimeStoryWorkspaceModel: ObservableObject {
         return runtime.planner.manuallyEditableCandidates(in: project)
     }
 
+    func editVideoClip(_ shotID: UUID) {
+        guard !isInputLocked, let project, let shot = project.shots.first(where: { $0.id == shotID }),
+              let candidate = project.candidateSnapshot.candidates.first(where: { $0.assetID == shot.assetID }),
+              let clip = shot.videoClip else { return }
+        videoClipRequest = .init(projectID: project.id, candidate: candidate, shotID: shotID, initial: clip)
+    }
+
+    func prepareClipPreview(_ request: StoryVideoClipEditRequest, destination: URL) async throws -> TimeStoryFrozenVideo {
+        try await runtime.media.freezeStoryVideo(assetID: request.candidate.assetID,
+            expectedRevision: request.candidate.contentRevision, destination: destination)
+    }
+
+    func applyVideoClip(_ request: StoryVideoClipEditRequest, clip: TimeStoryVideoClip) {
+        guard !isInputLocked, var current = project, current.id == request.projectID,
+              current.candidateSnapshot.candidates.contains(request.candidate) else { return }
+        do {
+            let frames = try clip.validatedFrameRange(actualDurationMs: request.candidate.durationMs ?? 0)
+            if let shotID = request.shotID {
+                guard let index = current.shots.firstIndex(where: { $0.id == shotID }),
+                      current.shots[index].assetID == request.candidate.assetID,
+                      current.shots[index].contentRevision == request.candidate.contentRevision else { return }
+                current.shots[index].videoClip = clip
+                current.shots[index].durationSeconds = Double(frames.frameCount) / 30
+                current.shots[index].durationEdited = true
+                current.shots[index].isUserEdited = true
+                current.updatedAtMs = runtime.clock.nowMs
+            } else {
+                current = try runtime.planner.manuallyInserting(request.candidate, in: current,
+                    nowMs: runtime.clock.nowMs, videoClip: clip)
+            }
+            project = current
+            videoClipRequest = nil
+            message = "视频片段已更新；请核对顺序并保存。"
+        } catch { message = error.localizedDescription }
+    }
+
+    func setMusicVolume(_ volume: Double) {
+        guard !isInputLocked, volume.isFinite, (0...1).contains(volume), var current = project,
+              current.music != nil else { return }
+        current.music?.volume = volume
+        current.updatedAtMs = runtime.clock.nowMs
+        project = current
+    }
+
     func addCandidate(_ candidate: TimeStoryCandidate) async {
         guard !isInputLocked else { return }
         guard let current = project else { return }
+        if candidate.effectiveMediaKind == .video {
+            guard videoClipRequest == nil, let duration = candidate.durationMs, duration > 0 else { return }
+            videoClipRequest = .init(projectID: current.id, candidate: candidate, shotID: nil,
+                initial: .init(inPointMs: 0, outPointMs: min(duration, 3500), sourceDurationMs: duration))
+            return
+        }
         do {
             let updated = try runtime.planner.manuallyInserting(candidate, in: current, nowMs: runtime.clock.nowMs)
             project = updated
@@ -1226,6 +1280,12 @@ struct TimeStoryWorkspaceView: View {
         editor
         .frame(minWidth: 720, minHeight: 540)
         .coordinateSpace(name: "storyMontageCanvas")
+        .sheet(item: $model.videoClipRequest) { request in
+            StoryVideoClipEditor(request: request,
+                load: { try await model.prepareClipPreview(request, destination: $0) },
+                save: { model.applyVideoClip(request, clip: $0) },
+                cancel: { model.videoClipRequest = nil })
+        }
         .onPreferenceChange(StoryDropFrameKey.self) { dropFrames = $0 }
         .overlay(alignment: .topLeading) {
             if let dragToken {
@@ -1416,6 +1476,10 @@ struct TimeStoryWorkspaceView: View {
                                 description: Text("从左侧素材库添加照片，或在创作中选用自动模板。"))
                         } else {
                             TimeStoryTimelinePreview(project: project, thumbnails: model.thumbnails)
+                            if project.shots.contains(where: { $0.videoClip != nil }) {
+                                Text("分镜预览使用缩略图；选择视频镜头后打开“预览与编辑视频片段”播放实际内容。")
+                                    .font(.caption).foregroundStyle(.secondary)
+                            }
                         }
                         Spacer(minLength: 0)
                     }.padding(12).frame(minWidth: 240, maxWidth: .infinity, maxHeight: .infinity)
@@ -1564,11 +1628,15 @@ struct TimeStoryWorkspaceView: View {
                     else { pickedAssets.insert(candidate.assetID) }
                 } else { selectedCandidateID = candidate.assetID }
             }
+            if candidate.effectiveMediaKind == .video {
+                Label(candidate.durationMs.map { String(format: "视频 %.2f 秒", Double($0) / 1000) } ?? "视频时长待确认", systemImage: "video")
+                    .font(.caption2)
+            }
             Text(candidate.mediaCreatedAtMs.map(captureDate) ?? "拍摄时间待确认")
                 .font(.caption2).lineLimit(1)
             Text(candidate.placeName ?? candidate.fileName ?? "未记录地点")
                 .font(.caption2).foregroundStyle(.secondary).lineLimit(1)
-            if used { Text("已加入").font(.caption).foregroundStyle(.tint) }
+            if used && candidate.effectiveMediaKind != .video { Text("已加入").font(.caption).foregroundStyle(.tint) }
             else if excluded { Text("已从故事排除").font(.caption).foregroundStyle(.secondary) }
             else if candidate.availability != .available { Text("素材不可用").font(.caption).foregroundStyle(.secondary) }
             else {
@@ -2249,6 +2317,11 @@ struct TimeStoryWorkspaceView: View {
                     Text("拍摄日期 \(evidence.mediaCreatedAtMs.map(captureDate) ?? "待确认") · 来源 \(evidence.captureTimeSource ?? "旧项目未记录") · 地点 \(evidence.placeName ?? "未确认名称")")
                         .font(.caption2).foregroundStyle(.secondary)
                 }
+                if let clip = shot.videoClip {
+                    Text(String(format: "片段 %.3f–%.3f 秒 · 原声 %.0f%%", Double(clip.inPointMs) / 1000,
+                                Double(clip.outPointMs) / 1000, clip.originalAudioGain * 100)).font(.caption)
+                    Button("预览与编辑视频片段") { model.editVideoClip(shot.id) }
+                }
                 HStack {
                     Stepper(
                         value: Binding(
@@ -2262,6 +2335,7 @@ struct TimeStoryWorkspaceView: View {
                             .monospacedDigit()
                     }
                     .frame(width: 150)
+                    .disabled(shot.videoClip != nil)
                     Toggle(isOn: Binding(
                         get: { model.project?.shots.first(where: { $0.id == shot.id })?.hasExplicitLock ?? shot.hasExplicitLock },
                         set: { _ in model.toggleLock(shot.id) }
@@ -2378,6 +2452,11 @@ struct TimeStoryWorkspaceView: View {
         Menu {
             Button("选择本地配乐…") { chooseMusic() }
             if model.project?.music != nil {
+                Menu("配乐音量") {
+                    ForEach([0.0, 0.1, 0.22, 0.5, 1.0], id: \.self) { volume in
+                        Button(String(format: "%.0f%%", volume * 100)) { model.setMusicVolume(volume) }
+                    }
+                }
                 Button("移除配乐") { model.setMusic(url: nil) }
             }
         } label: {
@@ -2532,7 +2611,7 @@ private struct TimeStoryTimelinePreview: View {
 
     var body: some View {
         TimelineView(.animation(minimumInterval: 1.0 / 30.0, paused: !isPlaying)) { context in
-            let timeline = try? TimeStoryTimeline.normalize(project: project)
+            let timeline = try? TimeStoryTimeline.normalize(project: project, allowsVideoClips: true)
             let duration = timeline?.durationSeconds ?? 0
             let elapsed = max(0, context.date.timeIntervalSince(playbackStartedAt))
             let seconds = isPlaying && duration > 0 ? elapsed.truncatingRemainder(dividingBy: duration) : 0
@@ -2779,6 +2858,110 @@ private struct StoryTypographyEditor: View {
                 .background(Color(red: 0.055, green: 0.082, blue: 0.12), in: RoundedRectangle(cornerRadius: 8))
             Text("全故事统一使用；字号按 1080 像素短边计算。使用本机已安装字体；缺失字形由系统补全。")
                 .font(.caption).foregroundStyle(.secondary)
+        }
+    }
+}
+
+struct StoryVideoClipEditRequest: Identifiable {
+    let id = UUID()
+    let projectID: UUID
+    let candidate: TimeStoryCandidate
+    let shotID: UUID?
+    let initial: TimeStoryVideoClip
+}
+
+struct StoryVideoClipEditor: View {
+    let request: StoryVideoClipEditRequest
+    let load: (URL) async throws -> TimeStoryFrozenVideo
+    let save: (TimeStoryVideoClip) -> Void
+    let cancel: () -> Void
+    @State private var start: Double
+    @State private var end: Double
+    @State private var gain: Double
+    @State private var player: AVPlayer?
+    @State private var directory: URL?
+    @State private var error: String?
+    @State private var ready = false
+    @State private var isOpen = true
+
+    init(request: StoryVideoClipEditRequest, load: @escaping (URL) async throws -> TimeStoryFrozenVideo,
+         save: @escaping (TimeStoryVideoClip) -> Void, cancel: @escaping () -> Void) {
+        self.request = request; self.load = load; self.save = save; self.cancel = cancel
+        _start = State(initialValue: Double(request.initial.inPointMs) / 1000)
+        _end = State(initialValue: Double(request.initial.outPointMs) / 1000)
+        _gain = State(initialValue: request.initial.originalAudioGain)
+    }
+    private var clip: TimeStoryVideoClip? {
+        guard start.isFinite, end.isFinite, start >= 0, end > start, end < Double(Int64.max) / 1000,
+              end <= Double(request.initial.sourceDurationMs) / 1000 else { return nil }
+        let value = TimeStoryVideoClip(inPointMs: Int64((start * 1000).rounded()),
+            outPointMs: Int64((end * 1000).rounded()), sourceDurationMs: request.initial.sourceDurationMs, originalAudioGain: gain)
+        return (try? value.validatedFrameRange(actualDurationMs: request.initial.sourceDurationMs)) == nil ? nil : value
+    }
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text(request.shotID == nil ? "选择视频片段" : "编辑视频片段").font(.title2.bold())
+            Text(request.candidate.fileName ?? "视频").lineLimit(1)
+            if let player { VideoPlayer(player: player).frame(height: 280) }
+            else if let error { Text(error).foregroundStyle(.red).frame(height: 100) }
+            else { ProgressView("正在准备本地视频预览…").frame(height: 100) }
+            HStack {
+                Text("入点（秒）")
+                TextField("入点", value: $start, format: .number.precision(.fractionLength(3))).frame(width: 100)
+                Text("出点（秒）")
+                TextField("出点", value: $end, format: .number.precision(.fractionLength(3))).frame(width: 100)
+            }
+            HStack {
+                Text(String(format: "原声 %.0f%%", gain * 100))
+                Slider(value: $gain, in: 0...1).onChange(of: gain) { _, value in player?.volume = Float(value) }
+                Button("静音") { gain = 0 }
+            }
+            Text(String(format: "源视频 %.3f 秒；片段边界向内对齐至 30 fps。", Double(request.initial.sourceDurationMs) / 1000))
+                .font(.caption).foregroundStyle(.secondary)
+            if clip == nil { Text("请输入源视频范围内、至少包含一帧的有效片段。").foregroundStyle(.red).font(.caption) }
+            HStack {
+                Button("播放选定片段") {
+                    guard let clip, let player else { return }
+                    Task { @MainActor in
+                        player.pause()
+                        player.currentItem?.forwardPlaybackEndTime = CMTime(value: clip.outPointMs, timescale: 1000)
+                        await player.seek(to: CMTime(value: clip.inPointMs, timescale: 1000), toleranceBefore: .zero, toleranceAfter: .zero)
+                        guard isOpen else { return }
+                        player.volume = Float(gain); player.play()
+                    }
+                }.disabled(!ready || clip == nil)
+                Spacer()
+                Button("取消", action: cancel).keyboardShortcut(.cancelAction)
+                Button("使用片段") { if let clip { save(clip) } }.disabled(!ready || clip == nil).keyboardShortcut(.defaultAction)
+            }
+        }.padding(20).frame(width: 620)
+        .task {
+            let root = FileManager.default.temporaryDirectory.appendingPathComponent("ImageAllStoryClip-" + UUID().uuidString, isDirectory: true)
+            directory = root
+            do {
+                try FileManager.default.createDirectory(at: root, withIntermediateDirectories: false)
+                let frozen = try await load(root.appendingPathComponent("preview.mov"))
+                try Task.checkCancellation()
+                let asset = AVURLAsset(url: frozen.url)
+                let duration = try await asset.load(.duration)
+                guard duration.isNumeric, duration.seconds.isFinite, duration.seconds > 0,
+                      duration.seconds < Double(Int64.max / 1000),
+                      Int64((duration.seconds * 1000).rounded(.down)) == request.initial.sourceDurationMs,
+                      frozen.contentRevision == request.candidate.contentRevision,
+                      !(try await asset.loadTracks(withMediaType: .video)).isEmpty else {
+                    throw TimeStoryError.renderingFailed("视频时长、内容版本或视频轨已变化，请刷新候选后重试")
+                }
+                try Task.checkCancellation()
+                guard isOpen else { return }
+                player = AVPlayer(playerItem: AVPlayerItem(asset: asset)); player?.volume = Float(gain); ready = true
+            } catch {
+                if !Task.isCancelled { self.error = error.localizedDescription }
+                try? FileManager.default.removeItem(at: root)
+            }
+        }
+        .onDisappear {
+            isOpen = false; player?.pause(); player?.replaceCurrentItem(with: nil); player = nil
+            if let directory { try? FileManager.default.removeItem(at: directory) }
         }
     }
 }

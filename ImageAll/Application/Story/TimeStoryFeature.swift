@@ -253,7 +253,7 @@ struct TimeStoryProject: Codable, Sendable, Equatable, Identifiable {
     }
 
     var timelineDurationSeconds: Double {
-        (try? TimeStoryTimeline.normalize(project: self).durationSeconds) ?? 0
+        (try? TimeStoryTimeline.normalize(project: self, allowsVideoClips: true).durationSeconds) ?? 0
     }
 
     var timelineFrameCount: Int {

@@ -1,4 +1,5 @@
 import AppKit
+import SwiftUI
 @preconcurrency import AVFoundation
 import CryptoKit
 import GRDB
@@ -149,6 +150,76 @@ final class TimeStoryFeatureTests: XCTestCase {
         XCTAssertEqual(snapshot.candidates.filter { $0.availability == .available }.count, 21)
         XCTAssertTrue(snapshot.candidates.filter { $0.availability == .available }
             .allSatisfy { $0.mediaCreatedAtMs != nil })
+    }
+
+    @MainActor
+    func testWorkspaceVideoClipRequestApplyAndPhotoDurationProtection() async throws {
+        let root = try temporaryDirectory("story-clip-ui")
+        let database = try CatalogDatabase.open(at: root.appendingPathComponent("catalog.sqlite"))
+        var video = candidate(UUID().uuidString, time: timestamp(2024, 1, 1))
+        video.mediaKind = .video; video.durationMs = 1000
+        let project = TimeStoryPlanner().makeFreeformProject(snapshot: makeSnapshot([video]), nowMs: 1)
+        let source = root.appendingPathComponent("moving.mp4")
+        try await FixtureMixedStoryMedia.makeMovingVideo(at: source)
+        let media = FixtureMixedStoryMedia(images: [:], video: source)
+        let exporter = StoryRenderPackageExporter(media: media, validator: PassingStoryValidator())
+        let roots = FixtureOpenMontageRootProvider(root: root)
+        let runtime = TimeStoryFeatureRuntime(
+            candidates: TimeStoryCandidateProvider(database: database, query: GRDBAssetCatalogQueryRepository(database: database)),
+            planner: TimeStoryPlanner(), store: TimeStoryProjectStore(applicationSupportDirectory: root),
+            validator: PassingStoryValidator(), renderer: AVFoundationTimeStoryRenderer(media: media, temporaryDirectory: root),
+            packageExporter: exporter, openMontageTasks: FileOpenMontageStoryTaskClient(rootProvider: roots, packageExporter: exporter, installationID: "fixture"),
+            creativeRootProvider: roots, media: media, clock: SystemJobClock())
+        let model = TimeStoryWorkspaceModel(verificationRuntime: runtime,
+            tag: TagListItem(id: project.subjectTagID, displayName: "Synthetic", state: .active), project: project, thumbnails: [:])
+        await model.addCandidate(video)
+        XCTAssertTrue(model.project?.shots.isEmpty == true)
+        let request = try XCTUnwrap(model.videoClipRequest)
+        let resource = try await model.prepareClipPreview(request, destination: root.appendingPathComponent("preview.mov"))
+        XCTAssertEqual(resource.contentRevision, video.contentRevision)
+        var loaded = false
+        let host = NSHostingView(rootView: StoryVideoClipEditor(request: request,
+            load: { destination in
+                let value = try await model.prepareClipPreview(request, destination: destination)
+                loaded = true
+                return value
+            }, save: { model.applyVideoClip(request, clip: $0) }, cancel: { model.videoClipRequest = nil })
+            .frame(width: 660, height: 560).background(Color(nsColor: .windowBackgroundColor)))
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 660, height: 560), styleMask: [.titled], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.contentView = host
+        window.orderFront(nil)
+        defer { window.close() }
+        for _ in 0..<30 where !loaded { try await Task.sleep(for: .milliseconds(100)) }
+        XCTAssertTrue(loaded)
+        try await Task.sleep(for: .milliseconds(300))
+        host.layoutSubtreeIfNeeded()
+        let bitmap = try XCTUnwrap(host.bitmapImageRepForCachingDisplay(in: host.bounds))
+        host.cacheDisplay(in: host.bounds, to: bitmap)
+        let png = try XCTUnwrap(bitmap.representation(using: .png, properties: [:]))
+        XCTAssertGreaterThan(png.count, 5000)
+        if let directory = ProcessInfo.processInfo.environment["IMAGEALL_VIDEO_EVIDENCE_DIR"] {
+            let target = URL(fileURLWithPath: directory)
+            try FileManager.default.createDirectory(at: target, withIntermediateDirectories: true)
+            try png.write(to: target.appendingPathComponent("story-video-clip-editor.png"))
+        }
+        let clip = TimeStoryVideoClip(inPointMs: 200, outPointMs: 800, sourceDurationMs: 1000, originalAudioGain: 0.25)
+        model.applyVideoClip(request, clip: clip)
+        let shot = try XCTUnwrap(model.project?.shots.first)
+        XCTAssertEqual(shot.videoClip, clip)
+        XCTAssertEqual(shot.durationSeconds, 0.6, accuracy: 0.0001)
+        XCTAssertGreaterThan(model.project?.timelineDurationSeconds ?? 0, 0)
+        XCTAssertNil(model.videoClipRequest)
+        model.setDuration(shot.id, seconds: 10)
+        model.editShots([shot.id], duration: 10)
+        XCTAssertEqual(model.project?.shots.first?.durationSeconds, 0.6)
+        model.editVideoClip(shot.id)
+        XCTAssertEqual(model.videoClipRequest?.initial, clip)
+        model.setMusic(url: root.appendingPathComponent("tone.wav"))
+        model.setMusicVolume(0.5)
+        XCTAssertEqual(model.project?.music?.volume, 0.5)
+        model.setMusicVolume(2)
+        XCTAssertEqual(model.project?.music?.volume, 0.5)
     }
 
     func testManualVideoCandidatesRequireExplicitClipsAndAllowDistinctSegments() throws {

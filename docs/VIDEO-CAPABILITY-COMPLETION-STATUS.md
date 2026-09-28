@@ -662,3 +662,11 @@
 - `story-audio-build-repair.log` TEST BUILD SUCCEEDED；`story-audio-tests-final.log` 4/4 PASS：实际有声视频裁剪到0.6秒、原声/0.25增益/静音/叠加配乐PCM测量，混合运动、无原声轨、旧照片配乐、旧包回归。另由ffprobe/ffmpeg独立验证6个MP4：四分之一幅度比0.249906，静音无音轨，输出0.6秒。
 - 证据目录 `story-audio/` 保存 source/original/quarter/muted/original-and-muted-music/original-and-music.mp4、measurements.json 与含逐文件SHA的 independent-verification.json。测量来自合成440Hz音源，不代表复杂音乐混音质量或真实媒体验收。
 - 下一步接 Mac 片段预览/范围/原声及配乐控件，再完成混合包/OpenMontage协议和实际成片综合验证；整体 active，P6未完成。
+
+## P6 Mac 显式片段窗口与音量入口（2026-09-28）
+
+- 视频候选加入改为先打开片段窗口，不直接套用照片时长；窗口受控冻结本地预览、校验实际时长/修订/视频轨，支持入点/出点、范围播放、原声音量/静音和确认。关闭时停止播放器、释放项目并清理临时目录；请求绑定项目身份，确认再次核对候选及修订。
+- 视频镜头提供“预览与编辑视频片段”，修改后派生时长并保留人工编辑标志；单个/批量照片时长操作跳过视频。替换成照片清除旧videoClip；同源视频可继续加入新片段。新配乐显式默认0.22，菜单可设置0/0.1/0.22/0.5/1，非法值拒绝。
+- 混合故事总时长和分镜预览采用片段时间轴；分镜仍使用缩略图，界面明确引导从片段窗口播放真实内容，未冒称整条时间线已实时播放视频。
+- `story-clip-ui-build-final.log` TEST BUILD SUCCEEDED；`story-clip-ui-tests.log` 3/3 PASS：模型从请求选片到受控预览/确认写入/再次编辑，照片时长保护、配乐音量校验、已有输入锁和手动多片段回归。独立原生窗口加载实际合成视频资源，截图 `story-clip-ui/story-video-clip-editor.png` 已目视检查布局；AVPlayer图层未进入NSHostingView位图，截图黑区不作为播放画面证据，未自动点击全部控件。
+- 下一步混合包/OpenMontage协议升级、必要端到端操作与渲染验证。完整时间线视频预览能力及窗口取消/快速切换等运行证据继续纳入P7审计。整体 active，未真实媒体访问、未push。
