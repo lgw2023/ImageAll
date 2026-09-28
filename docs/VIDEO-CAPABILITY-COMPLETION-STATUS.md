@@ -700,3 +700,12 @@
 - `story-mixed-render/acceptance.log` 实际成功：照片1秒+源视频0.5...1.5秒，H264视频轨60帧/2秒、AAC音轨；两视频帧像素平均差17.314，照片段RMS=0，视频0.5增益每声道RMS=0.044095。容器2.048秒来自AAC尾部填充，未把容器时长冒称严格2秒。首轮检查错误使用单声道混合测幅，改为保留声道后验证；错误日志保留。
 - 证据 `story-mixed-render/reproducible/` 保存mixed.mp4、props.json、facts.json、verification.json和video-frame.png；实际解码帧已目视检查。可重复成片SHA256=7049cc6a69b1d1d6605c5051d40428220cf9c1aac904f9cce67f4906fdf14d07。本轮为320×240合成主路径，不代表复杂转场/模糊背景/多音轨完整验收。
 - 尚未接生产executor、统一能力广告或Swift混合包导出；下一步完成这些接线并验证完整任务。P6/整体 active，未使用Photos测试宿主、真实媒体或付费模型，未push。
+
+## P6 既有适配器完整渲染流程接入0.2（2026-09-28）
+
+- 新增 `mixed_story_engine_patch.py`，安装到独立可写引擎并拒绝Runtime种子；保留0.1原校验，0.2转入严格文档/实际资源校验和FD冻结复制。既有asset/edit schema扩展视频及片段字段，资源元数据、片段范围/增益/音轨事实纳入一致性投影，环境与artifact记录实际schema摘要。
+- 修复既有渲染链只按“有无配乐”决定mute/audio_presence的问题：视频原声独立计入是否应有音轨，静音片段不计入；原声音轨也检查实际时长。含原声时不以总混音波形代替配乐fade测量，复杂混音fade仍待专门验收。
+- 通过实际validate_story_package→prepare_story_run→一致性报告→VideoCompose/Remotion→全片FFmpeg解码→成片核验→succeeded与render_report，未替换成简化假执行器。视频unsafe cover沿用既有照片适配规则，若归一化后与原意不符，一致性门禁会拒绝继续。
+- `verify_mixed_story_engine.py` 在独立副本完成三次真实渲染：mixed 60帧/2秒、有AAC原声（音轨2.048秒）；muted 60帧/2秒、无音轨；legacy-photo 30帧/1秒、无音轨。所有媒体检查pass，修改入帧后一致性fail、恢复后pass。另 `python-regressions.log` 11/11 PASS。
+- 证据 `story-mixed-engine/verified-runs/acceptance.json` 列出三次任务目录，每次保留原始/语义包、冻结媒体、转换参数、一致性/完整解码/媒体报告和实际MP4；日志 `adapter-final.log`。独立副本Chrome配置用于本次验收，不写入生产配置。
+- 任务协议广告/封套仍限定0.1，Swift导出尚未启用0.2；本轮证明适配器完整渲染流程，不冒称App完整任务已交付。下一步统一版本身份、接executor能力与Mac导出。整体 active，未真实媒体访问、未修改并行工作、未push。
