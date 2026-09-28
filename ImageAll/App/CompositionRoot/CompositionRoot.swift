@@ -632,6 +632,8 @@ struct CompositionRoot {
             hostAppVersion: BundleAppVersionProvider().currentVersion()
         )
         PhoneArchiveImportProcessHolder.recoverPreparedOutboundMacTagDecisions()
+        workspaceModel.videoAnalysisService = FolderVideoAnalysisService(
+            database: runtime.database, sourceAccess: sourceAccess, clock: clock)
         return workspaceModel
     }
 

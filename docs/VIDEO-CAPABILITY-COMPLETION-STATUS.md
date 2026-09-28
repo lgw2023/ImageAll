@@ -517,3 +517,10 @@
 - VideoMultiFrameFeatureSet 复用现有 Vision 生成器，保存帧级特征/时间点及归一化均值资产向量，独立身份拒绝旧 poster 模型输入。双向帧覆盖提供独立内容候选分数和最佳帧对证据，不写去重证据。
 - 构建 `video-frame-features-build.log` 成功，`video-frame-features-tests.log` 2/2 PASS；真实三帧 Vision 输出 768 维。人工向量的封面覆盖对照不代表真实语义对照通过。
 - P5 仍 IN_PROGRESS：未接生产训练/推理、向量/建议证据持久化、Photos 多帧、策略入口、审核跳转或候选列表；下一轮应优先形成 Mac 可操作的显式多帧分析与证据查看纵向闭环，再收训练一致性与语义验收。
+
+## P5 Mac 主动分析与证据定位入口（2026-09-28）
+
+- CompositionRoot 将 FolderVideoAnalysisService 接入 Mac 查看器。用户主动点击后后台执行有界采样/缓存/Vision，显示代表帧、实际时间点、缓存复用数和向量维数；取消、换媒体、离开页面或 App 失活会取消等待，迟到结果以请求和媒体身份隔离。
+- 当前入口仅允许详情匹配且时长有效的文件夹视频；Photos 多帧尚未接入。点击帧会核对当前播放器身份和时长，再精确 seek 并保持暂停。操作不生成正式标签建议、不启用旧模型、不写精确去重证据。
+- `video-analysis-ui-build-final.log` TEST BUILD SUCCEEDED；`video-analysis-ui-tests.log` 4/4 PASS，覆盖实际合成视频 0.5s 定位、错误身份/越界/停止拒绝、播放器释放、缓存续跑和真实 Vision。此为服务与播放器运行证据，整页渲染和人工按钮点击仍未验；不称 P5 闭环全部完成。
+- LibraryWorkspace 仅新增服务注入属性，其他 75/5 并行变更保留，project 4/0 保留。下一步补齐代表帧界面证据、策略重建入口和语义对照，再完成正式模型/建议持久化、Photos 多帧与独立内容候选。整体 active。

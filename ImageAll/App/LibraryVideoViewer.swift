@@ -109,6 +109,18 @@ final class LibraryVideoViewingSession: ObservableObject {
         if player.rate == 0 { player.play() } else { player.pause() }
     }
 
+    func seekToAnalysisTime(_ milliseconds: Int64, expected: Identity) async -> Bool {
+        guard identity == expected, state == .ready, milliseconds >= 0,
+              let item = player.currentItem else { return false }
+        let duration = try? await item.asset.load(.duration)
+        guard identity == expected, state == .ready,
+              let duration, duration.isNumeric, Double(milliseconds) / 1_000 < duration.seconds else { return false }
+        player.pause()
+        let completed = await player.seek(to: CMTime(value: milliseconds, timescale: 1_000),
+                                          toleranceBefore: .zero, toleranceAfter: .zero)
+        return completed && identity == expected && state == .ready
+    }
+
     func setSpeed(_ value: Float) {
         guard [Float(0.5), 1, 1.5, 2].contains(value) else { return }
         speed = value
@@ -183,6 +195,10 @@ struct LibraryVideoViewer: View {
     let contentRevision: Int
     @ObservedObject var model: LibraryWorkspaceModel
     @ObservedObject private var session: LibraryVideoViewingSession
+    @State private var analysisTask: Task<Void, Never>?
+    @State private var analysisRequest: UUID?
+    @State private var analysisFrames: [VideoAnalysisFrame] = []
+    @State private var analysisMessage: String?
     @State private var reloadGeneration = 0
     @State private var showsTechnicalInformation = false
     @State private var confirmsCloudDownload = false
@@ -204,6 +220,82 @@ struct LibraryVideoViewer: View {
         await model.recordVideoTechnicalMetadataForViewing(
             assetID: assetID, expectedRevision: contentRevision, metadata: metadata
         )
+    }
+
+    private func cancelAnalysis() {
+        analysisRequest = nil
+        analysisTask?.cancel()
+        analysisTask = nil
+    }
+
+    private func analyzeVideo() {
+        guard let service = model.videoAnalysisService else { return }
+        cancelAnalysis()
+        analysisFrames = []
+        analysisMessage = nil
+        let request = UUID()
+        let selected = identity
+        analysisRequest = request
+        analysisTask = Task { @MainActor in
+            let worker = Task.detached(priority: .userInitiated) {
+                let sampling = try service.analyze(assetID: selected.assetID, expectedRevision: selected.revision,
+                    checkCancellation: { try Task.checkCancellation() })
+                let features = try VideoMultiFrameFeatureSet.generate(sampling,
+                    checkCancellation: { try Task.checkCancellation() })
+                return (sampling, features.aggregate.count)
+            }
+            do {
+                let (sampling, dimensions) = try await withTaskCancellationHandler {
+                    try await worker.value
+                } onCancel: { worker.cancel() }
+                guard !Task.isCancelled, analysisRequest == request, identity == selected else { return }
+                analysisFrames = sampling.frames
+                analysisMessage = "分析 \(sampling.frames.count) 帧 · 复用 \(sampling.reusedFrameCount) 帧 · \(dimensions) 维特征。点击时间点定位播放。"
+            } catch {
+                guard analysisRequest == request, !Task.isCancelled else { return }
+                analysisMessage = "无法完成多帧分析。当前入口支持可读取的本地文件夹视频；请检查来源、时长及内容是否发生变化。"
+            }
+            if analysisRequest == request { analysisTask = nil; analysisRequest = nil }
+        }
+    }
+
+    private var analysisEvidence: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                Button(analysisFrames.isEmpty ? "多帧分析" : "重新分析（复用有效帧）") { analyzeVideo() }
+                    .disabled(model.videoAnalysisService == nil || analysisTask != nil || session.state != .ready
+                        || model.inspectorDetail?.assetID != assetID || model.inspectorDetail?.relativePath == nil
+                        || (model.inspectorDetail?.durationMs ?? 0) <= 0)
+                if analysisTask != nil {
+                    ProgressView().controlSize(.small)
+                    Button("取消分析") { cancelAnalysis(); analysisMessage = "已取消，可再次分析以复用有效检查点。" }
+                }
+                Text("文件夹视频 · 最多 5 帧 · 仅主动分析").font(.caption).foregroundStyle(.secondary)
+            }
+            if let analysisMessage { Text(analysisMessage).font(.caption).foregroundStyle(.secondary) }
+            if !analysisFrames.isEmpty {
+                ScrollView(.horizontal) {
+                    HStack(spacing: 8) {
+                        ForEach(analysisFrames, id: \.actualTimeMs) { frame in
+                            Button {
+                                Task { @MainActor in
+                                    if !(await session.seekToAnalysisTime(frame.actualTimeMs, expected: identity)) {
+                                        analysisMessage = "当前视频无法定位，请重新载入后再试。"
+                                    }
+                                }
+                            } label: {
+                                VStack {
+                                    if let image = NSImage(data: frame.jpegBytes) {
+                                        Image(nsImage: image).resizable().scaledToFit().frame(width: 96, height: 60)
+                                    }
+                                    Text(String(format: "%.3f 秒", Double(frame.actualTimeMs) / 1_000)).font(.caption.monospacedDigit())
+                                }
+                            }.buttonStyle(.bordered)
+                        }
+                    }
+                }.frame(height: 94)
+            }
+        }.padding(.horizontal, 12).padding(.bottom, 8)
     }
 
     var body: some View {
@@ -281,6 +373,7 @@ struct LibraryVideoViewer: View {
             }
             .padding(.horizontal, 12)
             .padding(.bottom, 8)
+            analysisEvidence
         }
         .accessibilityIdentifier("libraryVideoViewer")
         .task(id: "\(assetID):\(contentRevision):\(reloadGeneration)") {
@@ -311,8 +404,12 @@ struct LibraryVideoViewer: View {
         } message: {
             Text("将使用网络获取此视频原件，可能消耗流量与本机空间。最多处理一个当前视频，不会批量下载；空间不足时会停止并提示。你可以取消等待。Photos 已接收的本地缓存由系统管理。")
         }
-        .onDisappear { session.stop(ifMatching: identity) }
+        .onChange(of: identity) { _, _ in
+            cancelAnalysis(); analysisFrames = []; analysisMessage = nil
+        }
+        .onDisappear { cancelAnalysis(); session.stop(ifMatching: identity) }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didResignActiveNotification)) { _ in
+            cancelAnalysis()
             session.stop(ifMatching: identity)
         }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in

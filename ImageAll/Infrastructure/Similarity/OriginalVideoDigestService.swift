@@ -345,15 +345,16 @@ extension PhotosOriginalVideoDigestService {
 
 /// Folder analysis checkpoints use the same no-follow physical identity as full
 /// original verification, without rereading the entire movie for every frame.
-struct FolderVideoAnalysisService {
+struct FolderVideoAnalysisService: Sendable {
     let database: CatalogDatabase
     let sourceAccess: FolderReconcileSourceAccessService
     let clock: any JobClock
 
-    func analyze(assetID: UUID, checkCancellation: () throws -> Void = {},
+    func analyze(assetID: UUID, expectedRevision: Int? = nil, checkCancellation: () throws -> Void = {},
                  onFrame: (VideoAnalysisFrame) throws -> Void = { _ in }) throws -> VideoAnalysisSamplingResult {
         let repository = GRDBDerivedImageCacheRepository(database: database)
         guard let context = try repository.fetchGenerationContext(assetID: assetID),
+              expectedRevision == nil || context.contentRevision == expectedRevision,
               context.isEligibleForGeneration, context.mediaKind == .video,
               context.locatorKind == AssetLocatorKind.file.rawValue,
               let duration = context.durationMs, duration > 0 else {

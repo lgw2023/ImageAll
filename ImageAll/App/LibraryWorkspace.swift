@@ -1782,6 +1782,7 @@ final class LibraryWorkspaceModel: ObservableObject {
     private let assetPathClipboard: any LibraryAssetPathClipboardWriting
     private let originalAssetOpener: any LibraryOriginalAssetOpening
     let videoViewingSession = LibraryVideoViewingSession()
+    var videoAnalysisService: FolderVideoAnalysisService?
     private let videoPlaybackProvider: any LibraryVideoPlaybackProviding
     private let timeStoryRuntime: TimeStoryFeatureRuntime?
     private let sourceOrderPreferences: LibrarySourceOrderPreferences

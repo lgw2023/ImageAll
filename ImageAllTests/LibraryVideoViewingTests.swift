@@ -12,6 +12,23 @@ final class LibraryVideoViewingTests: XCTestCase {
             .appendingPathComponent("docs/evidence/time-story-phase-1-20260918/synthetic-silent.mp4")
     }
 
+    func testAnalysisEvidenceTimeSeeksOnlyMatchingReadyVideo() async throws {
+        let session = LibraryVideoViewingSession()
+        let identity = LibraryVideoViewingSession.Identity(assetID: UUID(), revision: 1)
+        await session.load(identity: identity) { LibraryVideoPlaybackResource(url: self.syntheticVideo) {} }
+        let success = await session.seekToAnalysisTime(500, expected: identity)
+        XCTAssertTrue(success)
+        XCTAssertEqual(session.player.currentTime().seconds, 0.5, accuracy: 0.04)
+        XCTAssertEqual(session.player.rate, 0)
+        let wrong = await session.seekToAnalysisTime(500, expected: .init(assetID: UUID(), revision: 1))
+        XCTAssertFalse(wrong)
+        let beyond = await session.seekToAnalysisTime(99_000, expected: identity)
+        XCTAssertFalse(beyond)
+        session.stop()
+        let stopped = await session.seekToAnalysisTime(500, expected: identity)
+        XCTAssertFalse(stopped)
+    }
+
     func testSyntheticVideoLoadsSeeksAndReleasesOnceWhenClosed() async throws {
         let session = LibraryVideoViewingSession()
         let releases = ReleaseCount()
