@@ -31,7 +31,7 @@
 | P2 | IN_PROGRESS | 首切片 PASS | 文件夹元数据、查询／地图／回填、原生云端获取及 PhotoKit 播放后技术信息持久化已分切片验；Mac 智能推流与完整 UI 待验 |
 | P3 | IN_PROGRESS | 共享服务到真实质心模型和持久审核链 PASS；Mac 运行待验 | 继续全库建议、训练命令与审核持久事实闭环 |
 | P4 | VERIFIED（合成） | 完整原件／分组／安全清理与恢复、原生比较渲染通过 | 实现及最小合成验收已覆盖；真实 Photos／iCloud、日常配置点击和最终版本总回归仍未验证，见 P7 |
-| P5 | NOT_STARTED | NOT_RUN | 版本化有限多帧与时间点证据、内容相似独立候选 |
+| P5 | IN_PROGRESS | 采样首切片 2/2 PASS | 独立版本有界采样已验；缓存、模型聚合、审核时间点和候选接线待完成 |
 | P6 | NOT_STARTED | NOT_RUN | 显式片段与原声规则，合成混合故事可解码验证 |
 | P7 | NOT_STARTED | NOT_RUN | 必需集成、最终构建与人工路线 |
 
@@ -498,3 +498,10 @@
 - 证据根新增 `p4-manual-video-fixture/`，包含三份小型合成 MP4、SHA manifest 和 Xcode 最短手工路线 README。只创建任务专属合成文件，未自动把目录接入日常 App。源码和 PNG 摘要见 `video-comparison-source-sha256.json`。
 - P4 最小验收覆盖：独立原件 provenance／新 migration；文件夹和 PhotoKit 本地流式摘要与取消、版本复核；同封面与容器改写不误入字节组；比较、收藏／编辑保留、授权、回收及恢复语义。工程状态更新为 VERIFIED（仅已列合成范围）。真实图库、Photos／iCloud 系统操作、日常 Xcode 点击、发布验收均保持 NOT_RUN。
 - 依据端到端优先规则，后续转 P5 的确定性有限多帧与时间点证据；全 App 合成操作复核和最终版本回归在 P7 统一收口，不重复每个切片已稳定的矩阵。P1–P3 的剩余项及 P5–P7 均不因 P4 通过而省略，整体目标 active。
+
+## P5 有限多帧采样首切片（2026-09-28）
+
+- 决策见 ADR-VIDEO-MULTIFRAME-ANALYSIS.md。新 `videoFrames.uniform5.512.jpeg80.v1` 与旧封面生成器隔离；最多 5 次请求、512 像素最长边、8 MiB 编码总量上限，短视频请求间隔去重，保存实际解码时间和跳过记录。全失败、预算超限和取消不返回成功结果。
+- `video-multiframe-sampler-build.log`：TEST BUILD SUCCEEDED；`video-multiframe-sampler-tests.log`：2/2 PASS（真实合成 MP4 多帧及取消、P4 容器改写回归）。本次 1 秒输入请求／解码 3 帧，实际时间 [33, 500, 733] ms，JPEG 共 22,294 字节，采样 0.139826 秒，仅作为该 fixture 的测量。
+- 未调用真实 Photos、生产测试宿主或付费模型。此层尚无 App 按钮、持久缓存、特征聚合或建议输出，不作为 P5 用户闭环完成证据。同步 AVFoundation 解码内部资源及中断延迟尚无硬上限；取消点位于帧间／解码后。
+- 下一步接入带修订与策略身份的帧持久化及图像特征，构造前段无目标／后段有目标、同封面不同内容对照，然后接 Mac 详情／审核时间点和独立内容候选。训练与推理身份一致、策略切换重建仍是 P5 必需项。

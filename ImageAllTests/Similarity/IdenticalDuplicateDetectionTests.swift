@@ -8,6 +8,37 @@ import XCTest
 @testable import ImageAll
 
 final class IdenticalDuplicateDetectionTests: XCTestCase {
+    func testBoundedVideoAnalysisSamplesRealFramesAndCancelsWithoutResult() throws {
+        let fixture = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+            .deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("docs/evidence/time-story-phase-1-20260918/synthetic-silent.mp4")
+        let sampler = AVFoundationVideoAnalysisSampler()
+        let result = try sampler.sample(sourceFileDescriptorURL: fixture,
+            mediaType: "public.mpeg-4", durationMs: 1_000)
+        XCTAssertEqual(result.policyIdentity, "videoFrames.uniform5.512.jpeg80.v1")
+        XCTAssertGreaterThanOrEqual(result.frames.count, 3)
+        XCTAssertLessThanOrEqual(result.attemptedFrameCount, 5)
+        XCTAssertEqual(Set(result.frames.map(\.actualTimeMs)).count, result.frames.count)
+        XCTAssertLessThanOrEqual(result.encodedByteCount, VideoAnalysisSamplingPolicy.maximumEncodedBytes)
+        for frame in result.frames {
+            let source = try XCTUnwrap(CGImageSourceCreateWithData(frame.jpegBytes as CFData, nil))
+            let image = try XCTUnwrap(CGImageSourceCreateImageAtIndex(source, 0, nil))
+            XCTAssertLessThanOrEqual(max(image.width, image.height), 512)
+            XCTAssertLessThanOrEqual(abs(frame.requestedTimeMs - frame.actualTimeMs), 100)
+        }
+        print("VIDEO_MULTIFRAME_MEASUREMENT frames=\(result.frames.count) attempts=\(result.attemptedFrameCount) bytes=\(result.encodedByteCount) seconds=\(result.elapsedSeconds) actualMs=\(result.frames.map(\.actualTimeMs))")
+        var checks = 0
+        XCTAssertThrowsError(try sampler.sample(sourceFileDescriptorURL: fixture,
+            mediaType: "public.mpeg-4", durationMs: 1_000, checkCancellation: {
+                checks += 1
+                if checks == 4 { throw CancellationError() }
+            })) { XCTAssertTrue($0 is CancellationError) }
+        XCTAssertEqual(checks, 4)
+        XCTAssertEqual(VideoAnalysisSamplingPolicy.timestamps(durationMs: 100), [0])
+        XCTAssertEqual(VideoAnalysisSamplingPolicy.timestamps(durationMs: 0), [])
+        XCTAssertEqual(VideoAnalysisSamplingPolicy.timestamps(durationMs: 10_000), [500, 2_500, 5_000, 7_500, 9_500])
+    }
+
     func testPlayableVideoContainerRewriteIsNotByteIdentical() async throws {
         let env = try SimilarityTestSupport.Environment(label: #function)
         defer { env.cleanup() }

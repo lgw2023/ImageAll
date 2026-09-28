@@ -71,6 +71,117 @@ struct AVFoundationDerivedVideoPosterGenerator: DerivedVideoPosterGenerating {
     }
 }
 
+/// Analysis input is distinct from videoPoster.v1. Changes to sampling, scale or
+/// encoding must use a new identity so persisted features cannot be mixed.
+enum VideoAnalysisSamplingPolicy {
+    static let identity = "videoFrames.uniform5.512.jpeg80.v1"
+    static let maximumFrameCount = 5
+    static let maximumPixelSize = 512
+    static let maximumEncodedBytes = 8 * 1_024 * 1_024
+
+    static func timestamps(durationMs: Int64) -> [Int64] {
+        guard durationMs > 0 else { return [] }
+        // Stay inside the last frame and avoid repeated requests in short clips.
+        let last = max(0, durationMs - min(100, durationMs))
+        let fractions = [0.05, 0.25, 0.5, 0.75, 0.95]
+        var result: [Int64] = []
+        for fraction in fractions {
+            let time = min(last, Int64(Double(durationMs) * fraction))
+            if let previous = result.last, time - previous < 250 { continue }
+            result.append(time)
+        }
+        return result
+    }
+}
+
+struct VideoAnalysisFrame: Sendable {
+    let requestedTimeMs: Int64
+    let actualTimeMs: Int64
+    let jpegBytes: Data
+}
+
+struct VideoAnalysisSamplingResult: Sendable {
+    let policyIdentity: String
+    let frames: [VideoAnalysisFrame]
+    let attemptedFrameCount: Int
+    let skippedRequestTimesMs: [Int64]
+    let elapsedSeconds: Double
+    var encodedByteCount: Int { frames.reduce(0) { $0 + $1.jpegBytes.count } }
+}
+
+enum VideoAnalysisSamplingError: Error {
+    case invalidInput, noDecodableFrames, encodedBudgetExceeded
+}
+
+struct AVFoundationVideoAnalysisSampler {
+    /// The caller owns the already-authorized, revision-checked local descriptor.
+    /// No remote URL, Photos fetch, original mutation or persistent cache is used.
+    func sample(sourceFileDescriptorURL: URL, mediaType: String, durationMs: Int64,
+                checkCancellation: () throws -> Void = {}) throws -> VideoAnalysisSamplingResult {
+        let times = VideoAnalysisSamplingPolicy.timestamps(durationMs: durationMs)
+        guard sourceFileDescriptorURL.isFileURL, !times.isEmpty,
+              let ext = UTType(mediaType)?.preferredFilenameExtension, !ext.isEmpty else {
+            throw VideoAnalysisSamplingError.invalidInput
+        }
+        try checkCancellation()
+        let started = ProcessInfo.processInfo.systemUptime
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("ImageAllVideoAnalysis-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let decoderURL = directory.appendingPathComponent("source").appendingPathExtension(ext)
+        try FileManager.default.createSymbolicLink(at: decoderURL, withDestinationURL: sourceFileDescriptorURL)
+        let generator = AVAssetImageGenerator(asset: AVURLAsset(url: decoderURL))
+        generator.appliesPreferredTrackTransform = true
+        generator.maximumSize = CGSize(width: VideoAnalysisSamplingPolicy.maximumPixelSize,
+                                       height: VideoAnalysisSamplingPolicy.maximumPixelSize)
+        generator.requestedTimeToleranceBefore = .zero
+        generator.requestedTimeToleranceAfter = .zero
+        defer { generator.cancelAllCGImageGeneration() }
+        var frames: [VideoAnalysisFrame] = []
+        var skipped: [Int64] = []
+        var totalBytes = 0
+        for time in times {
+            try checkCancellation()
+            // Release decoder/image intermediates after each bounded frame.
+            let frame: VideoAnalysisFrame? = try autoreleasepool {
+                var actual = CMTime.invalid
+                let image: CGImage
+                do {
+                    image = try generator.copyCGImage(at: CMTime(value: time, timescale: 1_000), actualTime: &actual)
+                } catch {
+                    try checkCancellation()
+                    return nil
+                }
+                try checkCancellation()
+                guard actual.isNumeric, actual.seconds.isFinite, actual.seconds >= 0,
+                      actual.seconds <= Double(durationMs) / 1_000 else { return nil }
+                let actualMs = Int64((actual.seconds * 1_000).rounded())
+                guard !frames.contains(where: { $0.actualTimeMs == actualMs }) else { return nil }
+                let bytes = NSMutableData()
+                guard let destination = CGImageDestinationCreateWithData(bytes, UTType.jpeg.identifier as CFString, 1, nil)
+                else { throw DerivedImageError.derivedEncodeFailed }
+                CGImageDestinationAddImage(destination, image,
+                    [kCGImageDestinationLossyCompressionQuality: 0.8] as CFDictionary)
+                guard CGImageDestinationFinalize(destination) else { throw DerivedImageError.derivedEncodeFailed }
+                return VideoAnalysisFrame(requestedTimeMs: time, actualTimeMs: actualMs, jpegBytes: bytes as Data)
+            }
+            if let frame {
+                totalBytes += frame.jpegBytes.count
+                guard totalBytes <= VideoAnalysisSamplingPolicy.maximumEncodedBytes else {
+                    throw VideoAnalysisSamplingError.encodedBudgetExceeded
+                }
+                frames.append(frame)
+            } else { skipped.append(time) }
+        }
+        try checkCancellation()
+        guard !frames.isEmpty else { throw VideoAnalysisSamplingError.noDecodableFrames }
+        return VideoAnalysisSamplingResult(policyIdentity: VideoAnalysisSamplingPolicy.identity,
+            frames: frames, attemptedFrameCount: times.count, skippedRequestTimesMs: skipped,
+            elapsedSeconds: ProcessInfo.processInfo.systemUptime - started)
+    }
+}
+
 actor DerivedImageInFlightCoordinator {
     private var tasks: [DerivedImageCacheKey: Task<DerivedImagePayload, Error>] = [:]
 
