@@ -531,3 +531,9 @@
 - `video-content-controls-build.log` TEST BUILD SUCCEEDED；`video-content-controls-tests.log` 2/2 PASS。旧封面对参考余弦 0.524054，最佳帧对参考 0.991022，证据时间 3000 ms；同封面分数 1.000，整段多帧覆盖 0.752481。请求/解码 5 帧，JPEG 21,458 字节，采样 0.099672 秒（不包含 Vision 与写视频耗时）。
 - 证据根 `content-controls/` 保存三份 MOV、五张采样 JPEG、测量 JSON、SHA manifest 和 Xcode 手工路线；已目视核对 200ms 条纹与 3000ms 红圆。仅对这组合成几何图形成立，不是自然对象识别、真实库准确率或候选阈值证据。
 - P5 尚缺正式模型训练/推理身份贯通、结果证据持久化、Photos 多帧、明确策略切换/强制重建、内容候选服务/列表及原生完整 UI 验收；本轮不将这些缺口改为可选，整体目标 active。
+
+## P5 当前视频强制重建（2026-09-28）
+
+- Mac 多帧菜单提供“复用有效帧”和“强制重建当前视频分析帧”。强制重建只删除当前 asset/revision/policy/source-identity 的检查点，旧封面和精确去重表不变；不触发全库或其他视频分析。
+- `video-rebuild-build.log` TEST BUILD SUCCEEDED；`video-rebuild-tests.log` 2/2 PASS。提前取消保留 3 帧缓存；强制重建复用 0、重新解码 3；另一视频仍复用 3 帧；时间点定位回归通过。菜单人工点击/渲染未验证。
+- 强制重建入口已补齐；新旧训练/推理策略的完整切换仍未交付，不能以本菜单代替。P5 仍缺模型/建议与证据持久化、Photos 多帧、内容候选服务/列表和完整 UI 验收，整体 active。

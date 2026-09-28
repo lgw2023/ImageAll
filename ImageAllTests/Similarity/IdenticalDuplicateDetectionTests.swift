@@ -155,6 +155,16 @@ final class IdenticalDuplicateDetectionTests: XCTestCase {
         let warm = try service.analyze(assetID: item.assetID)
         XCTAssertEqual(warm.reusedFrameCount, 3)
         XCTAssertEqual(warm.attemptedFrameCount, 0)
+        let second = try env.seedAsset(relativePath: "second.mp4", contents: bytes,
+            mediaType: "public.mpeg-4", mediaKind: .video, durationMs: 1_000)
+        _ = try service.analyze(assetID: second.assetID)
+        XCTAssertThrowsError(try service.analyze(assetID: item.assetID, forceRebuild: true,
+            checkCancellation: { throw CancellationError() }))
+        XCTAssertEqual(try service.analyze(assetID: item.assetID).reusedFrameCount, 3)
+        let forced = try service.analyze(assetID: item.assetID, forceRebuild: true)
+        XCTAssertEqual(forced.reusedFrameCount, 0)
+        XCTAssertEqual(forced.attemptedFrameCount, 3)
+        XCTAssertEqual(try service.analyze(assetID: second.assetID).reusedFrameCount, 3)
         let cache = VideoAnalysisFrameCache(database: env.database, clock: base.clock)
         let key = VideoAnalysisFrameCache.Key(assetID: item.assetID, contentRevision: 1,
             policy: "future-policy", sourceIdentity: "unrelated-source")

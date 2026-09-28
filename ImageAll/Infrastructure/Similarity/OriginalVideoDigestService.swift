@@ -350,7 +350,7 @@ struct FolderVideoAnalysisService: Sendable {
     let sourceAccess: FolderReconcileSourceAccessService
     let clock: any JobClock
 
-    func analyze(assetID: UUID, expectedRevision: Int? = nil, checkCancellation: () throws -> Void = {},
+    func analyze(assetID: UUID, expectedRevision: Int? = nil, forceRebuild: Bool = false, checkCancellation: () throws -> Void = {},
                  onFrame: (VideoAnalysisFrame) throws -> Void = { _ in }) throws -> VideoAnalysisSamplingResult {
         let repository = GRDBDerivedImageCacheRepository(database: database)
         guard let context = try repository.fetchGenerationContext(assetID: assetID),
@@ -385,6 +385,7 @@ struct FolderVideoAnalysisService: Sendable {
                 }
             }
             try validate()
+            if forceRebuild { try cache.discardCurrentRepresentation(key: key) }
             let cached = try cache.frames(key: key)
             let result = try AVFoundationVideoAnalysisSampler().sample(
                 sourceFileDescriptorURL: DerivedImageSourceFingerprintFacts.fileDescriptorURL(for: fd),
@@ -415,6 +416,15 @@ struct VideoAnalysisFrameCache {
             [assetID.uuidString.lowercased(), contentRevision, policy, sourceIdentity]
         }
     }
+    func discardCurrentRepresentation(key: Key) throws {
+        try database.pool.write { db in
+            try db.execute(sql: """
+                DELETE FROM video_analysis_frame
+                WHERE asset_id = ? AND content_revision = ? AND policy = ? AND source_identity = ?
+                """, arguments: key.arguments)
+        }
+    }
+
     func frames(key: Key) throws -> [Int64: VideoAnalysisFrame] {
         try database.pool.read { db in
             let rows = try Row.fetchAll(db, sql: """

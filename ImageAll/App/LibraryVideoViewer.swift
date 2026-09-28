@@ -228,7 +228,7 @@ struct LibraryVideoViewer: View {
         analysisTask = nil
     }
 
-    private func analyzeVideo() {
+    private func analyzeVideo(forceRebuild: Bool = false) {
         guard let service = model.videoAnalysisService else { return }
         cancelAnalysis()
         analysisFrames = []
@@ -239,6 +239,7 @@ struct LibraryVideoViewer: View {
         analysisTask = Task { @MainActor in
             let worker = Task.detached(priority: .userInitiated) {
                 let sampling = try service.analyze(assetID: selected.assetID, expectedRevision: selected.revision,
+                    forceRebuild: forceRebuild,
                     checkCancellation: { try Task.checkCancellation() })
                 let features = try VideoMultiFrameFeatureSet.generate(sampling,
                     checkCancellation: { try Task.checkCancellation() })
@@ -262,10 +263,14 @@ struct LibraryVideoViewer: View {
     private var analysisEvidence: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack {
-                Button(analysisFrames.isEmpty ? "多帧分析" : "重新分析（复用有效帧）") { analyzeVideo() }
+                Menu {
+                    Button("分析当前视频（复用有效帧）") { analyzeVideo() }
+                    Button("强制重建当前视频分析帧") { analyzeVideo(forceRebuild: true) }
+                } label: { Label("多帧分析", systemImage: "film.stack") }
                     .disabled(model.videoAnalysisService == nil || analysisTask != nil || session.state != .ready
                         || model.inspectorDetail?.assetID != assetID || model.inspectorDetail?.relativePath == nil
                         || (model.inspectorDetail?.durationMs ?? 0) <= 0)
+                    .help("仅处理当前视频。强制重建会重新解码，旧封面和精确去重证据保持不变。")
                 if analysisTask != nil {
                     ProgressView().controlSize(.small)
                     Button("取消分析") { cancelAnalysis(); analysisMessage = "已取消，可再次分析以复用有效检查点。" }
