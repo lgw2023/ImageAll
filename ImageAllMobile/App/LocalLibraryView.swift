@@ -138,6 +138,21 @@ final class LocalLibraryModel: ObservableObject {
         } catch { errorMessage = "保存标签失败：\(error.localizedDescription)" }
     }
 
+    func tagUndoCandidates(for asset: LocalAsset) async -> [UUID: UUID] {
+        guard let store else { return [:] }
+        return (try? await store.tagUndoCandidates(assetID: asset.id)) ?? [:]
+    }
+
+    func undoTagDecision(_ operationID: UUID) async {
+        guard let store else { return }
+        do {
+            try await store.undoTagDecision(operationID: operationID)
+            await reloadFacts()
+        } catch LocalLibraryError.undoUnavailable {
+            errorMessage = "这次标签修改已不能撤销：本机或 Mac 状态已有变化，或同步尚待完成。请核对当前决定后重新编辑。"
+        } catch { errorMessage = "撤销标签失败：\(error.localizedDescription)" }
+    }
+
     func setMembership(_ included: Bool, asset: LocalAsset, collection: LocalCollection) async {
         guard let store else { return }
         do {
@@ -2179,6 +2194,8 @@ private struct LocalAssetDetailView: View {
     let asset: LocalAsset
     @State private var decisions: [UUID: LocalDecision] = [:]
     @State private var memberships: Set<UUID> = []
+    @State private var tagUndo: [UUID: UUID] = [:]
+    @State private var isEditingTags = false
 
     private var currentAsset: LocalAsset {
         model.assets.first(where: { $0.id == asset.id }) ?? asset
@@ -2224,7 +2241,12 @@ private struct LocalAssetDetailView: View {
                             get: { decisions[tag.id] ?? .cleared },
                             set: { value in
                                 decisions[tag.id] = value
-                                Task { await model.setDecision(value, asset: asset, tag: tag) }
+                                isEditingTags = true
+                                Task {
+                                    await model.setDecision(value, asset: asset, tag: tag)
+                                    await reloadTagState()
+                                    isEditingTags = false
+                                }
                             }
                         )) {
                             Text("清除").tag(LocalDecision.cleared)
@@ -2232,8 +2254,24 @@ private struct LocalAssetDetailView: View {
                             Text("拒绝").tag(LocalDecision.rejected)
                         }
                         .labelsHidden()
+                        .disabled(isEditingTags)
+                        if let operation = tagUndo[tag.id] {
+                            Button("撤销") {
+                                isEditingTags = true
+                                Task {
+                                    await model.undoTagDecision(operation)
+                                    await reloadTagState()
+                                    isEditingTags = false
+                                }
+                            }
+                            .buttonStyle(.borderless)
+                            .disabled(isEditingTags)
+                            .accessibilityLabel("撤销标签“\(tag.name)”的上次修改")
+                        }
                     }
                 }
+                Text("撤销仅恢复上次标签决定。同步版本或身份变化后，旧撤销会失效。")
+                    .font(.footnote).foregroundStyle(.secondary)
             }
             Section("ImageAll 集合") {
                 ForEach(model.collections) { collection in
@@ -2265,9 +2303,14 @@ private struct LocalAssetDetailView: View {
         }
         .navigationTitle("本机照片")
         .task(id: asset.id) {
-            decisions = await model.decisions(for: asset)
+            await reloadTagState()
             memberships = await model.memberships(for: asset)
         }
+    }
+
+    private func reloadTagState() async {
+        decisions = await model.decisions(for: asset)
+        tagUndo = await model.tagUndoCandidates(for: asset)
     }
 
     private func favoriteWritebackMessage(_ state: LocalFavoriteWritebackState) -> String {

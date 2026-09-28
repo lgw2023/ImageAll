@@ -19,6 +19,7 @@ public enum LocalLibraryError: Error, Equatable {
     case syncConflictDetailsUnavailable
     case migrationScopeIncomplete
     case migrationSyncPending
+    case undoUnavailable
 }
 
 public enum LocalDecision: String, Codable, Sendable {
@@ -464,6 +465,13 @@ public actor LocalLibraryStore {
                 CREATE TABLE IF NOT EXISTS audit_context (
                   operation_id TEXT PRIMARY KEY REFERENCES outbox(operation_id),
                   origin TEXT NOT NULL, reference_name TEXT
+                );
+                CREATE TABLE IF NOT EXISTS tag_undo (
+                  operation_id TEXT PRIMARY KEY REFERENCES outbox(operation_id),
+                  asset_id TEXT NOT NULL REFERENCES assets(id),
+                  tag_id TEXT NOT NULL REFERENCES tags(id),
+                  previous_decision TEXT NOT NULL, context TEXT NOT NULL,
+                  UNIQUE(asset_id,tag_id)
                 );
                 CREATE TABLE IF NOT EXISTS favorite_writebacks (
                   asset_id TEXT PRIMARY KEY REFERENCES assets(id),
@@ -968,25 +976,95 @@ public actor LocalLibraryStore {
         return id
     }
 
-    public func setDecision(assetID: UUID, tagID: UUID, decision: LocalDecision) throws {
+    @discardableResult
+    public func setDecision(assetID: UUID, tagID: UUID, decision: LocalDecision) throws -> UUID {
         guard try exists("assets", id: assetID) else { throw LocalLibraryError.unknownAsset }
         guard try exists("tags", id: tagID) else { throw LocalLibraryError.unknownTag }
-        let field = "tag.\(tagID.uuidString)"
+        var operationID = UUID()
         try transaction {
+            let previous = try scalar("SELECT decision FROM tag_decisions WHERE asset_id=? AND tag_id=?",
+                                      [assetID.uuidString, tagID.uuidString]) ?? LocalDecision.cleared.rawValue
+            operationID = try writeTagDecision(assetID: assetID, tagID: tagID, decision: decision)
+            let context = try tagUndoContext(assetID: assetID, tagID: tagID)
             try execute("""
-                INSERT INTO tag_decisions(asset_id,tag_id,decision,revision) VALUES(?,?,?,1)
-                ON CONFLICT(asset_id,tag_id) DO UPDATE SET
-                  decision=excluded.decision, revision=revision+1
-                """, [assetID.uuidString, tagID.uuidString, decision.rawValue])
-            let operationID = try enqueue(assetID, field: field, value: decision.rawValue, origin: .localEdit)
-            if try isShared(assetID: assetID) {
-                let tagName = try scalar("SELECT name FROM tags WHERE id=?", [tagID.uuidString])
-                try enqueueShared(
-                    operationID, assetID: assetID, field: field,
-                    value: decision.rawValue, referenceName: tagName
-                )
+                INSERT INTO tag_undo(operation_id,asset_id,tag_id,previous_decision,context) VALUES(?,?,?,?,?)
+                ON CONFLICT(asset_id,tag_id) DO UPDATE SET operation_id=excluded.operation_id,
+                  previous_decision=excluded.previous_decision,context=excluded.context
+                """, [operationID.uuidString, assetID.uuidString, tagID.uuidString, previous, context])
+        }
+        return operationID
+    }
+
+    // Must be called inside the caller's transaction, including undo validation.
+    private func writeTagDecision(assetID: UUID, tagID: UUID, decision: LocalDecision) throws -> UUID {
+        let field = "tag.\(tagID.uuidString)"
+        try execute("""
+            INSERT INTO tag_decisions(asset_id,tag_id,decision,revision) VALUES(?,?,?,1)
+            ON CONFLICT(asset_id,tag_id) DO UPDATE SET decision=excluded.decision, revision=revision+1
+            """, [assetID.uuidString, tagID.uuidString, decision.rawValue])
+        let operationID = try enqueue(assetID, field: field, value: decision.rawValue, origin: .localEdit)
+        if try isShared(assetID: assetID) {
+            let name = try scalar("SELECT name FROM tags WHERE id=?", [tagID.uuidString])
+            try enqueueShared(operationID, assetID: assetID, field: field,
+                              value: decision.rawValue, referenceName: name)
+        }
+        return operationID
+    }
+
+    private func tagUndoContext(assetID: UUID, tagID: UUID) throws -> String {
+        let name = try scalar("SELECT name FROM tags WHERE id=?", [tagID.uuidString]) ?? ""
+        let wire = try wireTagIdentity(for: tagID, localName: name)
+        let field = "tag.\(tagID.uuidString)"
+        let context = try [
+            requiredIdentity("source_epoch"), requiredIdentity("share_scope_revision"),
+            requiredIdentity("sync_host_id"), requiredIdentity("sync_device_id"),
+            isShared(assetID: assetID) ? "shared" : "private",
+            scalar("SELECT revision FROM shared_field_versions WHERE asset_id=? AND field=?",
+                   [assetID.uuidString, field]) ?? "0",
+            wire.id.uuidString, wire.name, name
+        ]
+        return String(decoding: try JSONEncoder().encode(context), as: UTF8.self)
+    }
+
+    private func validatedTagUndo(operationID: UUID) throws -> (asset: UUID, tag: UUID, previous: LocalDecision) {
+        guard let row = try rows("SELECT asset_id,tag_id,previous_decision,context FROM tag_undo WHERE operation_id=?",
+                                 [operationID.uuidString]).first,
+              let asset = UUID(uuidString: row[0] ?? ""), let tag = UUID(uuidString: row[1] ?? ""),
+              let previous = LocalDecision(rawValue: row[2] ?? ""),
+              row[3] == (try tagUndoContext(assetID: asset, tagID: tag)) else {
+            throw LocalLibraryError.undoUnavailable
+        }
+        let field = "tag.\(tag.uuidString)"
+        guard try scalar("SELECT operation_id FROM outbox WHERE entity_id=? AND field=? ORDER BY sequence DESC LIMIT 1",
+                         [asset.uuidString, field]) == operationID.uuidString,
+              try scalar("""
+                  SELECT d.operation_id FROM shared_delivery d JOIN shared_outbox s ON s.operation_id=d.operation_id
+                  WHERE s.asset_id=? AND s.field=? LIMIT 1
+                  """, [asset.uuidString, field]) == nil else { throw LocalLibraryError.undoUnavailable }
+        return (asset, tag, previous)
+    }
+
+    public func tagUndoCandidates(assetID: UUID) throws -> [UUID: UUID] {
+        var result: [UUID: UUID] = [:]
+        for row in try rows("SELECT operation_id FROM tag_undo WHERE asset_id=?", [assetID.uuidString]) {
+            if let id = UUID(uuidString: row[0] ?? ""), let token = try? validatedTagUndo(operationID: id) {
+                result[token.tag] = id
             }
         }
+        return result
+    }
+
+    /// A compensating fact with a new operation ID; never rewrites or removes history.
+    /// Version/identity changes and outstanding delivery make old undo unavailable.
+    @discardableResult
+    public func undoTagDecision(operationID: UUID) throws -> UUID {
+        var compensation = UUID()
+        try transaction {
+            let token = try validatedTagUndo(operationID: operationID)
+            compensation = try writeTagDecision(assetID: token.asset, tagID: token.tag, decision: token.previous)
+            try execute("DELETE FROM tag_undo WHERE operation_id=?", [operationID.uuidString])
+        }
+        return compensation
     }
 
     public func decisions(assetID: UUID) throws -> [UUID: LocalDecision] {

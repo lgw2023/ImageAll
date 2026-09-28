@@ -329,6 +329,8 @@ Mac 从备份恢复时必须推进工作区恢复 epoch；旧 cursor 和已过�
 
 手机离线本地 Photos 收藏已经发生但共享提交发生冲突时，不能回滚系统 Photos 来假装从未发生。显示差异并要求解决；本地操作回执与共享回执分别保留。
 
+手机本地标签撤销采用持久、单步的补偿意图：回到该字段上次编辑前的决定（原来未设置等价于清除），写入新的操作 ID 和审计记录，已分享项照常排队。执行时在同一事务复核最新字段操作、共享版本、来源 epoch、配对、分享范围及标签别名；存在在途提交或冲突时拒绝。共享 ACK 导致版本前进也使旧撤销失效，用户可重新明确编辑。重启后可恢复仍有效的撤销入口，不重写历史；尚未扩展到集合、Photos 写回或多步撤销。
+
 ### 7.4 观测不是删除命令
 
 必须区分 `permissionLimited`、`sourceOffline`、`notObserved`、`removedFromShare`、`confirmedSourceDeletion`、`retiredFromWorkspace`。
