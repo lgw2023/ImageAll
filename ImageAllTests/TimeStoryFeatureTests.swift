@@ -919,6 +919,33 @@ final class TimeStoryFeatureTests: XCTestCase {
         XCTAssertEqual(cancellableProject.shots.count, 2)
     }
 
+    func testAutomaticMixedStoryPreservesDistinctEditedClipsWhenReplanning() throws {
+        let photo = candidate(UUID().uuidString, time: timestamp(2024, 1, 1))
+        var video = candidate(UUID().uuidString, time: timestamp(2025, 1, 1))
+        video.mediaKind = .video; video.durationMs = 1000
+        let snapshot = makeSnapshot([photo, video])
+        let planner = TimeStoryPlanner()
+        let automatic = try planner.makeProject(snapshot: snapshot, nowMs: 1)
+        let automaticClip = try XCTUnwrap(automatic.shots.first { $0.assetID == video.assetID }?.videoClip)
+        XCTAssertEqual(automaticClip.inPointMs, 0)
+        XCTAssertEqual(automaticClip.outPointMs, 1000)
+        var manual = planner.makeFreeformProject(snapshot: snapshot, nowMs: 1)
+        manual = try planner.manuallyInserting(video, in: manual, nowMs: 2,
+            videoClip: .init(inPointMs: 0, outPointMs: 500, sourceDurationMs: 1000, originalAudioGain: 0))
+        manual = try planner.manuallyInserting(video, in: manual, nowMs: 3,
+            videoClip: .init(inPointMs: 500, outPointMs: 1000, sourceDurationMs: 1000, originalAudioGain: 0.25))
+        let rebuilt = try planner.makeProject(snapshot: snapshot, nowMs: 4, existing: manual)
+        for shot in manual.shots {
+            XCTAssertEqual(rebuilt.shots.first { $0.id == shot.id }?.videoClip, shot.videoClip)
+        }
+        let references = rebuilt.chapters.flatMap(\.shotIDs)
+        XCTAssertEqual(Set(references), Set(rebuilt.shots.map(\.id)))
+        XCTAssertEqual(references.count, rebuilt.shots.count)
+        _ = try TimeStoryTimeline.normalize(project: rebuilt, allowsVideoClips: true)
+        video.durationMs = 900
+        XCTAssertThrowsError(try planner.makeProject(snapshot: makeSnapshot([photo, video]), nowMs: 5, existing: manual))
+    }
+
     func testMixedStoryRealExecutorRoundTripWhenRequested() async throws {
         guard let path = ProcessInfo.processInfo.environment["IMAGEALL_MIXED_EXECUTOR_ROOT"] else {
             throw XCTSkip("Requires an independently running synthetic task executor")

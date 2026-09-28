@@ -729,7 +729,9 @@ struct TimeStoryPlanner: Sendable {
     ) throws -> TimeStoryProject {
         let allCandidates = snapshot.candidates
         guard !allCandidates.isEmpty else { throw TimeStoryError.noCandidates }
-        let reliable = allCandidates.filter { $0.mediaCreatedAtMs != nil && $0.effectiveMediaKind == .image }
+        let reliable = allCandidates.filter {
+            $0.mediaCreatedAtMs != nil && ($0.effectiveMediaKind == .image || ($0.durationMs ?? 0) >= 34)
+        }
         guard !reliable.isEmpty else { throw TimeStoryError.noReliableTime }
         let selectable = reliable.filter { $0.availability == .available }
         guard !selectable.isEmpty else { throw TimeStoryError.noSelectedShots }
@@ -746,6 +748,12 @@ struct TimeStoryPlanner: Sendable {
                   candidate.mediaCreatedAtMs != nil,
                   candidate.contentRevision == shot.contentRevision
             else { throw TimeStoryError.preservedMediaChanged(String(shot.assetID.uuidString.prefix(8))) }
+            if let clip = shot.videoClip {
+                guard candidate.effectiveMediaKind == .video, let duration = candidate.durationMs else {
+                    throw TimeStoryError.preservedMediaChanged(String(shot.assetID.uuidString.prefix(8)))
+                }
+                _ = try clip.validatedFrameRange(actualDurationMs: duration)
+            }
         }
         let preservedIDs = Set(preservedShots.map(\.assetID))
         let preservedCandidates = preservedShots.compactMap { candidateByID[$0.assetID] }
@@ -757,33 +765,43 @@ struct TimeStoryPlanner: Sendable {
             bounds: storyTimeBounds
         )
 
-        let oldShotByAssetID = Dictionary(uniqueKeysWithValues: (existing?.shots ?? []).map { ($0.assetID, $0) })
-        var shots = selected.map { candidate -> TimeStoryShot in
-            if var old = oldShotByAssetID[candidate.assetID], old.isLocked || old.isUserEdited {
+        var preservedByAssetID = Dictionary(grouping: preservedShots, by: \.assetID)
+        var shots = try selected.map { candidate -> TimeStoryShot in
+            if var old = preservedByAssetID[candidate.assetID]?.first {
+                preservedByAssetID[candidate.assetID]?.removeFirst()
                 if old.isLocked && !old.reasons.contains("用户锁定") { old.reasons.append("用户锁定") }
                 return old
             }
+            let clip: TimeStoryVideoClip? = candidate.effectiveMediaKind == .video
+                ? .init(inPointMs: 0, outPointMs: min(candidate.durationMs!, 3500),
+                        sourceDurationMs: candidate.durationMs!, originalAudioGain: 1) : nil
+            let frames = try clip.map { try $0.validatedFrameRange(actualDurationMs: $0.sourceDurationMs).frameCount }
             return TimeStoryShot(
                 id: TimeStoryStableID.uuid("shot|\(candidate.assetID.uuidString.lowercased())"),
                 assetID: candidate.assetID,
                 contentRevision: candidate.contentRevision,
                 chapterID: UUID(),
                 caption: candidate.placeName ?? snapshot.tagDisplayName,
-                durationSeconds: TimeStoryConstants.defaultShotDurationSeconds,
+                durationSeconds: frames.map { Double($0) / 30 } ?? TimeStoryConstants.defaultShotDurationSeconds,
                 presentationMode: .fullFrameWithBackground,
-                reasons: reasons(for: candidate, among: selected, bounds: storyTimeBounds),
+                reasons: reasons(for: candidate, among: selected, bounds: storyTimeBounds)
+                    + (clip == nil ? [] : ["自动片段：开头最多3.5秒，可编辑范围与原声"]),
                 isLocked: false,
-                isUserEdited: false
+                isUserEdited: false,
+                videoClip: clip
             )
         }
 
         let chapterDrafts = makeChapterDrafts(selected, bounds: storyTimeBounds)
         let oldChaptersByID = Dictionary(uniqueKeysWithValues: (existing?.chapters ?? []).map { ($0.id, $0) })
         var chapters: [TimeStoryChapter] = []
+        var remainingShotIDs = Dictionary(grouping: shots, by: \.assetID).mapValues { $0.map(\.id) }
         for draft in chapterDrafts {
             let chapterID = TimeStoryStableID.uuid("chapter|\(draft.key)")
-            let shotIDs = draft.assetIDs.compactMap { assetID in
-                shots.first(where: { $0.assetID == assetID })?.id
+            let shotIDs = draft.assetIDs.compactMap { assetID -> UUID? in
+                guard let first = remainingShotIDs[assetID]?.first else { return nil }
+                remainingShotIDs[assetID]?.removeFirst()
+                return first
             }
             let old = oldChaptersByID[chapterID]
             chapters.append(

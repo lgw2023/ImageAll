@@ -32,8 +32,8 @@
 | P3 | IN_PROGRESS | 共享服务到真实质心模型和持久审核链 PASS；Mac 运行待验 | 继续全库建议、训练命令与审核持久事实闭环 |
 | P4 | VERIFIED（合成） | 完整原件／分组／安全清理与恢复、原生比较渲染通过 | 实现及最小合成验收已覆盖；真实 Photos／iCloud、日常配置点击和最终版本总回归仍未验证，见 P7 |
 | P5 | IN_PROGRESS | 实际合成视频解码→Vision→直接建议→审核证据 PASS | 文件夹/Photos 本地资源接线、版本化聚合、候选及原生证据条已交付；后台实际视频主路径已验；完整 UI 路线待验 |
-| P6 | IN_PROGRESS | 片段持久化/范围与旧照片兼容 PASS | 视频候选、剪辑 UI、资源冻结、混合渲染与可解码验证待实施 |
-| P7 | NOT_STARTED | NOT_RUN | 必需集成、最终构建与人工路线 |
+| P6 | IN_PROGRESS | 原生/Remotion混合成片、Swift真实任务闭环 PASS | 自动选材与同源多片段重排已补；完整UI操作、方向样本及历史任务恢复待核 |
+| P7 | IN_PROGRESS | 已开始逐项要求复核 | Mac入口/运行证据、最终版本回归、依赖审计与人工路线未收口 |
 
 首个切片输入：生产 `AssetGridItemProjection.mediaKind` / `AssetInspectorDetail.mediaKind`；输出：摘要／详情 DTO 显式字段，兼容已知 UTI 和 MIME，未知格式明确不可用；验收：新旧 JSON、MP4／MOV／照片／未知类型、Web 分支与相关构建。不能据此宣称完整 P1 通过。
 
@@ -734,3 +734,11 @@
 - `story-mixed-mac-roundtrip/swift-roundtrip-verified.json`保存实际taskID、成片路径、19帧及SHA=c1b1aa07d2637b4b2402ae1077d41e6934ad6a9e4fbcc15476c74ee3bae5703c；任务submission/state/runs、源合成素材与引擎报告完整保留。不是完整Mac UI点击或真实图库验收，仍需P7入口/交互核验。
 - 清理时发现既有CLI stop只识别_daemon命令，对本次前台start误报already_stopped；用已确认runtime PID和完整命令确认仍存活后，仅SIGTERM本次87397，工具会话正常退出，runtime.running=false且PID不存在。日常任务进程未触碰。此CLI前台识别差异记录为运行限制，后续测试宜使用明确_daemon入口。
 - 下一步复核P6完整要求与P1–P5剩余入口/证据，进入P7工程收口；整体active，未运行生产Photos宿主、未真实媒体读写、未push。
+
+
+## P6/P7复核发现并修复自动重排的片段身份问题（2026-09-28）
+
+- 对照P6第3/4项发现自动草稿仍限照片；重排使用assetID唯一字典，无法合法处理同源多视频片段，章节又取首个同源shotID。改为按资产分组逐个消费已编辑/锁定镜头，逐片段复核源类型/时长，章节独立消费每个shotID，保留不同范围/音量。
+- 在已完成确定性手选与实际成片基础上，自动草稿现在可选择可用、有可靠时间、时长已知且至少量化一帧的视频；首版取开头最多3.5秒、原声1，并写入可编辑片段说明。规则记录于ADR，未增加复杂镜头评分。
+- `story-mixed-planner-build.log` TEST BUILD SUCCEEDED；`story-mixed-planner-tests.log` 3/3 PASS：自动混合草稿、双片段重排范围/增益/章节唯一性、源时长变化拒绝、旧照片锁定/排除/编辑及稀疏时间分段回归。
+- 复核结论：P6入口与两种渲染/Swift客户端主路径已接通；完整UI选材→范围→调序→有声成片重开、方向/时间基准样本和旧已完成任务恢复仍需要明确证据。P7开始要求审计，P1–P5完整Mac运行证据及最终依赖/版本收口仍未完成。未把这些缺口降格为目标外事项。
