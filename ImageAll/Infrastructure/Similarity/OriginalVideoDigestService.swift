@@ -734,18 +734,9 @@ struct VideoPredictionEvidenceReader: Sendable {
 }
 
 extension FolderVideoAnalysisService {
-    struct FrozenStoryVideo: Sendable {
-        let url: URL
-        let contentRevision: Int
-        let durationMs: Int64
-        let mediaType: String
-        let byteCount: Int64
-        let sha256: Data
-    }
-
     /// Destination must be inside the caller's private task directory. Never overwrites an existing file.
     func freezeStoryVideo(assetID: UUID, expectedRevision: Int, destination: URL,
-                          checkCancellation: () throws -> Void = {}) throws -> FrozenStoryVideo {
+                          checkCancellation: () throws -> Void = {}) throws -> TimeStoryFrozenVideo {
         guard destination.isFileURL else { throw FeaturePrintError.assetIneligible }
         let directory = try DerivedImageSecureIO.openDirectoryNoFollow(at: destination.deletingLastPathComponent())
         defer { Darwin.close(directory) }
@@ -754,7 +745,7 @@ extension FolderVideoAnalysisService {
         var created = false
         var completed = false
         defer { if created && !completed { _ = Darwin.unlinkat(directory, leaf, 0) } }
-        func copy(_ fd: Int32, duration: Int64, type: String, validate: () throws -> Void) throws -> FrozenStoryVideo {
+        func copy(_ fd: Int32, duration: Int64, type: String, validate: () throws -> Void) throws -> TimeStoryFrozenVideo {
             try validate()
             let identity = try OriginalVideoDigestService.FileIdentity.read(fd)
             let output = Darwin.openat(directory, leaf, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW, mode_t(0o600))
@@ -785,10 +776,10 @@ extension FolderVideoAnalysisService {
             try validate()
             guard offset > 0, try OriginalVideoDigestService.FileIdentity.read(fd) == identity,
                   Darwin.fsync(output) == 0 else { throw FeaturePrintError.sourceChanged }
-            return FrozenStoryVideo(url: destination, contentRevision: expectedRevision, durationMs: duration,
+            return TimeStoryFrozenVideo(url: destination, contentRevision: expectedRevision, durationMs: duration,
                 mediaType: type, byteCount: offset, sha256: Data(hash.finalize()))
         }
-        let result: FrozenStoryVideo
+        let result: TimeStoryFrozenVideo
         if let context = try photosContext(assetID: assetID) {
             guard context.revision == expectedRevision, let photosSource else { throw FeaturePrintError.sourceChanged }
             result = try photosSource.withLocalVideoAnalysisSource(localIdentifier: context.localIdentifier,
@@ -833,5 +824,21 @@ extension FolderVideoAnalysisService {
         try checkCancellation()
         completed = true
         return result
+    }
+}
+
+/// Production story media keeps image behavior and delegates videos to the guarded original-byte path.
+struct TimeStoryProductionMedia: TimeStoryMediaLoading {
+    let images: any TimeStoryMediaLoading
+    let videos: FolderVideoAnalysisService
+
+    func loadStoryImage(assetID: UUID) async throws -> Data { try await images.loadStoryImage(assetID: assetID) }
+    func loadStoryThumbnail(assetID: UUID) async throws -> Data { try await images.loadStoryThumbnail(assetID: assetID) }
+    func freezeStoryVideo(assetID: UUID, expectedRevision: Int, destination: URL) async throws -> TimeStoryFrozenVideo {
+        let worker = Task.detached(priority: .userInitiated) {
+            try videos.freezeStoryVideo(assetID: assetID, expectedRevision: expectedRevision,
+                destination: destination, checkCancellation: { try Task.checkCancellation() })
+        }
+        return try await withTaskCancellationHandler { try await worker.value } onCancel: { worker.cancel() }
     }
 }

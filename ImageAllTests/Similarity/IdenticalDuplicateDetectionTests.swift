@@ -39,6 +39,40 @@ final class IdenticalDuplicateDetectionTests: XCTestCase {
         XCTAssertEqual(try Data(contentsOf: item.fileURL), bytes)
     }
 
+    func testStoryPhotosFreezeUsesLocalOriginalAndRemovesFailedIdentityCopy() async throws {
+        let env = try SimilarityTestSupport.Environment(label: #function)
+        defer { env.cleanup() }
+        let fixture = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+            .deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("docs/evidence/time-story-phase-1-20260918/synthetic-silent.mp4")
+        let local = env.root.appendingPathComponent("photos.mp4")
+        let bytes = try Data(contentsOf: fixture)
+        try bytes.write(to: local)
+        let id = try env.seedPhotosAsset(mediaType: "public.mpeg-4", mediaKind: .video, durationMs: 1000)
+        let port = SyntheticVideoAnalysisSource(url: local)
+        let base = env.makeCompletionService()
+        let service = FolderVideoAnalysisService(database: env.database, sourceAccess: base.sourceAccess,
+            clock: base.clock, photosSource: port)
+        let media: any TimeStoryMediaLoading = TimeStoryProductionMedia(images: StoryFreezeImageStub(), videos: service)
+        let destination = env.root.appendingPathComponent("story.mp4")
+        let result = try await media.freezeStoryVideo(assetID: id, expectedRevision: 1, destination: destination)
+        XCTAssertEqual(result.sha256, Data(SHA256.hash(data: bytes)))
+        XCTAssertEqual(try Data(contentsOf: destination), bytes)
+        let image = try await media.loadStoryImage(assetID: id)
+        XCTAssertEqual(image, Data([42]))
+        let failed = env.root.appendingPathComponent("failed.mp4")
+        XCTAssertThrowsError(try service.freezeStoryVideo(assetID: id, expectedRevision: 1, destination: failed) {
+            if FileManager.default.fileExists(atPath: failed.path) { port.resourceIdentity = "changed-after-copy-start" }
+        })
+        XCTAssertFalse(FileManager.default.fileExists(atPath: failed.path))
+        port.failure = PhotosLibraryError.cloudOnly
+        XCTAssertThrowsError(try service.freezeStoryVideo(assetID: id, expectedRevision: 1, destination: failed)) {
+            XCTAssertEqual($0 as? PhotosLibraryError, .cloudOnly)
+        }
+        XCTAssertFalse(FileManager.default.fileExists(atPath: failed.path))
+        XCTAssertEqual(try Data(contentsOf: local), bytes)
+    }
+
     func testPhotosMultiFrameUsesLocalResourceIdentityAndRejectsCloudOrChangedSource() throws {
         let env = try SimilarityTestSupport.Environment(label: #function)
         defer { env.cleanup() }
@@ -2504,4 +2538,8 @@ private final class SyntheticVideoAnalysisSource: PhotosVideoAnalysisSourcePort,
         guard resourceIdentity == before else { throw FingerprintCompletionError.sourceChanged }
         return value
     }
+}
+
+private struct StoryFreezeImageStub: TimeStoryMediaLoading {
+    func loadStoryImage(assetID: UUID) async throws -> Data { Data([42]) }
 }

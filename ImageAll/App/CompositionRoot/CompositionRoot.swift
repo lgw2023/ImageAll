@@ -558,8 +558,11 @@ struct CompositionRoot {
                 photosLibrary: photosAccess
             ),
             timeStoryRuntime: {
+                let storyMedia = TimeStoryProductionMedia(images: assetImages,
+                    videos: FolderVideoAnalysisService(database: runtime.database, sourceAccess: sourceAccess,
+                        clock: clock, photosSource: photosAccess))
                 let packageExporter = StoryRenderPackageExporter(
-                    media: assetImages,
+                    media: storyMedia,
                     validator: TimeStoryMediaValidator(database: runtime.database)
                 )
                 let taskRootStore = UserDefaultsOpenMontageTaskRootStore()
@@ -574,7 +577,7 @@ struct CompositionRoot {
                     ),
                     validator: TimeStoryMediaValidator(database: runtime.database),
                     renderer: AVFoundationTimeStoryRenderer(
-                        media: assetImages,
+                        media: storyMedia,
                         temporaryDirectory: runtime.paths.cachesDirectory
                             .appendingPathComponent("TimeStoryRendering", isDirectory: true)
                     ),
@@ -585,7 +588,7 @@ struct CompositionRoot {
                         installationID: taskRootStore.installationID
                     ),
                     creativeRootProvider: taskRootStore,
-                    media: assetImages,
+                    media: storyMedia,
                     clock: clock
                 )
             }(),

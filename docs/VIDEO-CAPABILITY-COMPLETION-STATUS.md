@@ -638,3 +638,10 @@
 - 目标要求调用方提供独立任务目录；目录描述符下 O_EXCL/O_NOFOLLOW 创建文件，已有文件拒绝覆盖，权限0600，fsync成功后返回。取消/读取/身份检查/Photos闭包结束复核失败时只 unlink 本次创建的目标，原件保持只读。复制循环与结束时检查来源，云端不自动下载。
 - `story-video-freeze-build.log` TEST BUILD SUCCEEDED；`story-video-freeze-tests.log` 2/2 PASS：实际合成MP4逐字节及SHA一致、禁止覆盖、复制中取消清理、错误修订拒绝、源文件不变；原有 Photos 多帧本地资源回归通过。Photos冻结新分支本身尚无针对性验证，不能用多帧回归替代。
 - 服务尚未注入故事 MediaLoading/渲染器；片段真实时长和音轨仍须在 AVAsset 侧验证（冻结服务返回来源报告时长，不冒称解码验证）。下一步完成 Photos 冻结针对性测试及生产故事资源接线。整体 active。
+
+## P6 故事媒体接口与 Photos 冻结接线（2026-09-28）
+
+- 冻结结果提升为应用契约 TimeStoryFrozenVideo，TimeStoryMediaLoading 增加显式冻结方法；旧实现默认明确拒绝，不回退封面。生产 TimeStoryProductionMedia 保留原照片/缩略图加载，并在 detached worker 执行受控视频冻结、传递取消。
+- CompositionRoot 将统一媒体适配器注入故事 runtime、原生 renderer 和 package exporter；此为依赖接线，现有渲染循环尚未调用新视频方法，不能据此宣称混合渲染完成。
+- `story-video-media-build.log` TEST BUILD SUCCEEDED；`story-video-media-tests.log` 3/3 PASS。Photos 本地合成替身通过异步统一接口冻结原始MP4，摘要/字节一致；复制后资源身份变化在闭包结束复核失败并清理目标，云端不可用拒绝，原件不变；文件夹冻结与旧照片包回归通过。
+- 未请求真实 PHAsset 或 iCloud。下一步让真实渲染路径消费冻结视频、校验AVAsset实际范围和音轨并验证运动；剪辑UI/新协议和最终成片仍待完成，整体 active。

@@ -1331,12 +1331,25 @@ struct TimeStoryMediaValidator: TimeStoryMediaValidating, Sendable {
     }
 }
 
+struct TimeStoryFrozenVideo: Sendable {
+    let url: URL
+    let contentRevision: Int
+    let durationMs: Int64
+    let mediaType: String
+    let byteCount: Int64
+    let sha256: Data
+}
+
 protocol TimeStoryMediaLoading: Sendable {
     func loadStoryImage(assetID: UUID) async throws -> Data
     func loadStoryThumbnail(assetID: UUID) async throws -> Data
+    func freezeStoryVideo(assetID: UUID, expectedRevision: Int, destination: URL) async throws -> TimeStoryFrozenVideo
 }
 
 extension TimeStoryMediaLoading {
+    func freezeStoryVideo(assetID: UUID, expectedRevision: Int, destination: URL) async throws -> TimeStoryFrozenVideo {
+        throw TimeStoryError.renderingFailed("当前媒体接口不支持视频素材冻结")
+    }
     func loadStoryThumbnail(assetID: UUID) async throws -> Data { try await loadStoryImage(assetID: assetID) }
 }
 
