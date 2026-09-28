@@ -13,6 +13,53 @@ final class LibraryVideoViewingTests: XCTestCase {
             .appendingPathComponent("docs/evidence/time-story-phase-1-20260918/synthetic-silent.mp4")
     }
 
+    func testInteractiveNativeVideoViewerWhenRequested() async throws {
+        guard let path = ProcessInfo.processInfo.environment["IMAGEALL_INTERACTIVE_VIDEO_EVIDENCE"] else {
+            throw XCTSkip("Explicit synthetic interactive verification only")
+        }
+        let evidence = URL(fileURLWithPath: path, isDirectory: true)
+        try FileManager.default.createDirectory(at: evidence, withIntermediateDirectories: true)
+        let sourceID = UUID(), assetID = UUID()
+        let service = FakeLibraryWorkspaceService(
+            connectedSource: LibrarySourceSummary(id: sourceID, displayName: "Synthetic only", state: .active),
+            reconciledItems: [], startsConnected: true)
+        let model = LibraryWorkspaceModel(service: service,
+            videoPlaybackProvider: InteractiveSyntheticVideoProvider(url: syntheticVideo),
+            idlePrewarmInstallEventMonitor: false)
+        let host = NSHostingView(rootView: LibraryVideoViewer(assetID: assetID, contentRevision: 1, model: model)
+            .frame(width: 960, height: 640).background(Color(nsColor: .windowBackgroundColor)))
+        let window = NSWindow(contentRect: NSRect(x: 120, y: 120, width: 960, height: 640),
+            styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.title = "ImageAll Synthetic Video Verification"
+        window.contentView = host
+        NSApplication.shared.setActivationPolicy(.regular)
+        NSApplication.shared.finishLaunching()
+        window.makeKeyAndOrderFront(nil)
+        NSApplication.shared.activate(ignoringOtherApps: true)
+        defer { model.videoViewingSession.stop(); window.close() }
+        var samples: [[String: Any]] = []
+        let deadline = Date().addingTimeInterval(300)
+        let finish = evidence.appendingPathComponent("finish")
+        while Date() < deadline, !FileManager.default.fileExists(atPath: finish.path) {
+            let session = model.videoViewingSession
+            samples.append(["elapsed": 300 - deadline.timeIntervalSinceNow,
+                "state": String(describing: session.state), "speed": session.speed,
+                "rate": session.player.rate, "volume": session.player.volume,
+                "time": session.player.currentTime().seconds.isFinite ? session.player.currentTime().seconds : -1])
+            try JSONSerialization.data(withJSONObject: samples, options: [.prettyPrinted, .sortedKeys])
+                .write(to: evidence.appendingPathComponent("player-observations.json"), options: .atomic)
+            try await Task.sleep(for: .milliseconds(200))
+        }
+        XCTAssertTrue(FileManager.default.fileExists(atPath: finish.path), "Interactive verification timed out")
+        XCTAssertTrue(samples.contains { ($0["rate"] as? Float ?? 0) > 0 })
+        XCTAssertTrue(samples.contains { ($0["speed"] as? Float) == 1.5 })
+        XCTAssertTrue(samples.contains { ($0["time"] as? Double ?? 0) > 0.4 })
+        model.videoViewingSession.stop()
+        XCTAssertNil(model.videoViewingSession.player.currentItem)
+        XCTAssertEqual(model.videoViewingSession.player.rate, 0)
+    }
+
     func testFrozenPredictionEvidenceStripRendersPresentAndMissingFrames() async throws {
         let generator = AVAssetImageGenerator(asset: AVURLAsset(url: syntheticVideo))
         generator.appliesPreferredTrackTransform = true
@@ -426,5 +473,12 @@ private actor CloudVideoPhotosFake: PhotosVideoResourcePort {
         try await beforeReturn()
         onProgress(1)
         return url
+    }
+}
+
+private struct InteractiveSyntheticVideoProvider: LibraryVideoPlaybackProviding {
+    let url: URL
+    func prepareVideoPlayback(assetID: UUID) async throws -> LibraryVideoPlaybackResource {
+        LibraryVideoPlaybackResource(url: url)
     }
 }

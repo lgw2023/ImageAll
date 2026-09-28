@@ -807,3 +807,14 @@
 - App内嵌helper的runtime-integrity 128项逐项SHA核对通过；直接读取内嵌engine验证story0.2/legacy0.1及任务Schema/lock，插件版本1.2.1与提交契约一致。没有使用工作区未提交1.2.2创作修复或字幕模块。
 - `committed-mac-verification.json`绑定commit、工作树/产物路径、测试bundle与App dylib SHA、测试数量、内嵌契约和限制。App dylib SHA=e5b3d3e7a57c92270f98ef7759cb0913b9659535428d75f8abe2e7d460348a80；测试bundle SHA=e368e96e0ba5683415cb1d8707d5d04774c6fc950d8150537049f4c5f40f789e。
 - 这是真正已提交版本的完整工程构建与同构建回归，解决此前依赖混合脏工作区的证据缺口。仍不是全页鼠标操作、日常图库、真实Photos/iCloud、真实模型或发布安装验收。P1–P6完整Mac UI路线、逐项完成矩阵和最终人工指南仍需收口，目标active。保留验证工作树供后续复核，未push、未真实媒体读写。
+
+## P7 正式播放器控件的实际交互验收与条款矩阵（2026-09-28）
+
+- 新增[完成矩阵](VIDEO-CAPABILITY-COMPLETION-MATRIX.md)，按原目标P1–P7的58条实施要求逐项列当前证据/缺口；Web/iPhone仅按用户明确排除，未缩减Mac必需能力。尚未将所有条款升级为完成。
+- 新增显式环境变量开启的testInteractiveNativeVideoViewerWhenRequested：正式LibraryVideoViewer+AVPlayerView、仅仓库内合成视频、fake数据入口，不运行生产composition root；采样播放器状态，五分钟超时，结束后验证停止/解除item。默认无环境变量时跳过，不混入普通自动化。
+- 裸XCTest不能被CUA按应用绑定，首轮未操作而失败；将系统xctest复制到独立bundle后补齐NSApplication.finishLaunching并使用测试包ad-hoc签名，解决绑定。首次包装缺libXCTestSwiftSupport路径的失败也保留。未使用其他UI自动化手段绕过工具。
+- 常规重建遇到签名errSecInternalComponent；仅本轮测试构建使用CODE_SIGN_IDENTITY=-与CODE_SIGN_ENTITLEMENTS=（未改变项目或钥匙串）。video-interactive-testonly-build.log TEST BUILD SUCCEEDED；此测试构建不替代上一轮ac6ab717的正常完整工程构建，也不是发布包。
+- CUA实际选择1.5×、点击播放、通过timeline定位约0.9997秒、进入/退出视频全屏、打开视频信息、再播放与立即暂停；AX确认play/pause on→off、全屏on→off、时间轴约0.6459秒暂停。弹窗显示avc1、30.00fps、约281kb/s、未发现音轨，与无声合成素材一致；全屏画面与返回布局已通过CUA截图目视检查（截图在本会话工具记录，不假称已保存为本地PNG）。
+- video-interactive-launched-tests.log 1/1 PASS，约99.53秒含人工式工具操作等待；video-interactive-launched/player-observations.json记录453个样本，速度1和1.5，maxRate1.5，maxTime2.5667秒，结束前rate0、time约0.6471秒；测试退出时currentItem=nil。结束标记只控制测试结束，不代替交互断言。
+- 提供scripts/verify_video_viewer_ui.py复跑包装器：显式products和全新evidence目录，系统XCTest/独立bundle身份/框架搜索路径/临时目录固定，保留日志，不删除旧证据。脚本参数解析检查通过，正式交互成功使用的是其相同包装步骤；未另行声称脚本整轮重跑过。
+- 仅覆盖正式视频控件与信息弹窗：无声素材没有验证音量/真实音频，未覆盖图库/审核/瘦身/地图整页、标签点击、故事片段完整UI链或系统播放器启动。目标active，真实媒体/付费模型/发布安装NOT_RUN；主工作区并行改动保留，未push。
