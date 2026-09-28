@@ -577,3 +577,9 @@
 - 正式入队服务写入 representation/preprocessingRevision/表示身份到 TrainingRun config，同时冻结任务合同。已有同标签/媒体任务时沿用 activeJobConflict，事务 coalescing 竞争同样拒绝；不复用不同策略任务，不覆盖历史 Run。
 - 首次测试预期仍使用手工 7 项样本列表，而正式服务冻结 8 项，产生一次计数失败；已将预期绑定正式 frozen payload。`video-strategy-entry-build-final.log` TEST BUILD SUCCEEDED；`video-strategy-entry-tests-final.log` 3/3 PASS：正式入队→Run 配置版本2→冲突拒绝→队列发布版本2，旧视频及旧 artifact 回归通过。
 - UI 确认页只完成构建/接线，渲染和人工选择未验。完整真实视频训练/审核时间点、Photos 多帧和 P5 汇总验收仍未完成，整体 active。LibraryWorkspace 仅提交本次参数传递，其他并行内容保持。
+
+## P5 Photos 本地多帧资源入口（2026-09-28）
+
+- 新 PhotosVideoAnalysisSourcePort 以受控闭包持有本地原件 AVAsset，提供资源身份/时长/类型；PhotoKit 实现请求原件、明确禁网，云端/合成非文件资源拒绝，完成后再次检查授权与原资源身份。等待每 100ms 检查取消，最长等待 300s；该等待上限不代表逐帧同步解码可即时中断。
+- `photos-analysis-source-build.log` TEST BUILD SUCCEEDED；`photos-analysis-source-tests.log` 2/2 PASS，验证可取消等待、一次完成、超时、禁网配置、合成资源拒绝及原播放器回归。未执行 PHAsset.fetchAssets 或真实 Photos 请求；实际图库 API 和云端行为 NOT_RUN。
+- 这轮仅新增适配器入口，尚未接分析缓存/训练 loader 或开放 Photos UI；下一轮使用替身资源验证 Photos catalog 身份、来源复核及缓存后再接线。整体 active。

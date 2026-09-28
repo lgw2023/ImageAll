@@ -288,3 +288,18 @@ protocol PhotosOriginalVideoContentPort: Sendable {
         onByteProgress: (Int64, Int64) -> Void
     ) throws -> PhotosOriginalVideoDigest
 }
+
+struct PhotosLocalVideoAnalysisSource: Sendable {
+    let url: URL
+    let durationMs: Int64
+    let mediaType: String
+    let resourceIdentity: String
+}
+
+/// Executes while the adapter retains and validates a local original resource.
+/// No cloud grant is accepted; a cloud-only resource must fail without download.
+protocol PhotosVideoAnalysisSourcePort: Sendable {
+    func withLocalVideoAnalysisSource<T>(localIdentifier: String,
+        checkCancellation: () throws -> Void,
+        perform: (PhotosLocalVideoAnalysisSource) throws -> T) throws -> T
+}

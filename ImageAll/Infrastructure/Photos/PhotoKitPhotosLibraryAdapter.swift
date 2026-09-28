@@ -7,7 +7,7 @@ import Photos
 
 final class PhotoKitPhotosLibraryAdapter: NSObject, PhotosLibraryAccessPort, PhotosChangeHistoryPort,
     PhotosChangeObserverPort, PhotosLibraryAvailabilityObserverPort, PhotosCloudPreviewPort,
-    PhotosOriginalContentPort, PhotosOriginalVideoContentPort, PhotosFeaturePrintImagePort, PhotosVideoResourcePort,
+    PhotosOriginalContentPort, PhotosOriginalVideoContentPort, PhotosFeaturePrintImagePort, PhotosVideoResourcePort, PhotosVideoAnalysisSourcePort,
     PHPhotoLibraryChangeObserver,
     PHPhotoLibraryAvailabilityObserver,
     @unchecked Sendable
@@ -589,6 +589,60 @@ final class PhotoKitPhotosLibraryAdapter: NSObject, PhotosLibraryAccessPort, Pho
         return options
     }
 
+    func withLocalVideoAnalysisSource<T>(localIdentifier: String,
+        checkCancellation: () throws -> Void,
+        perform: (PhotosLocalVideoAnalysisSource) throws -> T) throws -> T {
+        try checkCancellation()
+        guard authorizationState() == .authorized else { throw PhotosLibraryError.authorizationDenied }
+        guard let asset = PHAsset.fetchAssets(withLocalIdentifiers: [localIdentifier], options: nil).firstObject,
+              asset.mediaType == .video, asset.duration.isFinite, asset.duration > 0,
+              asset.duration < 1_000_000_000 else { throw PhotosLibraryError.libraryUnavailable }
+        let resources = PHAssetResource.assetResources(for: asset)
+        guard let index = Self.originalVideoResourceIndex(types: resources.map { $0.type.rawValue }) else {
+            throw PhotosVideoResourceError.unsupportedAssetRepresentation
+        }
+        let identity = try Self.originalVideoIdentity(asset: asset, resources: resources)
+        let state = PhotosVideoAnalysisRequestState()
+        let request = imageManager.requestAVAsset(forVideo: asset,
+            options: Self.makeLocalOnlyOriginalVideoRequestOptions()) { result, _, info in
+                if (info?[PHImageCancelledKey] as? Bool) == true {
+                    state.complete(.failure(CancellationError()))
+                } else if result == nil, (info?[PHImageResultIsInCloudKey] as? Bool) == true {
+                    state.complete(.failure(PhotosLibraryError.cloudOnly))
+                } else if let error = info?[PHImageErrorKey] as? Error {
+                    let ns = error as NSError
+                    if ns.domain == PHPhotosErrorDomain && ns.code == PHPhotosError.Code.networkAccessRequired.rawValue {
+                        state.complete(.failure(PhotosLibraryError.cloudOnly))
+                    } else { state.complete(.failure(Self.mapVideoRequestError(error))) }
+                } else if let result { state.complete(.success(result)) }
+                else { state.complete(.failure(PhotosLibraryError.libraryUnavailable)) }
+            }
+        defer { imageManager.cancelImageRequest(request) }
+        do {
+            let avAsset = try state.wait(checkCancellation: checkCancellation)
+            let url = try Self.localOriginalVideoURL(avAsset)
+            let source = PhotosLocalVideoAnalysisSource(url: url,
+                durationMs: Int64((asset.duration * 1_000).rounded()),
+                mediaType: resources[index].uniformTypeIdentifier, resourceIdentity: identity)
+            return try withExtendedLifetime(avAsset) {
+                try checkCancellation()
+                let value = try perform(source)
+                try checkCancellation()
+                guard authorizationState() == .authorized else { throw PhotosLibraryError.authorizationDenied }
+                guard let current = PHAsset.fetchAssets(withLocalIdentifiers: [localIdentifier], options: nil).firstObject,
+                      current.mediaType == .video,
+                      try Self.originalVideoIdentity(asset: current,
+                        resources: PHAssetResource.assetResources(for: current)) == identity else {
+                    throw FingerprintCompletionError.sourceChanged
+                }
+                return value
+            }
+        } catch {
+            state.complete(.failure(error))
+            throw error
+        }
+    }
+
     func requestLocalOriginalVideoDigest(
         localIdentifier: String, checkCancellation: () throws -> Void,
         onByteProgress: (Int64, Int64) -> Void
@@ -1077,5 +1131,32 @@ final class PhotosOriginalVideoStreamState: @unchecked Sendable {
         if let failure { throw failure }
         guard finished, byteCount > 0 else { throw FingerprintCompletionError.sourceUnavailable }
         return (Data(hasher.finalize()), byteCount)
+    }
+}
+
+/// Callback completion is one-shot. Waiting never requires the main actor and
+/// cancellation is polled while PhotoKit is preparing the local resource.
+final class PhotosVideoAnalysisRequestState: @unchecked Sendable {
+    private let lock = NSLock()
+    private let signal = DispatchSemaphore(value: 0)
+    private var result: Result<AVAsset, Error>?
+
+    func complete(_ value: Result<AVAsset, Error>) {
+        lock.lock()
+        if result == nil { result = value; signal.signal() }
+        lock.unlock()
+    }
+
+    func wait(timeout: TimeInterval = 300, checkCancellation: () throws -> Void) throws -> AVAsset {
+        let deadline = ProcessInfo.processInfo.systemUptime + timeout
+        while true {
+            try checkCancellation()
+            lock.lock()
+            let snapshot = result
+            lock.unlock()
+            if let snapshot { return try snapshot.get() }
+            guard ProcessInfo.processInfo.systemUptime < deadline else { throw PhotosLibraryError.libraryUnavailable }
+            _ = signal.wait(timeout: .now() + 0.1)
+        }
     }
 }

@@ -75,3 +75,7 @@ FullLibrarySuggestions 合同 1 绑定 legacy，合同 2 绑定 videoMultiFrame 
 ## 正式选择与训练 Run
 
 视频 Feature KNN 确认页显式选择单封面或有限多帧，默认旧策略；选择捕获到确认对象并传入正式 ReviewPort。任务参数与 TrainingRun config 同步冻结表示及预处理版本。现有同 tag/media 活跃任务阻止任何新提交（包括策略不同），事务竞争同样返回 activeJobConflict；不按新策略提示成功却复用旧任务。历史配置不回填、不改写。未实现新策略的其他 ReviewPort 实现会拒绝多帧请求。
+
+## Photos 本地资源边界
+
+PhotosVideoAnalysisSourcePort 只提供受控本地原件闭包，不接受云端下载授权。PhotoKit 请求 version original/network false，持有返回的 AVAsset 至闭包结束；非 AVURLAsset、本地文件外 URL 或云端不可用均拒绝。读取前捕获资源身份、完成后复核授权及身份；后台等待可取消且有 300s 请求等待上限。该入口尚未作为缓存/训练 UI 的可用声明；实际整合需先通过合成 reader 的资源变化/修订/取消验证。

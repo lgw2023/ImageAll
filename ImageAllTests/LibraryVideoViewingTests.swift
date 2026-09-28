@@ -12,6 +12,21 @@ final class LibraryVideoViewingTests: XCTestCase {
             .appendingPathComponent("docs/evidence/time-story-phase-1-20260918/synthetic-silent.mp4")
     }
 
+    func testPhotosAnalysisWaitIsCancellableAndCompletionIsOneShot() throws {
+        let cancelled = PhotosVideoAnalysisRequestState()
+        XCTAssertThrowsError(try cancelled.wait(checkCancellation: { throw CancellationError() })) {
+            XCTAssertTrue($0 is CancellationError)
+        }
+        let completed = PhotosVideoAnalysisRequestState()
+        completed.complete(.success(AVURLAsset(url: syntheticVideo)))
+        completed.complete(.failure(PhotosLibraryError.cloudOnly))
+        let resource = try completed.wait(checkCancellation: {})
+        XCTAssertEqual(try PhotoKitPhotosLibraryAdapter.localOriginalVideoURL(resource), syntheticVideo)
+        XCTAssertThrowsError(try PhotosVideoAnalysisRequestState().wait(timeout: 0, checkCancellation: {}))
+        XCTAssertFalse(PhotoKitPhotosLibraryAdapter.makeLocalOnlyOriginalVideoRequestOptions().isNetworkAccessAllowed)
+        XCTAssertThrowsError(try PhotoKitPhotosLibraryAdapter.localOriginalVideoURL(AVMutableComposition()))
+    }
+
     func testAnalysisEvidenceTimeSeeksOnlyMatchingReadyVideo() async throws {
         let session = LibraryVideoViewingSession()
         let identity = LibraryVideoViewingSession.Identity(assetID: UUID(), revision: 1)
