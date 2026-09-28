@@ -1003,6 +1003,35 @@ final class PersonalizedSuggestionServiceTests: XCTestCase {
         }
     }
 
+    func testLegacySuggestionsRejectSameDimensionMultiFrameSampleAndCandidateIdentity() async throws {
+        for changeSample in [true, false] {
+            let fixture = try CatalogQueryTestSupport.openQueryDatabase()
+            let accepted = [fixture.ids.assetNewest, fixture.ids.assetMiddle]
+            let rejected = [fixture.ids.assetDuplicateTimeA, fixture.ids.assetDuplicateTimeB]
+            let candidate = fixture.ids.assetNocaseLower
+            _ = try fixture.tags.batchReject(tagID: fixture.ids.tagFamily, assetIDs: rejected,
+                timestampMs: DatabaseTestSupport.timestampMs + 1)
+            try await fixture.database.pool.write { db in
+                try db.execute(sql: "UPDATE source SET state = 'active'")
+            }
+            let stub = StubFeatureVectorLoader(database: fixture.database, vectors: [
+                accepted[0]: [0, 0], accepted[1]: [0, 1], rejected[0]: [10, 10],
+                rejected[1]: [10, 9], candidate: [0, 0.5]])
+            let loader = ChangedRepresentationLoader(base: stub, changedAssetID: changeSample ? accepted[0] : candidate)
+            let service = PersonalizedSuggestionService(database: fixture.database, featureLoader: loader)
+            do {
+                _ = try await service.generateSuggestions(tagID: fixture.ids.tagFamily, candidateAssetIDs: [candidate])
+                XCTFail("A same-dimension multi-frame input must not enter a poster model")
+            } catch { XCTAssertEqual(error as? PersonalizedSuggestionError, .incompatibleFeatureIdentity) }
+            let revisions = try await fixture.database.pool.read { db in
+                try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM tag_model_revision") ?? 0
+            }
+            XCTAssertEqual(revisions, 0)
+            XCTAssertTrue(try GRDBPersonalizationRepository(database: fixture.database)
+                .pendingPredictions(tagID: fixture.ids.tagFamily, limit: 10).isEmpty)
+        }
+    }
+
     func testBuildsVersionedModelAndKeepsManualDecisionAuthoritative() async throws {
         let fixture = try CatalogQueryTestSupport.openQueryDatabase()
         let accepted = [fixture.ids.assetNewest, fixture.ids.assetMiddle]
@@ -1291,5 +1320,18 @@ private actor StubFeatureVectorLoader: FeatureVectorLoading {
             vectorSHA256: digest,
             origin: .generated
         )
+    }
+}
+
+private struct ChangedRepresentationLoader: FeatureVectorLoading {
+    let base: StubFeatureVectorLoader
+    let changedAssetID: UUID
+    func loadOrGenerate(assetID: UUID) async throws -> FeatureVectorPayload {
+        let value = try await base.loadOrGenerate(assetID: assetID)
+        guard assetID == changedAssetID else { return value }
+        return FeatureVectorPayload(identity: FeatureIdentity(assetID: assetID,
+            provider: VideoMultiFrameFeatureSet.identity, contentRevision: value.identity.contentRevision),
+            elementCount: value.elementCount, vectorData: value.vectorData,
+            vectorSHA256: value.vectorSHA256, origin: value.origin)
     }
 }

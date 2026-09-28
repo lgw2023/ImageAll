@@ -53,3 +53,9 @@ V058 新表按资产保存当前表示的完整特征，关联修订、来源身
 用户显式触发，从当前表示已分析且修订仍一致的视频中，选最近写入的最多 20 项比较，时长必须在当前视频 ±20% 内。超过范围明确显示未穷尽；未分析资产不自动入队。候选需重新验证授权来源并读取/复用当前特征，失效按跳过计数，取消传播。比较完成再次复核当前视频特征未变化。
 
 按双向覆盖分数降序展示名称、当前/候选最佳帧时间点；分数不是概率，不设未经真实数据校准的自动接受阈值。当前时间点可 App 内定位，候选通过既有系统播放器打开（不承诺系统播放器自动跳到显示时间）。与精确去重服务无写入依赖，无清理按钮。Mac 现有单项打开只接收已加载分页资产，故不能直接用于全库已分析候选；系统播放器通道避免无响应入口。
+
+## 现有模型管线身份审计与门禁
+
+发现 PersonalizedSuggestionService 只核对维度和内容修订，候选载荷的 provider/request/preprocessing 身份没有与固定旧模型匹配；FullLibrarySuggestionsHandler 在生成样本注册时重新构造默认身份，可能掩盖不同表示。因此在两个管线的每次特征加载后核对资产 ID 和完整旧表示身份，使用明确 incompatibleFeatureIdentity 拒绝。该门禁是显式策略接入前的正确性要求，不将多帧接入降级为永久不可用。
+
+现有 feature/tag_model_revision/tag_model_sample 固定 provider=vision-feature-print，但 request/preprocessing revision 是正整数；多帧使用同 Vision 编码器时应保留 provider 并选择独立 preprocessing revision，同时模型发布/读取、冻结任务载荷和训练 artifact 都保存该版本。后续需将固定常量替换为用户选择并冻结的表示，保留旧默认值和历史 Run；不能只替换 loader 后沿用默认样本注册。当前尚未实施该策略切换。

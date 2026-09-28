@@ -72,6 +72,7 @@ final class PersonalizedSuggestionService: @unchecked Sendable {
         var predictions: [PredictionRegistration] = []
         for candidate in eligibleCandidates {
             let payload = try await featureLoader.loadOrGenerate(assetID: candidate.assetID)
+            try PersonalizedSuggestionScoringCore.validateLegacyIdentity(payload, assetID: candidate.assetID)
             guard payload.identity.contentRevision == candidate.contentRevision else {
                 throw PersonalizedSuggestionError.persistenceFailure
             }
@@ -216,6 +217,7 @@ final class PersonalizedSuggestionService: @unchecked Sendable {
         var loaded: [LoadedSample] = []
         for candidate in candidates {
             let payload = try await featureLoader.loadOrGenerate(assetID: candidate.assetID)
+            try PersonalizedSuggestionScoringCore.validateLegacyIdentity(payload, assetID: candidate.assetID)
             guard payload.identity.contentRevision == candidate.contentRevision else {
                 throw PersonalizedSuggestionError.persistenceFailure
             }

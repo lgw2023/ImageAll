@@ -668,7 +668,9 @@ struct FullLibrarySuggestionsHandler: LeaseBoundJobHandler, Sendable {
             try dependencies.featureLoader.loadOrGenerateSync(assetID: assetID)
         }
         try heartbeat()
-        return try result.get()
+        let payload = try result.get()
+        try PersonalizedSuggestionScoringCore.validateLegacyIdentity(payload, assetID: assetID)
+        return payload
     }
 
     private func shouldStopForControl(jobID: UUID) throws -> Bool {

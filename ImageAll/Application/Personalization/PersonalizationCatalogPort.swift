@@ -263,6 +263,7 @@ enum PersonalizedSuggestionError: Error, Equatable, Sendable {
     case tagNotFound
     case archivedTag
     case insufficientSamples
+    case incompatibleFeatureIdentity
     case inconsistentFeatureDimensions
     case invalidFeatureVector
     case persistenceFailure
