@@ -1098,8 +1098,11 @@ public actor LocalLibraryStore {
               command.installID == snapshot.installID, command.sourceEpoch == snapshot.sourceEpoch,
               command.scopeRevision == snapshot.scopeRevision,
               snapshot.assets.contains(where: { asset in
-                  asset.collections.contains { $0.collectionID == command.collectionID }
-              }) else { throw LocalLibraryError.syncIdentityChanged }
+                  asset.collections.contains { $0.collectionID == command.localCollectionID }
+              }),
+              let localName = try scalar("SELECT name FROM collections WHERE id=?", [command.localCollectionID.uuidString]),
+              try wireCollectionIdentity(for: command.localCollectionID, localName: localName).id == command.collectionID
+        else { throw LocalLibraryError.syncIdentityChanged }
     }
 
     public func completeCollectionRename(_ command: LocalCollectionRenameCommand, resultingCursor: Int64) throws {

@@ -69,3 +69,51 @@ import Testing
     #expect(try await store.pendingCollectionRename() == nil)
     #expect(try await store.collections().first?.name == "旧名")
 }
+
+@Test func aliasedCollectionRenameKeepsLocalMigrationIdentity() async throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let store = try LocalLibraryStore(url: root.appendingPathComponent("local.sqlite"))
+    let localID = try await store.createCollection(name: "Café")
+    let remoteID = UUID(), host = UUID(), device = UUID()
+    try await store.observe([.init(localIdentifier: "synthetic", kind: "image", creationDate: nil, isFavorite: false)])
+    let asset = try #require(await store.assets(visibleIdentifiers: ["synthetic"]).first)
+    try await store.setShared(assetID: asset.id, shared: true)
+    let initial = try await store.prepareSharedSnapshot(visibleIdentifiers: ["synthetic"])
+    try await store.acknowledgeSharedSnapshot(initial, hostID: host, deviceID: device, importedAssetIDs: [asset.id])
+    let change = LocalSharedCollectionChange(sequence: 1, assetID: asset.id, collectionID: remoteID,
+        collectionName: "Cafe\u{301}", included: true, fieldRevision: 1, createdCollectionID: remoteID)
+    do {
+        _ = try await store.applySharedCollectionChanges(hostID: host, deviceID: device,
+            sourceEpoch: initial.sourceEpoch, scopeRevision: initial.scopeRevision,
+            afterCursor: 0, changes: [change], nextCursor: 1)
+        Issue.record("different IDs require explicit alias confirmation")
+    } catch LocalLibraryError.syncRemoteCollectionAliasRequired(let candidate) {
+        try await store.confirmSharedCollectionAlias(candidate)
+    }
+    _ = try await store.applySharedCollectionChanges(hostID: host, deviceID: device,
+        sourceEpoch: initial.sourceEpoch, scopeRevision: initial.scopeRevision,
+        afterCursor: 0, changes: [change], nextCursor: 1)
+    let snapshot = try await store.prepareSharedSnapshot(visibleIdentifiers: ["synthetic"])
+    #expect(snapshot.assets.first?.collections.first?.collectionID == remoteID)
+    try await store.acknowledgeSharedSnapshot(snapshot, hostID: host, deviceID: device, importedAssetIDs: [])
+    let command = try await store.prepareCollectionRename(collectionID: localID, newName: "旅行",
+                                                          visibleIdentifiers: ["synthetic"])
+    #expect(command.localCollectionID == localID)
+    #expect(command.collectionID == remoteID)
+    #expect(command.expectedName == "Cafe\u{301}")
+    _ = try await store.applySharedCollectionChanges(hostID: host, deviceID: device,
+        sourceEpoch: initial.sourceEpoch, scopeRevision: initial.scopeRevision,
+        afterCursor: 1, changes: [.init(sequence: 2, assetID: asset.id, collectionID: remoteID,
+            collectionName: "旅行", included: true, fieldRevision: 1, renamedFrom: "Cafe\u{301}")], nextCursor: 2)
+    // Receipt recovery after a pull must accept the same mapping with its updated name.
+    try await store.validateCollectionRename(command, visibleIdentifiers: ["synthetic"])
+    try await store.completeCollectionRename(command, resultingCursor: 2)
+    let migration = try await store.migrationCompletionCheckpoint(visibleIdentifiers: ["synthetic"])
+    #expect(migration.snapshot.assets.first?.collections == [.init(collectionID: localID, collectionName: "旅行")])
+    #expect(migration.checkpoint.collectionAliases.first?.localCollectionID == localID)
+    #expect(migration.checkpoint.collectionAliases.first?.remoteCollectionID == remoteID)
+    #expect(migration.checkpoint.collectionAliases.first?.remoteCollectionName == "旅行")
+    #expect(migration.checkpoint.collectionChangeCursor == 2)
+    #expect(try await store.pendingSharedOperations().isEmpty)
+}
