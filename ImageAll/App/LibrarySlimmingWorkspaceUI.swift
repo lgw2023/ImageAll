@@ -620,6 +620,15 @@ struct LibrarySlimmingWorkspaceView: View {
             if let plan = identicalCleanupPlan {
                 LibrarySlimmingIdenticalCleanupConfirmationSheet(
                     plan: plan,
+                    onInspect: { assetID in
+                        guard let decision = plan.decisions.first(where: {
+                            ($0.retainedAssetIDs + $0.assetIDsToRecycle).contains(assetID)
+                        }) else { return }
+                        identicalCleanupPlan = nil
+                        model.selectLibrarySlimmingCluster(decision.clusterID)
+                        model.selectLibrarySlimmingMember(assetID, additive: false)
+                        model.toggleLibrarySlimmingPreview()
+                    },
                     onFastDelete: {
                         identicalCleanupPlan = nil
                         Task {
@@ -3163,8 +3172,98 @@ struct LibraryFastDeleteConfirmationSheet: View {
     }
 }
 
-private struct LibrarySlimmingIdenticalCleanupConfirmationSheet: View {
+struct LibrarySlimmingCleanupMemberPresentation: Identifiable, Equatable {
+    let id: UUID
+    let groupNumber: Int
+    let fileName: String
+    let sourceName: String
+    let evidenceCaption: String
+    let sizeCaption: String
+    let durationCaption: String
+    let dateCaption: String
+    let isRetained: Bool
+    let reason: String
+
+    static func rows(plan: LibrarySlimmingIdenticalCleanupPlan) -> [Self] {
+        let proofs = Dictionary(plan.assetProofs.map { ($0.assetID, $0) }, uniquingKeysWith: { first, _ in first })
+        return plan.decisions.enumerated().flatMap { index, decision in
+            (decision.retainedAssetIDs + decision.assetIDsToRecycle).map { id in
+                let proof = proofs[id]
+                let retained = decision.retainedAssetIDs.contains(id)
+                var protections: [String] = []
+                if decision.favoriteRetainedAssetIDs.contains(id) { protections.append("红心保护") }
+                if decision.editProtectedRetainedAssetIDs.contains(id) { protections.append("Photos 已编辑，保留编辑结果") }
+                let reason: String
+                if !protections.isEmpty { reason = protections.joined(separator: "；") }
+                else if retained { reason = "按大小、日期、稳定顺序选为保留项" }
+                else { reason = decision.matchKind == .byteIdentical
+                    ? "原件字节相同；组内已有保留副本" : "照片视觉匹配 100%；组内已有保留项" }
+                return Self(id: id, groupNumber: index + 1,
+                    fileName: proof?.fileName ?? "媒体 \(id.uuidString.prefix(8))",
+                    sourceName: proof?.sourceDisplayName ?? "来源未记录",
+                    evidenceCaption: proof?.sourceKind == .photos ? "Photos 原始资源" : "文件夹原件",
+                    sizeCaption: proof?.encodedByteCount.map { ByteCountFormatter.string(fromByteCount: $0, countStyle: .file) } ?? "大小未记录",
+                    durationCaption: proof?.mediaKind == .video
+                        ? (proof?.durationMs.map { VideoDurationText.format(milliseconds: $0) } ?? "时长未记录") : "照片",
+                    dateCaption: proof?.mediaDateMs.map {
+                        Date(timeIntervalSince1970: Double($0) / 1000).formatted(date: .numeric, time: .omitted)
+                    } ?? "日期未记录",
+                    isRetained: retained, reason: reason)
+            }
+        }
+    }
+}
+
+struct LibrarySlimmingCleanupComparisonView: View {
     let plan: LibrarySlimmingIdenticalCleanupPlan
+    var onInspect: (UUID) -> Void = { _ in }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("逐项核对去留").font(.headline)
+            Text("同组逐项比较来源、大小和时长。点“查看”可返回媒体预览；查看后请重新打开清理方案。")
+                .font(.caption).foregroundStyle(.secondary)
+            LazyVStack(spacing: 0) {
+                ForEach(LibrarySlimmingCleanupMemberPresentation.rows(plan: plan)) { row in
+                    HStack(alignment: .top, spacing: 12) {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text(row.fileName).font(.callout.weight(.medium)).lineLimit(2)
+                            Text("第 \(row.groupNumber) 组 · \(row.evidenceCaption)")
+                                .font(.caption2).foregroundStyle(.secondary)
+                        }.frame(maxWidth: .infinity, alignment: .leading)
+                        Text(row.sourceName).font(.caption).lineLimit(2)
+                            .frame(width: 92, alignment: .leading)
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text(row.sizeCaption).font(.caption.weight(.medium))
+                            Text(row.durationCaption).font(.caption)
+                            Text(row.dateCaption).font(.caption2).foregroundStyle(.secondary)
+                        }.frame(width: 92, alignment: .leading)
+                        VStack(alignment: .leading, spacing: 3) {
+                            Label(row.isRetained ? "保留" : "将清理",
+                                  systemImage: row.isRetained ? "checkmark.shield" : "trash")
+                                .font(.caption.weight(.semibold))
+                                .foregroundStyle(row.isRetained ? .green : .orange)
+                            Text(row.reason).font(.caption2).foregroundStyle(.secondary)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }.frame(width: 164, alignment: .leading)
+                        Button("查看") { onInspect(row.id) }.buttonStyle(.bordered)
+                            .accessibilityLabel("查看 \(row.fileName)")
+                    }
+                    .padding(12)
+                    .background(row.isRetained ? Color.green.opacity(0.045) : Color.orange.opacity(0.045))
+                    .accessibilityElement(children: .contain)
+                    Divider()
+                }
+            }
+            .clipShape(RoundedRectangle(cornerRadius: 8))
+            .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.secondary.opacity(0.2)))
+        }
+    }
+}
+
+struct LibrarySlimmingIdenticalCleanupConfirmationSheet: View {
+    let plan: LibrarySlimmingIdenticalCleanupPlan
+    var onInspect: (UUID) -> Void = { _ in }
     let onFastDelete: () -> Void
     let onRecoverableRecycle: () -> Void
     let onCancel: () -> Void
@@ -3176,9 +3275,10 @@ private struct LibrarySlimmingIdenticalCleanupConfirmationSheet: View {
                 VStack(alignment: .leading, spacing: 20) {
                     header
                     runtimeMetrics
-                    charts
+                    LibrarySlimmingCleanupComparisonView(plan: plan, onInspect: onInspect)
                     cleanupRules
                     notices
+                    DisclosureGroup("查看统计图") { charts }
                 }
                 .padding(24)
             }
@@ -3199,7 +3299,7 @@ private struct LibrarySlimmingIdenticalCleanupConfirmationSheet: View {
                 }
                 .persistentHelp("文件夹媒体复制到 ImageAll 回收站；跨磁盘时可能较慢。")
                 Button(
-                    "快速清理 \(plan.assetIDsToRecycle.count.formatted()) 张",
+                    "快速清理 \(plan.assetIDsToRecycle.count.formatted()) 项",
                     role: .destructive
                 ) {
                     fastDelete()

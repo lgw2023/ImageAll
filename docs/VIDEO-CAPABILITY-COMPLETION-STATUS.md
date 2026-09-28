@@ -10,7 +10,7 @@
 - P4–P6 聚焦 Mac 完整视频精确去重、安全比较、多帧证据、内容相似候选与照片／视频混合故事。
 - P7 仅进行 Mac 所需集成、构建、回归、运行证据和本地工程交付；Web 生成资源集成、Web／iPhone 联调及设备验收退出本目标完成条件。
 - 已有 Web／iOS 源码、提交和其他会话工作原样保留；不回滚、不继续扩展。
-- P4 文件夹视频精确组计划、保留副本物理复核与收藏保护、整组回收恢复已完成定向合成验证；PhotoKit 本地原件摘要、分组与跳过说明已接线；Photos 精确组执行前重读、编辑保护和系统删除／恢复语义已通过合成验证；下一步检查 Mac 比较呈现与必要运行证据。目标保持 active。
+- P4 文件夹视频精确组计划、保留副本物理复核与收藏保护、整组回收恢复已完成定向合成验证；PhotoKit 本地原件摘要、分组与跳过说明已接线；Photos 精确组门禁与 Mac 逐项比较已通过规定合成工程验收；接下来进入 P5 多帧能力，最终全 App 操作复核在 P7 收口。目标保持 active。
 
 ## 工作区与边界
 
@@ -30,7 +30,7 @@
 | P1 | IN_PROGRESS | 分切片 PASS；完整闭环未验 | 媒体契约已交付；Mac／iPhone 查看器构建／合成测试 PASS；Mac 原生完整运行闭环待验 |
 | P2 | IN_PROGRESS | 首切片 PASS | 文件夹元数据、查询／地图／回填、原生云端获取及 PhotoKit 播放后技术信息持久化已分切片验；Mac 智能推流与完整 UI 待验 |
 | P3 | IN_PROGRESS | 共享服务到真实质心模型和持久审核链 PASS；Mac 运行待验 | 继续全库建议、训练命令与审核持久事实闭环 |
-| P4 | IN_PROGRESS | 原件摘要／分组及 migration PASS；整组清理 12/12 PASS | 文件夹完整回收恢复已验；PhotoKit 原件流式摘要及比较、跳过说明已合成验证；Photos 精确清理及恢复语义 14/14 PASS；完整 Mac 比较运行待补 |
+| P4 | VERIFIED（合成） | 完整原件／分组／安全清理与恢复、原生比较渲染通过 | 实现及最小合成验收已覆盖；真实 Photos／iCloud、日常配置点击和最终版本总回归仍未验证，见 P7 |
 | P5 | NOT_STARTED | NOT_RUN | 版本化有限多帧与时间点证据、内容相似独立候选 |
 | P6 | NOT_STARTED | NOT_RUN | 显式片段与原声规则，合成混合故事可解码验证 |
 | P7 | NOT_STARTED | NOT_RUN | 必需集成、最终构建与人工路线 |
@@ -489,3 +489,12 @@
 - `photos-video-cleanup-build.log`：TEST BUILD SUCCEEDED。`photos-video-cleanup-tests.log`：14/14 PASS，包括四个新测试（混合来源保留编辑／收藏→回收→模拟系统恢复；内容／资源身份／新编辑／云端变化拒绝；文件夹处理后保留 Photos 失效拦截；授权门禁先于原件读），以及文件夹真实合成 MP4 恢复解码、收藏策略、照片视觉重复、两类授权和原生预览模型回归。源码摘要见 `photos-video-cleanup-source-sha256.json`。
 - Photos reader 和 mutation port 均注入合成实现，未调用真实 Photos 删除、恢复或云端下载。真实 Photos／iCloud 与完整原生点击验收仍 NOT_RUN；不以测试替代这些运行证据。当前工作仅 Mac，无 Web／iOS 修改、无 push；LibraryWorkspace 75/5 与 project.pbxproj 4/0 并行差异保持。
 - 下一步是 Mac 精确比较中大小／时长／来源／保留依据的呈现核查与必要运行证据，再进入 P5 多帧与 P6 混合故事。P4 尚不标记完整验收，P0–P7 目标保持 active。
+
+## P4 Mac 逐项比较与阶段验收（2026-09-28）
+
+- 清理确认页增加逐项比较表并置于统计图之前；列出文件名、来源、原件来源类型、大小、时长、媒体日期、保留／清理理由。支持返回对应成员的现有视频预览，查看后重新预览计划。当前计划绑定这些展示事实，不把陈旧元数据静默用于执行。
+- 新原生渲染测试用真实合成目录 DB／Photos 原件替身生成计划，检查四项元数据和保护理由，并通过 NSHostingView 生成 `mac-comparison/video-comparison-members.png` 与 `mac-comparison/video-cleanup-confirmation.png`。已目视检查，无文本重叠或按钮遮挡；这证明原生视图渲染，不宣称已点击日常 App 或真实 Photos。
+- `video-comparison-build.log` 和 `video-comparison-build-final.log` 均 TEST BUILD SUCCEEDED；`video-comparison-tests.log` 5/5 PASS（渲染、两类原件回收恢复和原生模型确认回归）。新增合法 MP4 空 free 容器块对照的 `video-container-rewrite-tests.log` 1/1 PASS：两个文件都能解码，时长与首帧像素一致，但 SHA 不同，精确组只包含字节副本。
+- 证据根新增 `p4-manual-video-fixture/`，包含三份小型合成 MP4、SHA manifest 和 Xcode 最短手工路线 README。只创建任务专属合成文件，未自动把目录接入日常 App。源码和 PNG 摘要见 `video-comparison-source-sha256.json`。
+- P4 最小验收覆盖：独立原件 provenance／新 migration；文件夹和 PhotoKit 本地流式摘要与取消、版本复核；同封面与容器改写不误入字节组；比较、收藏／编辑保留、授权、回收及恢复语义。工程状态更新为 VERIFIED（仅已列合成范围）。真实图库、Photos／iCloud 系统操作、日常 Xcode 点击、发布验收均保持 NOT_RUN。
+- 依据端到端优先规则，后续转 P5 的确定性有限多帧与时间点证据；全 App 合成操作复核和最终版本回归在 P7 统一收口，不重复每个切片已稳定的矩阵。P1–P3 的剩余项及 P5–P7 均不因 P4 通过而省略，整体目标 active。

@@ -1,4 +1,6 @@
 @preconcurrency import AVFoundation
+import AppKit
+import SwiftUI
 import CryptoKit
 import Darwin
 import Foundation
@@ -7,6 +9,74 @@ import XCTest
 @testable import ImageAll
 
 final class LibrarySlimmingRecycleTests: XCTestCase {
+    @MainActor
+    func testNativeVideoCleanupComparisonRendersCatalogEvidenceAndRetentionReasons() async throws {
+        let env = try RecycleTestEnv(label: #function)
+        defer { env.cleanup() }
+        let bytes = Data(repeating: 33, count: 1_250_000)
+        let reader = RecyclePhotosVideoOriginalReader(bytes: bytes)
+        reader.editedIDs = ["edited"]
+        let edited = try env.seedPhotosVideo(localIdentifier: "edited", reader: reader)
+        let photos = try env.seedPhotosVideo(localIdentifier: "ordinary", reader: reader)
+        let favorite = try env.seedAsset(relativePath: "旅行记录-收藏原件.mp4", contents: bytes)
+        let folder = try env.seedAsset(relativePath: "旅行记录-导出副本.mp4", contents: bytes)
+        for asset in [favorite, folder] { try env.prepareOriginalVideoEvidence(assetID: asset.assetID) }
+        try await env.database.pool.write { db in
+            try db.execute(sql: "UPDATE source SET display_name = 'Mac 合成目录' WHERE kind = 'folder'")
+            try db.execute(sql: "UPDATE asset SET file_name = '旅行记录-剪辑版本.mov' WHERE id = ?", arguments: [edited.uuidString.lowercased()])
+            try db.execute(sql: "UPDATE asset SET file_name = '旅行记录-Photos 原件.mov' WHERE id = ?", arguments: [photos.uuidString.lowercased()])
+            try db.execute(sql: """
+                INSERT INTO asset_favorite_state (asset_id, desired_value, photos_observed_value,
+                    sync_status, intent_revision, requested_at_ms, updated_at_ms)
+                VALUES (?, 1, NULL, 'localOnly', 1, 1, 1)
+                """, arguments: [favorite.assetID.uuidString.lowercased()])
+        }
+        let service = env.makeRecycleService(photosVideoOriginals: reader)
+        let cluster = SlimmingCluster(id: UUID(), kind: .byteIdentical,
+            memberAssetIDs: [edited, photos, favorite.assetID, folder.assetID], representativeAssetID: edited,
+            score: 0, modelIdentity: .featurePrintOnly)
+        let plan = try service.makeIdenticalCleanupPlan(clusters: [cluster])
+        let rows = LibrarySlimmingCleanupMemberPresentation.rows(plan: plan)
+        XCTAssertEqual(rows.count, 4)
+        XCTAssertEqual(rows.filter(\.isRetained).count, 2)
+        XCTAssertEqual(rows.first { $0.id == favorite.assetID }?.reason, "红心保护")
+        XCTAssertTrue(rows.first { $0.id == edited }?.reason.contains("已编辑") == true)
+        XCTAssertEqual(rows.first { $0.id == folder.assetID }?.sourceName, "Mac 合成目录")
+        XCTAssertTrue(rows.allSatisfy { !$0.sizeCaption.contains("未记录") && !$0.durationCaption.contains("未记录") })
+        XCTAssertTrue(rows.first { $0.id == photos }?.evidenceCaption.contains("Photos") == true)
+
+        @MainActor
+        func render<V: View>(_ view: V, name: String, size: NSSize) async throws {
+            let host = NSHostingView(rootView: view
+                .frame(width: size.width, height: size.height)
+                .background(Color(nsColor: .windowBackgroundColor))
+                .environment(\.colorScheme, .light))
+            host.appearance = NSAppearance(named: .aqua)
+            host.frame = NSRect(origin: .zero, size: size)
+            host.layoutSubtreeIfNeeded()
+            try await Task.sleep(for: .milliseconds(200))
+            host.layoutSubtreeIfNeeded()
+            let bitmap = try XCTUnwrap(host.bitmapImageRepForCachingDisplay(in: host.bounds))
+            host.cacheDisplay(in: host.bounds, to: bitmap)
+            let png = try XCTUnwrap(bitmap.representation(using: .png, properties: [:]))
+            XCTAssertGreaterThan(png.count, 5_000)
+            let attachment = XCTAttachment(data: png, uniformTypeIdentifier: "public.png")
+            attachment.name = name
+            attachment.lifetime = .keepAlways
+            add(attachment)
+            if let directory = ProcessInfo.processInfo.environment["IMAGEALL_VIDEO_EVIDENCE_DIR"] {
+                let root = URL(fileURLWithPath: directory, isDirectory: true)
+                try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+                try png.write(to: root.appendingPathComponent(name + ".png"))
+            }
+        }
+        try await render(LibrarySlimmingCleanupComparisonView(plan: plan).padding(20),
+            name: "video-comparison-members", size: NSSize(width: 820, height: 460))
+        try await render(LibrarySlimmingIdenticalCleanupConfirmationSheet(plan: plan,
+            onFastDelete: {}, onRecoverableRecycle: {}, onCancel: {}),
+            name: "video-cleanup-confirmation", size: NSSize(width: 820, height: 720))
+    }
+
     func testPhotoKitVideoExactCleanupRetainsEditsAndFavoritesThenReconcilesSystemRestore() throws {
         let env = try RecycleTestEnv(label: #function)
         defer { env.cleanup() }

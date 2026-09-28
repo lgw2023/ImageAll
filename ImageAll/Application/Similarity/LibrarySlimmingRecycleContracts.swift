@@ -288,6 +288,9 @@ struct LibrarySlimmingIdenticalCleanupAssetProof: Sendable, Equatable {
     var mediaKind: MediaKind = .image
     var originalDescriptorIdentity: String? = nil
     var hasOriginalVideoAdjustments: Bool = false
+    var fileName: String? = nil
+    var sourceDisplayName: String? = nil
+    var durationMs: Int64? = nil
     var encodedByteCount: Int64? = nil
     var mediaDateMs: Int64? = nil
     var perceptualAlgoVersion: String? = nil

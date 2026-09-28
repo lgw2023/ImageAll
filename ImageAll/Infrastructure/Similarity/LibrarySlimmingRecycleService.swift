@@ -306,6 +306,8 @@ struct LibrarySlimmingRecycleService: LibrarySlimmingRecyclePort {
                         a.content_revision AS content_revision,
                         s.display_name AS source_display_name,
                         a.media_kind AS media_kind,
+                        a.file_name AS file_name,
+                        a.duration_ms AS duration_ms,
                         COALESCE(original.descriptor_identity, photos_video.resource_identity) AS original_descriptor_identity,
                         COALESCE(photos_video.has_adjustments, 0) AS has_video_adjustments,
                         CASE WHEN a.media_kind = 'video' THEN COALESCE(original.sha256, photos_video.sha256)
@@ -416,6 +418,9 @@ struct LibrarySlimmingRecycleService: LibrarySlimmingRecyclePort {
                                 mediaKind: MediaKind(rawValue: row["media_kind"]) ?? .image,
                                 originalDescriptorIdentity: row["original_descriptor_identity"],
                                 hasOriginalVideoAdjustments: (row["has_video_adjustments"] as Int) == 1,
+                                fileName: row["file_name"],
+                                sourceDisplayName: row["source_display_name"],
+                                durationMs: row["duration_ms"],
                                 encodedByteCount: row["encoded_byte_count"],
                                 mediaDateMs: row["media_date_ms"],
                                 perceptualAlgoVersion: row["perceptual_algo_version"],

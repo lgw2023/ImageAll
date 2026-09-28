@@ -1,3 +1,4 @@
+@preconcurrency import AVFoundation
 import CryptoKit
 import Darwin
 import GRDB
@@ -7,6 +8,45 @@ import XCTest
 @testable import ImageAll
 
 final class IdenticalDuplicateDetectionTests: XCTestCase {
+    func testPlayableVideoContainerRewriteIsNotByteIdentical() async throws {
+        let env = try SimilarityTestSupport.Environment(label: #function)
+        defer { env.cleanup() }
+        let fixture = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+            .deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("docs/evidence/time-story-phase-1-20260918/synthetic-silent.mp4")
+        let bytes = try Data(contentsOf: fixture)
+        // A valid ISO BMFF top-level empty 'free' box changes the container only.
+        let rewrittenBytes = bytes + Data([0, 0, 0, 8, 0x66, 0x72, 0x65, 0x65])
+        let original = try env.seedAsset(relativePath: "original.mp4", contents: bytes,
+            mediaType: "public.mpeg-4", mediaKind: .video, durationMs: nil)
+        let copy = try env.seedAsset(relativePath: "copy.mp4", contents: bytes,
+            mediaType: "public.mpeg-4", mediaKind: .video, durationMs: nil)
+        let rewritten = try env.seedAsset(relativePath: "rewritten.mp4", contents: rewrittenBytes,
+            mediaType: "public.mpeg-4", mediaKind: .video, durationMs: nil)
+        let base = env.makeCompletionService()
+        let service = OriginalVideoDigestService(database: env.database, sourceAccess: base.sourceAccess, clock: base.clock)
+        let ids = [original.assetID, copy.assetID, rewritten.assetID]
+        for id in ids { _ = try service.completeFolderVideo(assetID: id) }
+        let clusters = try IdenticalDuplicateClusterService(database: env.database)
+            .clusterIdenticalDuplicates(assetIDs: ids, mediaKind: .video)
+        XCTAssertEqual(clusters.count, 1)
+        XCTAssertEqual(Set(clusters.first?.memberAssetIDs ?? []), Set([original.assetID, copy.assetID]))
+        let first = AVURLAsset(url: env.sourceRoot.appendingPathComponent("original.mp4"))
+        let changed = AVURLAsset(url: env.sourceRoot.appendingPathComponent("rewritten.mp4"))
+        let firstDuration = try await first.load(.duration)
+        let changedDuration = try await changed.load(.duration)
+        XCTAssertGreaterThan(firstDuration.seconds, 0)
+        XCTAssertEqual(firstDuration.seconds, changedDuration.seconds, accuracy: 0.001)
+        let firstFrame = try await AVAssetImageGenerator(asset: first).image(at: .zero)
+        let changedFrame = try await AVAssetImageGenerator(asset: changed).image(at: .zero)
+        XCTAssertEqual(firstFrame.image.width, changedFrame.image.width)
+        XCTAssertEqual(firstFrame.image.height, changedFrame.image.height)
+        let firstPixels = try XCTUnwrap(firstFrame.image.dataProvider?.data) as Data
+        let changedPixels = try XCTUnwrap(changedFrame.image.dataProvider?.data) as Data
+        XCTAssertEqual(Data(SHA256.hash(data: firstPixels)), Data(SHA256.hash(data: changedPixels)))
+        XCTAssertNotEqual(Data(SHA256.hash(data: bytes)), Data(SHA256.hash(data: rewrittenBytes)))
+    }
+
     func testPhotoKitOriginalVideoJobGroupsResourcesAndExplainsCloudAndEditedResults() throws {
         let env = try SimilarityTestSupport.Environment(label: #function)
         defer { env.cleanup() }
