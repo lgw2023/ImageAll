@@ -231,6 +231,51 @@ final class ImageAllMigrationArchiveTests: XCTestCase {
         }
     }
 
+    func testAlbumCatalogPreservesEmptyNodesAndRejectsBrokenHierarchy() throws {
+        typealias Node = ImageAllMigrationAppleCollection
+        let folder = Node(localIdentifier: "folder", title: "Trips", kind: .folder,
+            parentLocalIdentifier: nil, sourceOrdinal: 0, observedAssetCount: nil)
+        let album = Node(localIdentifier: "album", title: "Selected", kind: .album,
+            parentLocalIdentifier: "folder", sourceOrdinal: 0, observedAssetCount: 3)
+        let empty = Node(localIdentifier: "empty", title: "Empty", kind: .album,
+            parentLocalIdentifier: "folder", sourceOrdinal: 1, observedAssetCount: 0)
+        func header(_ catalog: [Node]) -> ImageAllMigrationHeader {
+            .init(migrationID: UUID(), sourceDeviceID: UUID(), sourceEpoch: UUID(),
+                scopeRevision: 1, inventoryWatermark: 1, declaredItemCount: 0,
+                appleAlbumCoverage: .selectedAssetsOnly, appleAlbumCatalog: catalog)
+        }
+        let valid = header([folder, album, empty])
+        let root = makeRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        try ImageAllMigrationArchive.write(header: valid, items: [], to: root)
+        let restored = try ImageAllMigrationArchive.readVerifiedHeader(at: root).0
+        XCTAssertEqual(restored, valid)
+        XCTAssertEqual(restored.formatVersion, 2)
+        let catalog = try ImageAllMigrationArchive.validatedAlbumCatalog(restored)
+        XCTAssertEqual(catalog?["empty"]?.observedAssetCount, 0)
+        let membership = ImageAllMigrationAppleAlbumMembership(albumLocalIdentifier: "album",
+            albumTitle: "Selected", folderPath: [.init(localIdentifier: "folder", title: "Trips")], sourceOrdinal: 2)
+        XCTAssertNoThrow(try ImageAllMigrationArchive.validateAlbumMemberships([membership], catalog: catalog))
+        XCTAssertThrowsError(try ImageAllMigrationArchive.validateAlbumMemberships([
+            .init(albumLocalIdentifier: "empty", albumTitle: "Empty",
+                  folderPath: [.init(localIdentifier: "folder", title: "Trips")], sourceOrdinal: 0)
+        ], catalog: catalog))
+        let broken: [[Node]] = [
+            [folder, folder], [album],
+            [.init(localIdentifier: "folder", title: nil, kind: .folder,
+                parentLocalIdentifier: "folder", sourceOrdinal: 0, observedAssetCount: nil)],
+            [folder, .init(localIdentifier: "other", title: nil, kind: .folder,
+                parentLocalIdentifier: nil, sourceOrdinal: 0, observedAssetCount: nil)],
+            [.init(localIdentifier: "empty", title: nil, kind: .album,
+                parentLocalIdentifier: nil, sourceOrdinal: 0, observedAssetCount: -1)],
+            [album, .init(localIdentifier: "folder", title: nil, kind: .folder,
+                parentLocalIdentifier: "album", sourceOrdinal: 1, observedAssetCount: nil)]
+        ]
+        for nodes in broken {
+            XCTAssertThrowsError(try ImageAllMigrationArchive.validatedAlbumCatalog(header(nodes)))
+        }
+    }
+
     func testUnavailableAlbumCoverageCannotContainMembershipClaims() throws {
         let root = makeRoot()
         defer { try? FileManager.default.removeItem(at: root) }

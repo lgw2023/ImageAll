@@ -40,7 +40,7 @@ public struct ImageAllMigrationStreamRecord: Codable, Sendable, Equatable {
     }
 
     public func validate() throws {
-        guard formatVersion == 1, header.formatVersion == 1, header.recordType == "header",
+        guard formatVersion == 1, [1, 2].contains(header.formatVersion), header.recordType == "header",
               header.declaredItemCount == items.count,
               Set(items.map(\.mediaID)).count == items.count,
               Set(items.map(\.sourceLocalIdentifier)).count == items.count,
@@ -48,6 +48,10 @@ public struct ImageAllMigrationStreamRecord: Codable, Sendable, Equatable {
               receipt.itemCount == items.count,
               receipt.manifestSHA256 == (try Self.manifestSHA256(header: header, items: items)) else {
             throw ImageAllMigrationArchiveError.invalidManifest
+        }
+        let catalog = try ImageAllMigrationArchive.validatedAlbumCatalog(header)
+        for item in items {
+            try ImageAllMigrationArchive.validateAlbumMemberships(item.appleAlbums ?? [], catalog: catalog)
         }
         var total: Int64 = 0
         var count = 0

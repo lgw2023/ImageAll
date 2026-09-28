@@ -670,6 +670,12 @@ final class RemoteCompanionModel: ObservableObject {
         }
     }
 
+    func requireMigrationAlbumCatalogSupport() throws {
+        guard (capabilities?.migrationAlbumCatalogVersion ?? 0) >= 1 else {
+            throw RemoteAPIError(code: .conflict, message: "请更新 Mac 后再传输包含用户相册目录的归档。")
+        }
+    }
+
     func migrationStreamingConnection() throws -> (client: RemoteLibraryClient, hostID: UUID, deviceID: UUID) {
         try validateMigrationNetwork()
         guard isConnected, let client, let sessionTokens, let capabilities,

@@ -115,6 +115,7 @@ struct CatalogDatabase: Sendable {
         V058AddVideoAnalysisFeaturesMigration.register(on: &migrator)
         V059AddVideoPredictionEvidenceMigration.register(on: &migrator)
         V060AddPhoneAlbumUnavailableReasonMigration.register(on: &migrator)
+        V061AddPhoneAlbumCatalogMigration.register(on: &migrator)
         return migrator
     }
 
@@ -3600,6 +3601,19 @@ enum V060AddPhoneAlbumUnavailableReasonMigration {
                 CHECK(apple_album_unavailable_reason IS NULL OR
                     (apple_album_unavailable_reason = 'unavailableLimitedAuthorization'
                      AND apple_album_coverage IS NULL))
+                """)
+        }
+    }
+}
+
+enum V061AddPhoneAlbumCatalogMigration {
+    static func register(on migrator: inout DatabaseMigrator) {
+        migrator.registerMigration(CatalogMigrationID.v061AddPhoneAlbumCatalog) { db in
+            try db.execute(sql: """
+                CREATE TABLE migration_import_apple_album_catalog (
+                    migration_id TEXT PRIMARY KEY REFERENCES migration_import(id) ON DELETE RESTRICT,
+                    catalog_json BLOB NOT NULL CHECK(length(catalog_json) > 0 AND length(catalog_json) < 1048576)
+                ) STRICT
                 """)
         }
     }

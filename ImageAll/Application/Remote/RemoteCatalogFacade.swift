@@ -92,7 +92,8 @@ actor RemoteCatalogFacade {
             videoRangeStreamingVersion: supportsRevisionedVideoRanges ? 1 : nil,
             videoQueryVersion: 1,
             worldMapMediaScopeVersion: 1,
-            worldMapBackfillMediaScopeVersion: 1
+            worldMapBackfillMediaScopeVersion: 1,
+            migrationAlbumCatalogVersion: supportsMigrationTransfer ? 1 : nil
         )
     }
 

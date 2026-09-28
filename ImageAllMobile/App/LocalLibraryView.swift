@@ -344,7 +344,7 @@ final class LocalLibraryModel: ObservableObject {
 
     /// An explicit, local-only export of the current selected scope. A reduced
     /// Photos permission must never silently turn this into a smaller archive.
-    func exportSelectedArchive() async throws -> (URL, ImageAllMigrationVerification) {
+    func exportSelectedArchive(includeAlbumCatalog: Bool = false) async throws -> (URL, ImageAllMigrationVerification) {
         let snapshot = try await makeMigrationFactSnapshot()
         guard !snapshot.selectedAssetIDs.isEmpty else {
             throw LocalArchiveExportError.emptySelection
@@ -352,7 +352,7 @@ final class LocalLibraryModel: ObservableObject {
         guard Set(snapshot.selectedAssetIDs) == Set(snapshot.assets.map(\.id)) else {
             throw LocalArchiveExportError.selectionNotVisible
         }
-        let result = try await LocalPhotoArchiveExporter.export(snapshot: snapshot)
+        let result = try await LocalPhotoArchiveExporter.export(snapshot: snapshot, includeAlbumCatalog: includeAlbumCatalog)
         do {
             let current = try await makeMigrationFactSnapshot()
             guard current.sourceEpoch == snapshot.sourceEpoch,
@@ -376,8 +376,9 @@ final class LocalLibraryModel: ObservableObject {
 
     /// Explicit resource-first network export. Each local scratch resource is
     /// released only after the paired receiver independently confirms its bytes.
-    func streamSelectedArchive(to remote: RemoteCompanionModel) async throws -> ImageAllMigrationTransferSealReceipt {
+    func streamSelectedArchive(to remote: RemoteCompanionModel, includeAlbumCatalog: Bool = false) async throws -> ImageAllMigrationTransferSealReceipt {
         let connection = try remote.migrationStreamingConnection()
+        if includeAlbumCatalog { try remote.requireMigrationAlbumCatalogSupport() }
         let snapshot = try await makeMigrationFactSnapshot()
         guard !snapshot.selectedAssetIDs.isEmpty else { throw LocalArchiveExportError.emptySelection }
         guard Set(snapshot.selectedAssetIDs) == Set(snapshot.assets.map(\.id)) else {
@@ -389,7 +390,7 @@ final class LocalLibraryModel: ObservableObject {
                 hostID: connection.hostID, deviceID: connection.deviceID)
             try await self.validateSharedSnapshotScope(snapshot)
         }
-        return try await LocalPhotoArchiveExporter.stream(snapshot: snapshot, configuration: .init(
+        return try await LocalPhotoArchiveExporter.stream(snapshot: snapshot, includeAlbumCatalog: includeAlbumCatalog, configuration: .init(
             destination: "\(connection.hostID.uuidString)|\(connection.deviceID.uuidString)",
             beforeResource: { try await check() },
             uploadResource: { migrationID, file, resource in
@@ -1412,6 +1413,7 @@ private struct LocalShareScopeView: View {
     @State private var isExportingFacts = false
     @State private var savedStreamingArchives: [LocalStreamingArchive] = []
     @State private var isStreamingArchive = false
+    @State private var includeAlbumCatalog = false
     @State private var streamTask: Task<Void, Never>?
     @State private var isUploadingArchive = false
     @State private var exportedArchive: URL?
@@ -1714,6 +1716,12 @@ private struct LocalShareScopeView: View {
 
     private var archiveSection: some View {
         Section("本机原件归档") {
+            Toggle("保存可访问用户相册目录（含空相册）", isOn: $includeAlbumCatalog)
+                .disabled(isStreamingArchive || isExporting || isUploadingArchive)
+            if includeAlbumCatalog {
+                Text("需完整照片权限。会保存所有可访问用户相册／文件夹的名称、层级和成员数量；只传输已选择的照片和视频，不复制未选成员。")
+                    .font(.footnote).foregroundStyle(.secondary)
+            }
             Text("有限照片权限下仅归档可访问媒体，来源相册不可读取，不能完成相册完整性验收。")
                 .font(.footnote).foregroundStyle(.secondary)
             Text("归档仅通过 Wi-Fi 或有线网络发送。切到蜂窝或断网后保留已接收进度，恢复网络后可重试原批次。")
@@ -1725,7 +1733,7 @@ private struct LocalShareScopeView: View {
                     archiveStatusMessage = nil
                     defer { isStreamingArchive = false; streamTask = nil }
                     do {
-                        let receipt = try await model.streamSelectedArchive(to: remoteModel)
+                        let receipt = try await model.streamSelectedArchive(to: remoteModel, includeAlbumCatalog: includeAlbumCatalog)
                         archiveStatusMessage = "Mac 已接收并复验 \(receipt.itemCount) 项、\(receipt.resourceCount) 个资源；手机原件保留。请在 Mac 接收目录中入库，再完成尾部对账和独立恢复验收。"
                     } catch is CancellationError {
                         archiveStatusMessage = "传输已暂停。恢复连接后可按原范围重试，Mac 已落盘进度保留。"
@@ -1776,7 +1784,7 @@ private struct LocalShareScopeView: View {
                     archiveStatusMessage = nil
                     defer { isExporting = false }
                     do {
-                        let (url, verification) = try await model.exportSelectedArchive()
+                        let (url, verification) = try await model.exportSelectedArchive(includeAlbumCatalog: includeAlbumCatalog)
                         exportedArchive = url
                         exportedArchiveComplete = verification.isComplete
                         exportedVerification = verification
@@ -2292,8 +2300,8 @@ private enum LocalPhotoArchiveExporter {
         }
         let before = byLocator.mapValues(sourceVersion)
         let selectedLocators = Set(byLocator.keys)
-        let albums = try captureAlbumMemberships(selectedLocators: selectedLocators)
-        guard albums.coverage == header.appleAlbumCoverage else {
+        let albums = try captureAlbumMemberships(selectedLocators: selectedLocators, includeCatalog: header.appleAlbumCatalog != nil)
+        guard albums.coverage == header.appleAlbumCoverage, albums.catalog == header.appleAlbumCatalog else {
             throw LocalArchiveExportError.archiveScopeChanged
         }
         for item in items {
@@ -2342,7 +2350,7 @@ private enum LocalPhotoArchiveExporter {
         refreshed.enumerateObjects { asset, _, _ in finalByLocator[asset.localIdentifier] = asset }
         guard finalByLocator.count == byLocator.count,
               finalByLocator.allSatisfy({ before[$0.key] == sourceVersion($0.value) }),
-              albums == (try captureAlbumMemberships(selectedLocators: selectedLocators)) else {
+              albums == (try captureAlbumMemberships(selectedLocators: selectedLocators, includeCatalog: header.appleAlbumCatalog != nil)) else {
             throw LocalArchiveExportError.sourceChanged
         }
     }
@@ -2422,22 +2430,22 @@ private enum LocalPhotoArchiveExporter {
         case stream(ImageAllMigrationTransferSealReceipt)
     }
 
-    static func export(snapshot: LocalSharedSnapshot) async throws -> (URL, ImageAllMigrationVerification) {
-        guard case let .archive(url, verification) = try await build(snapshot: snapshot) else {
+    static func export(snapshot: LocalSharedSnapshot, includeAlbumCatalog: Bool = false) async throws -> (URL, ImageAllMigrationVerification) {
+        guard case let .archive(url, verification) = try await build(snapshot: snapshot, includeAlbumCatalog: includeAlbumCatalog) else {
             throw LocalArchiveExportError.incompleteArchive
         }
         return (url, verification)
     }
 
-    static func stream(snapshot: LocalSharedSnapshot, configuration: Stream) async throws -> ImageAllMigrationTransferSealReceipt {
-        guard case let .stream(receipt) = try await build(snapshot: snapshot, stream: configuration) else {
+    static func stream(snapshot: LocalSharedSnapshot, includeAlbumCatalog: Bool = false, configuration: Stream) async throws -> ImageAllMigrationTransferSealReceipt {
+        guard case let .stream(receipt) = try await build(snapshot: snapshot, includeAlbumCatalog: includeAlbumCatalog, stream: configuration) else {
             throw LocalArchiveExportError.incompleteArchive
         }
         return receipt
     }
 
     private static func build(
-        snapshot initialSnapshot: LocalSharedSnapshot, stream: Stream? = nil
+        snapshot initialSnapshot: LocalSharedSnapshot, includeAlbumCatalog: Bool = false, stream: Stream? = nil
     ) async throws -> Output {
         var snapshot = initialSnapshot
         let manager = FileManager.default
@@ -2465,7 +2473,7 @@ private enum LocalPhotoArchiveExporter {
         }
         let sourceVersions = byLocator.mapValues(sourceVersion)
         let selectedLocators = Set(byLocator.keys)
-        let albumMemberships = try captureAlbumMemberships(selectedLocators: selectedLocators)
+        let albumMemberships = try captureAlbumMemberships(selectedLocators: selectedLocators, includeCatalog: includeAlbumCatalog)
 
         struct ResumeBinding: Encodable {
             let installID: UUID
@@ -2475,6 +2483,7 @@ private enum LocalPhotoArchiveExporter {
             let sources: [String: SourceVersion]
             let albums: [String: [ImageAllMigrationAppleAlbumMembership]]
             let unavailableAlbumCoverage: ImageAllMigrationAppleAlbumCoverage?
+            let albumCatalog: [ImageAllMigrationAppleCollection]?
             let destination: String?
         }
         let binding = ResumeBinding(installID: snapshot.installID, sourceEpoch: snapshot.sourceEpoch,
@@ -2482,7 +2491,7 @@ private enum LocalPhotoArchiveExporter {
             mediaLocators: Dictionary(uniqueKeysWithValues: snapshot.assets.map { ($0.id.uuidString, $0.localIdentifier) }),
             sources: sourceVersions, albums: albumMemberships.memberships,
             unavailableAlbumCoverage: albumMemberships.coverage == .selectedAssetsOnly ? nil : albumMemberships.coverage,
-            destination: stream?.destination)
+            albumCatalog: albumMemberships.catalog, destination: stream?.destination)
         let bindingEncoder = JSONEncoder()
         bindingEncoder.outputFormatting = [.sortedKeys]
         let checkpoint = try ImageAllMigrationExportCheckpoint(parent: parent, binding: bindingEncoder.encode(binding))
@@ -2673,7 +2682,7 @@ private enum LocalPhotoArchiveExporter {
         guard finalByLocator.count == byLocator.count,
               finalByLocator.allSatisfy({ sourceVersions[$0.key] == sourceVersion($0.value) }),
               albumMemberships == (try captureAlbumMemberships(
-                  selectedLocators: selectedLocators
+                  selectedLocators: selectedLocators, includeCatalog: includeAlbumCatalog
               )) else {
             throw LocalArchiveExportError.sourceChanged
         }
@@ -2681,7 +2690,7 @@ private enum LocalPhotoArchiveExporter {
             migrationID: migrationID, sourceDeviceID: snapshot.installID,
             sourceEpoch: snapshot.sourceEpoch, scopeRevision: snapshot.scopeRevision,
             inventoryWatermark: snapshot.snapshotSequence, declaredItemCount: items.count,
-            appleAlbumCoverage: albumMemberships.coverage
+            appleAlbumCoverage: albumMemberships.coverage, appleAlbumCatalog: albumMemberships.catalog
         )
         let resourcesDirectory = staging.appendingPathComponent("resources", isDirectory: true)
         if manager.fileExists(atPath: resourcesDirectory.path),
@@ -2706,22 +2715,27 @@ private enum LocalPhotoArchiveExporter {
     private struct AlbumSnapshot: Equatable {
         let coverage: ImageAllMigrationAppleAlbumCoverage
         let memberships: [String: [ImageAllMigrationAppleAlbumMembership]]
+        let catalog: [ImageAllMigrationAppleCollection]?
     }
 
     /// Traverse only user-created Photos albums/folders. A membership is kept
     /// only for an asset in the explicit export scope; unrelated album members
     /// never enter the portable manifest.
     private static func captureAlbumMemberships(
-        selectedLocators: Set<String>
+        selectedLocators: Set<String>, includeCatalog: Bool = false
     ) throws -> AlbumSnapshot {
         switch PHPhotoLibrary.authorizationStatus(for: .readWrite) {
         case .limited:
-            return AlbumSnapshot(coverage: .unavailableLimitedAuthorization, memberships: [:])
+            guard !includeCatalog else {
+                throw RemoteAPIError(code: .conflict, message: "保存完整用户相册目录需要完整照片权限；也可关闭此选项，仅归档已授权媒体。")
+            }
+            return AlbumSnapshot(coverage: .unavailableLimitedAuthorization, memberships: [:], catalog: nil)
         case .authorized: break
         default: throw LocalArchiveExportError.selectionNotVisible
         }
         var result: [String: [ImageAllMigrationAppleAlbumMembership]] = [:]
         var visited: Set<String> = []
+        var catalog: [ImageAllMigrationAppleCollection] = []
         func walk(
             _ collections: PHFetchResult<PHCollection>,
             folders: [ImageAllMigrationAppleAlbumMembership.Folder]
@@ -2732,6 +2746,11 @@ private enum LocalPhotoArchiveExporter {
                     throw LocalArchiveExportError.sourceChanged
                 }
                 if let folder = collection as? PHCollectionList {
+                    if includeCatalog {
+                        catalog.append(.init(localIdentifier: folder.localIdentifier, title: folder.localizedTitle,
+                            kind: .folder, parentLocalIdentifier: folders.last?.localIdentifier,
+                            sourceOrdinal: Int64(index), observedAssetCount: nil))
+                    }
                     let path = folders + [.init(
                         localIdentifier: folder.localIdentifier, title: folder.localizedTitle
                     )]
@@ -2739,6 +2758,11 @@ private enum LocalPhotoArchiveExporter {
                 } else if let album = collection as? PHAssetCollection,
                           album.assetCollectionType == .album {
                     let assets = PHAsset.fetchAssets(in: album, options: nil)
+                    if includeCatalog {
+                        catalog.append(.init(localIdentifier: album.localIdentifier, title: album.localizedTitle,
+                            kind: .album, parentLocalIdentifier: folders.last?.localIdentifier,
+                            sourceOrdinal: Int64(index), observedAssetCount: assets.count))
+                    }
                     for ordinal in 0..<assets.count {
                         let locator = assets.object(at: ordinal).localIdentifier
                         guard selectedLocators.contains(locator) else { continue }
@@ -2760,7 +2784,8 @@ private enum LocalPhotoArchiveExporter {
         guard PHPhotoLibrary.authorizationStatus(for: .readWrite) == .authorized else {
             throw LocalArchiveExportError.sourceChanged
         }
-        return AlbumSnapshot(coverage: .selectedAssetsOnly, memberships: result)
+        return AlbumSnapshot(coverage: .selectedAssetsOnly, memberships: result,
+            catalog: includeCatalog ? catalog.sorted { $0.localIdentifier < $1.localIdentifier } : nil)
     }
 
     private static func fileExtension(for resource: PHAssetResource) -> String {

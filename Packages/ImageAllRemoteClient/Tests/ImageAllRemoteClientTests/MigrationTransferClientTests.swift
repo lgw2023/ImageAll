@@ -27,7 +27,12 @@ final class MigrationTransferClientTests: XCTestCase {
         try resourceBytes.write(to: resourceURL)
         let header = ImageAllMigrationHeader(
             migrationID: migrationID, sourceDeviceID: installID, sourceEpoch: UUID(),
-            scopeRevision: 1, inventoryWatermark: 1, declaredItemCount: 1
+            scopeRevision: 1, inventoryWatermark: 1, declaredItemCount: 1,
+            appleAlbumCoverage: .selectedAssetsOnly,
+            appleAlbumCatalog: [.init(localIdentifier: "empty-folder", title: "Empty folder", kind: .folder,
+                parentLocalIdentifier: nil, sourceOrdinal: 0, observedAssetCount: nil),
+                .init(localIdentifier: "empty-album", title: "Empty album", kind: .album,
+                parentLocalIdentifier: "empty-folder", sourceOrdinal: 0, observedAssetCount: 0)]
         )
         let item = ImageAllMigrationItem(
             mediaID: UUID(), sourceLocalIdentifier: "selected-photo",
@@ -97,6 +102,13 @@ final class MigrationTransferClientTests: XCTestCase {
         try streamRecord.save(in: planning)
         XCTAssertEqual(try ImageAllMigrationStreamRecord.read(in: planning), streamRecord)
         try resourceBytes.write(to: resourceURL)
+        let oldClient = RemoteLibraryClient(endpoint: try RemoteHostEndpoint(
+            host: "127.0.0.1", port: 8787, accessToken: "synthetic-bearer"),
+            transport: TransferFixtureTransport(store: store, deviceID: deviceID, supportsAlbumCatalog: false))
+        do {
+            _ = try await oldClient.uploadMigrationArchive(at: source)
+            XCTFail("old host accepted a version 2 directory")
+        } catch let error as RemoteAPIError { XCTAssertEqual(error.code, .conflict) }
         let networkGate = PreparedFileGate()
         do {
             _ = try await client.uploadMigrationArchive(at: source, pairedDeviceID: deviceID,
@@ -303,6 +315,7 @@ final class MigrationTransferClientTests: XCTestCase {
 private struct TransferFixtureTransport: RemoteHTTPTransporting {
     let store: ImageAllMigrationTransferStore
     let deviceID: UUID
+    var supportsAlbumCatalog = true
 
     func data(for request: URLRequest) async throws -> (Data, URLResponse) {
         guard request.value(forHTTPHeaderField: "Authorization") == "Bearer synthetic-bearer",
@@ -311,6 +324,7 @@ private struct TransferFixtureTransport: RemoteHTTPTransporting {
         }
         let path = url.path
         if path.hasPrefix("/v1/migration-transfers/") {
+            XCTAssertTrue(supportsAlbumCatalog, "old receiver must be rejected before migration requests")
             XCTAssertFalse(request.allowsCellularAccess, "all migration requests must deny cellular fallback")
         } else if path == RemoteHTTPPaths.capabilities {
             XCTAssertTrue(request.allowsCellularAccess, "ordinary control requests retain their existing policy")
@@ -323,7 +337,8 @@ private struct TransferFixtureTransport: RemoteHTTPTransporting {
         let payload: Data
         if path == RemoteHTTPPaths.capabilities {
             payload = try JSONEncoder().encode(RemoteCapabilities(
-                hostAppVersion: "test", capabilities: [.migrationTransfer, .migrationResourceVerification]
+                hostAppVersion: "test", capabilities: [.migrationTransfer, .migrationResourceVerification],
+                migrationAlbumCatalogVersion: supportsAlbumCatalog ? 1 : nil
             ))
         } else if let migrationID,
                   path == RemoteHTTPPaths.migrationTransfer(migrationID),

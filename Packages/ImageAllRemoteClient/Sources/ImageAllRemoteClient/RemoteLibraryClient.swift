@@ -359,6 +359,15 @@ public struct RemoteLibraryClient: Sendable {
         at planningRoot: URL, header: ImageAllMigrationHeader, items: [ImageAllMigrationItem],
         beforeChunk: @Sendable () async throws -> Void = {}
     ) async throws -> ImageAllMigrationTransferSealReceipt {
+        try Task.checkCancellation()
+        try await beforeChunk()
+        if header.appleAlbumCatalog != nil {
+            let capabilities = try await fetchCapabilities()
+            guard (capabilities.migrationAlbumCatalogVersion ?? 0) >= 1 else {
+                throw RemoteAPIError(code: .conflict, message: "请更新 Mac 后再提交用户相册目录。")
+            }
+        }
+        _ = try ImageAllMigrationArchive.validatedAlbumCatalog(header)
         guard header.declaredItemCount == items.count else {
             throw RemoteAPIError(code: .badRequest, message: "migration plan count mismatch")
         }
@@ -424,6 +433,9 @@ public struct RemoteLibraryClient: Sendable {
             throw RemoteAPIError(code: .badRequest, message: "archive has missing resources")
         }
         let capabilities = try await fetchCapabilities()
+        if header.appleAlbumCatalog != nil, (capabilities.migrationAlbumCatalogVersion ?? 0) < 1 {
+            throw RemoteAPIError(code: .conflict, message: "请更新 Mac 后再上传包含完整用户相册目录的归档。")
+        }
         guard capabilities.capabilities.contains(.migrationTransfer) else {
             throw RemoteAPIError(code: .notFound, message: "host cannot receive migration archives")
         }

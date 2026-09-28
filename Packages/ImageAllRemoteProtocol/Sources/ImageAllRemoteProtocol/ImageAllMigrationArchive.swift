@@ -15,14 +15,16 @@ public struct ImageAllMigrationHeader: Codable, Sendable, Equatable {
     public let declaredItemCount: Int
     /// Nil on archives created before Photos album capture existed.
     public let appleAlbumCoverage: ImageAllMigrationAppleAlbumCoverage?
+    public let appleAlbumCatalog: [ImageAllMigrationAppleCollection]?
 
     public init(
         migrationID: UUID, sourceDeviceID: UUID, sourceEpoch: UUID,
         scopeRevision: Int64, inventoryWatermark: Int64, declaredItemCount: Int,
-        appleAlbumCoverage: ImageAllMigrationAppleAlbumCoverage? = nil
+        appleAlbumCoverage: ImageAllMigrationAppleAlbumCoverage? = nil,
+        appleAlbumCatalog: [ImageAllMigrationAppleCollection]? = nil
     ) {
         recordType = "header"
-        formatVersion = 1
+        formatVersion = appleAlbumCatalog == nil ? 1 : 2
         self.migrationID = migrationID
         self.sourceDeviceID = sourceDeviceID
         self.sourceEpoch = sourceEpoch
@@ -30,6 +32,30 @@ public struct ImageAllMigrationHeader: Codable, Sendable, Equatable {
         self.inventoryWatermark = inventoryWatermark
         self.declaredItemCount = declaredItemCount
         self.appleAlbumCoverage = appleAlbumCoverage
+        self.appleAlbumCatalog = appleAlbumCatalog
+    }
+}
+
+/// Explicitly opted-in user collection directory. Album counts include
+/// unselected members, which are NOT copied by this metadata record.
+public struct ImageAllMigrationAppleCollection: Codable, Sendable, Equatable, Identifiable {
+    public enum Kind: String, Codable, Sendable { case album, folder }
+    public let localIdentifier: String
+    public let title: String?
+    public let kind: Kind
+    public let parentLocalIdentifier: String?
+    public let sourceOrdinal: Int64
+    public let observedAssetCount: Int?
+    public var id: String { localIdentifier }
+
+    public init(localIdentifier: String, title: String?, kind: Kind,
+                parentLocalIdentifier: String?, sourceOrdinal: Int64, observedAssetCount: Int?) {
+        self.localIdentifier = localIdentifier
+        self.title = title
+        self.kind = kind
+        self.parentLocalIdentifier = parentLocalIdentifier
+        self.sourceOrdinal = sourceOrdinal
+        self.observedAssetCount = observedAssetCount
     }
 }
 
@@ -276,6 +302,64 @@ public enum ImageAllMigrationArchive {
     private static let maximumLineBytes = 1_048_576
     private static let readBlockBytes = 1_048_576
 
+    public static func validatedAlbumCatalog(_ header: ImageAllMigrationHeader) throws
+        -> [String: ImageAllMigrationAppleCollection]? {
+        guard header.formatVersion == (header.appleAlbumCatalog == nil ? 1 : 2) else {
+            throw ImageAllMigrationArchiveError.unsupportedVersion
+        }
+        guard let nodes = header.appleAlbumCatalog else { return nil }
+        guard header.appleAlbumCoverage == .selectedAssetsOnly,
+              nodes.count <= 10_000,
+              Set(nodes.map(\.localIdentifier)).count == nodes.count else {
+            throw ImageAllMigrationArchiveError.invalidManifest
+        }
+        let byID = Dictionary(uniqueKeysWithValues: nodes.map { ($0.localIdentifier, $0) })
+        var siblingOrders: [String: Set<Int64>] = [:]
+        for node in nodes {
+            guard !node.localIdentifier.isEmpty, node.sourceOrdinal >= 0,
+                  node.parentLocalIdentifier != "",
+                  siblingOrders[node.parentLocalIdentifier ?? "", default: []].insert(node.sourceOrdinal).inserted,
+                  node.kind == .album ? (node.observedAssetCount ?? -1) >= 0 : node.observedAssetCount == nil else {
+                throw ImageAllMigrationArchiveError.invalidManifest
+            }
+            var seen: Set<String> = [node.localIdentifier]
+            var parent = node.parentLocalIdentifier
+            while let id = parent {
+                guard seen.count <= 128, seen.insert(id).inserted,
+                      let folder = byID[id], folder.kind == .folder else {
+                    throw ImageAllMigrationArchiveError.invalidManifest
+                }
+                parent = folder.parentLocalIdentifier
+            }
+        }
+        return byID
+    }
+
+    public static func validateAlbumMemberships(_ memberships: [ImageAllMigrationAppleAlbumMembership],
+        catalog: [String: ImageAllMigrationAppleCollection]?) throws {
+        guard let catalog else { return }
+        for member in memberships {
+            guard let album = catalog[member.albumLocalIdentifier], album.kind == .album,
+                  album.title == member.albumTitle,
+                  member.sourceOrdinal >= 0,
+                  member.sourceOrdinal < Int64(album.observedAssetCount ?? 0) else {
+                throw ImageAllMigrationArchiveError.invalidManifest
+            }
+            var folders: [ImageAllMigrationAppleAlbumMembership.Folder] = []
+            var parent = album.parentLocalIdentifier
+            while let id = parent {
+                guard let folder = catalog[id], folders.count < 128 else {
+                    throw ImageAllMigrationArchiveError.invalidManifest
+                }
+                folders.append(.init(localIdentifier: id, title: folder.title))
+                parent = folder.parentLocalIdentifier
+            }
+            guard Array(folders.reversed()) == member.folderPath else {
+                throw ImageAllMigrationArchiveError.invalidManifest
+            }
+        }
+    }
+
     /// The caller can append one item at a time without loading the whole
     /// gallery into memory. A partially written manifest always fails verify.
     public static func write(
@@ -332,6 +416,7 @@ public enum ImageAllMigrationArchive {
         var sourceLocators: Set<String> = []
         var resourceIDs: Set<UUID> = []
         var paths: Set<String> = []
+        var albumCatalog: [String: ImageAllMigrationAppleCollection]?
         var albumMetadata: [String: (String?, [ImageAllMigrationAppleAlbumMembership.Folder])] = [:]
         var albumOrdinals: [String: Set<Int64>] = [:]
         var folderMetadata: [String: (String?, String?)] = [:]
@@ -347,11 +432,12 @@ public enum ImageAllMigrationArchive {
                 }
                 if header == nil {
                     let decoded = try decoder.decode(ImageAllMigrationHeader.self, from: line)
-                    guard decoded.recordType == "header", decoded.formatVersion == 1,
+                    guard decoded.recordType == "header", [1, 2].contains(decoded.formatVersion),
                           decoded.scopeRevision >= 0, decoded.inventoryWatermark >= 0,
                           decoded.declaredItemCount >= 0 else {
                         throw ImageAllMigrationArchiveError.unsupportedVersion
                     }
+                    albumCatalog = try validatedAlbumCatalog(decoded)
                     header = decoded
                     continue
                 }
@@ -373,6 +459,7 @@ public enum ImageAllMigrationArchive {
                     throw ImageAllMigrationArchiveError.duplicateIdentity
                 }
                 let albums = item.appleAlbums ?? []
+                try validateAlbumMemberships(albums, catalog: albumCatalog)
                 guard albums.isEmpty || header?.appleAlbumCoverage == .selectedAssetsOnly else {
                     throw ImageAllMigrationArchiveError.invalidManifest
                 }

@@ -1434,6 +1434,18 @@ final class PhoneArchiveImportModel: ObservableObject {
         }
     }
 
+    func sourceCollectionPath(_ node: ImageAllMigrationAppleCollection,
+                              catalog: [ImageAllMigrationAppleCollection]) -> String {
+        let byID = Dictionary(catalog.map { ($0.localIdentifier, $0) }, uniquingKeysWith: { first, _ in first })
+        var titles = [node.title ?? "未命名"]
+        var parent = node.parentLocalIdentifier
+        while let id = parent, let folder = byID[id], titles.count <= 128 {
+            titles.append(folder.title ?? "未命名文件夹")
+            parent = folder.parentLocalIdentifier
+        }
+        return titles.reversed().joined(separator: " / ")
+    }
+
     func applyTransferMaximum() async {
         guard !isBusy else { return }
         isBusy = true
@@ -2166,6 +2178,24 @@ private struct PhoneArchiveImportCard: View {
                        ? "导出时照片权限有限，来源 Photos 相册不可读取。媒体可恢复，相册完整性尚未验收；0 个相册不代表手机没有相册。"
                        : "此旧归档未记录来源 Photos 相册；0 个来源相册不代表手机没有相册。")
                     .font(.caption).foregroundStyle(.secondary)
+                if let catalog = batch.appleAlbumCatalog {
+                    DisclosureGroup("来源用户相册目录（\(catalog.count) 个节点）") {
+                        Text("目录含空相册；成员数量是导出时观察值，未选照片没有复制。此处为独立归档，不改写系统 Photos 相册。")
+                            .font(.caption).foregroundStyle(.secondary)
+                        ScrollView {
+                            LazyVStack(alignment: .leading) {
+                                ForEach(catalog) { node in
+                                    Label {
+                                        Text(model.sourceCollectionPath(node, catalog: catalog))
+                                        if let count = node.observedAssetCount {
+                                            Text("来源可见成员 \(count)").font(.caption).foregroundStyle(.secondary)
+                                        }
+                                    } icon: { Image(systemName: node.kind == .folder ? "folder" : "rectangle.stack") }
+                                }
+                            }
+                        }.frame(maxHeight: 220)
+                    }
+                }
                 HStack {
                     Text(batch.archivePath)
                         .font(.caption).foregroundStyle(.secondary)

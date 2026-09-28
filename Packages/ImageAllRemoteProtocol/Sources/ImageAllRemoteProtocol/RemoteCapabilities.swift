@@ -61,6 +61,7 @@ public struct RemoteCapabilities: Codable, Sendable, Equatable {
     public let videoQueryVersion: Int?
     public let worldMapMediaScopeVersion: Int?
     public let worldMapBackfillMediaScopeVersion: Int?
+    public let migrationAlbumCatalogVersion: Int?
 
     public init(
         protocolVersion: Int = RemoteProtocolVersion.current,
@@ -85,7 +86,8 @@ public struct RemoteCapabilities: Codable, Sendable, Equatable {
         videoRangeStreamingVersion: Int? = nil,
         videoQueryVersion: Int? = nil,
         worldMapMediaScopeVersion: Int? = nil,
-        worldMapBackfillMediaScopeVersion: Int? = nil
+        worldMapBackfillMediaScopeVersion: Int? = nil,
+        migrationAlbumCatalogVersion: Int? = nil
     ) {
         self.protocolVersion = protocolVersion
         self.hostAppVersion = hostAppVersion
@@ -100,5 +102,6 @@ public struct RemoteCapabilities: Codable, Sendable, Equatable {
         self.videoQueryVersion = videoQueryVersion
         self.worldMapMediaScopeVersion = worldMapMediaScopeVersion
         self.worldMapBackfillMediaScopeVersion = worldMapBackfillMediaScopeVersion
+        self.migrationAlbumCatalogVersion = migrationAlbumCatalogVersion
     }
 }

@@ -156,6 +156,7 @@ struct PhoneArchiveImportedBatch: Identifiable, Sendable {
     let importedAtMs: Int64
     let factSnapshotSequence: Int64
     let appleAlbumCoverage: ImageAllMigrationAppleAlbumCoverage?
+    let appleAlbumCatalog: [ImageAllMigrationAppleCollection]?
 }
 
 struct PhoneArchiveImportedItem: Identifiable, Sendable {
@@ -366,6 +367,13 @@ struct VerifiedPhoneArchiveImporter: Sendable {
         let reason: String? = row.hasColumn("apple_album_unavailable_reason")
             ? row["apple_album_unavailable_reason"] : nil
         return reason ?? (row["apple_album_coverage"] as String?)
+    }
+
+    private static func albumCatalog(migrationID: String, db: Database) throws -> [ImageAllMigrationAppleCollection]? {
+        guard try db.tableExists("migration_import_apple_album_catalog"),
+              let data = try Data.fetchOne(db, sql: "SELECT catalog_json FROM migration_import_apple_album_catalog WHERE migration_id = ?",
+                arguments: [migrationID]) else { return nil }
+        return try JSONDecoder().decode([ImageAllMigrationAppleCollection].self, from: data)
     }
 
     /// Persists a historical candidate after both catalogs independently
@@ -812,7 +820,8 @@ struct VerifiedPhoneArchiveImporter: Sendable {
                   savedFactSequence == (latest?.snapshotSequence ?? 0),
                   savedFactWatermark == (latest?.factWatermark ?? 0),
                   savedFactDigest == factDigest,
-                  savedAlbumCoverage == header.appleAlbumCoverage?.rawValue else {
+                  savedAlbumCoverage == header.appleAlbumCoverage?.rawValue,
+                  try Self.albumCatalog(migrationID: migrationKey, db: db) == header.appleAlbumCatalog else {
                 throw PhoneArchiveImportError.catalogDiverged
             }
             var seen = Set<UUID>()
@@ -1282,7 +1291,8 @@ struct VerifiedPhoneArchiveImporter: Sendable {
                     importedAtMs: row["updated_at_ms"],
                     factSnapshotSequence: row["fact_snapshot_sequence"],
                     appleAlbumCoverage: Self.albumCoverage(from: row)
-                        .flatMap(ImageAllMigrationAppleAlbumCoverage.init(rawValue:))
+                        .flatMap(ImageAllMigrationAppleAlbumCoverage.init(rawValue:)),
+                    appleAlbumCatalog: try Self.albumCatalog(migrationID: id.uuidString.lowercased(), db: db)
                 )
             }
         }
@@ -2897,6 +2907,12 @@ struct VerifiedPhoneArchiveImporter: Sendable {
                 onHeader: { publishedHeader in
                     guard publishedHeader == header else {
                         throw PhoneArchiveImportError.publishedCopyChanged
+                    }
+                    if let catalog = header.appleAlbumCatalog {
+                        let encoder = JSONEncoder()
+                        encoder.outputFormatting = [.sortedKeys]
+                        try db.execute(sql: "INSERT INTO migration_import_apple_album_catalog (migration_id, catalog_json) VALUES (?, ?)",
+                            arguments: [id, try encoder.encode(catalog)])
                     }
                 },
                 onItem: { item in

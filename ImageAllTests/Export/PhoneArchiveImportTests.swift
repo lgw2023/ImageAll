@@ -103,7 +103,11 @@ final class PhoneArchiveImportTests: XCTestCase {
         try await checkNetworkArchiveRecovery(coverage: .unavailableLimitedAuthorization)
     }
 
-    private func checkNetworkArchiveRecovery(coverage: ImageAllMigrationAppleAlbumCoverage) async throws {
+    func testFullAlbumCatalogSurvivesNetworkImportAndIndependentRecovery() async throws {
+        try await checkNetworkArchiveRecovery(coverage: .selectedAssetsOnly, includeCatalog: true)
+    }
+
+    private func checkNetworkArchiveRecovery(coverage: ImageAllMigrationAppleAlbumCoverage, includeCatalog: Bool = false) async throws {
         let fixture = try Fixture()
         defer { fixture.remove() }
         let resource = try fixture.resource(
@@ -112,7 +116,19 @@ final class PhoneArchiveImportTests: XCTestCase {
         let metadata = ImageAllMigrationSourceMetadata(pixelWidth: 4032, pixelHeight: 3024,
             modifiedAtMs: 900, location: .init(latitude: 0, longitude: 0, horizontalAccuracyMeters: 25))
         let item = fixture.item(resource: resource, sourceMetadata: metadata)
-        let header = fixture.header(count: 1, appleAlbumCoverage: coverage)
+        let catalog: [ImageAllMigrationAppleCollection]? = includeCatalog ? [
+            .init(localIdentifier: "folder", title: "Travel", kind: .folder,
+                  parentLocalIdentifier: nil, sourceOrdinal: 0, observedAssetCount: nil),
+            .init(localIdentifier: "empty-album", title: "Empty", kind: .album,
+                  parentLocalIdentifier: "folder", sourceOrdinal: 0, observedAssetCount: 0),
+            .init(localIdentifier: "unselected-album", title: "Not selected", kind: .album,
+                  parentLocalIdentifier: "folder", sourceOrdinal: 1, observedAssetCount: 7),
+            .init(localIdentifier: "empty-folder", title: "Empty folder", kind: .folder,
+                  parentLocalIdentifier: nil, sourceOrdinal: 1, observedAssetCount: nil)
+        ] : nil
+        let header = ImageAllMigrationHeader(migrationID: UUID(), sourceDeviceID: fixture.sourceDeviceID,
+            sourceEpoch: fixture.sourceEpoch, scopeRevision: 1, inventoryWatermark: 7,
+            declaredItemCount: 1, appleAlbumCoverage: coverage, appleAlbumCatalog: catalog)
         try fixture.write(header: header, items: [item])
         let deviceID = UUID()
         let store = try ImageAllMigrationTransferStore(root: fixture.target)
@@ -228,6 +244,7 @@ final class PhoneArchiveImportTests: XCTestCase {
         )), Data("network-stage-original".utf8))
         XCTAssertNotNil(recovery.integrity.phoneSyncCheckpoint)
         XCTAssertEqual(try restoredImporter.importedBatches().first?.appleAlbumCoverage, coverage)
+        XCTAssertEqual(try restoredImporter.importedBatches().first?.appleAlbumCatalog, catalog)
         if coverage == .unavailableLimitedAuthorization {
             XCTAssertThrowsError(try importer.recordValidation(
                 migrationID: header.migrationID, archiveRoot: imported.archiveURL, recovery: recovery
@@ -236,10 +253,15 @@ final class PhoneArchiveImportTests: XCTestCase {
             return
         }
         // A pre-V060 independent recovery must remain verifiable read-only.
+        if !includeCatalog {
         try await restoredImporter.database.pool.write { db in
+            try db.execute(sql: "DROP TABLE migration_import_apple_album_catalog")
+            try db.execute(sql: "DELETE FROM grdb_migrations WHERE identifier = ?",
+                arguments: [CatalogMigrationID.v061AddPhoneAlbumCatalog])
             try db.execute(sql: "ALTER TABLE migration_import DROP COLUMN apple_album_unavailable_reason")
             try db.execute(sql: "DELETE FROM grdb_migrations WHERE identifier = ?",
                 arguments: [CatalogMigrationID.v060AddPhoneAlbumUnavailableReason])
+        }
         }
         let validation = try importer.recordValidation(
             migrationID: header.migrationID, archiveRoot: imported.archiveURL,
@@ -248,7 +270,7 @@ final class PhoneArchiveImportTests: XCTestCase {
         let recoveryWasMigrated = try await restoredImporter.database.pool.read { db in
             try db.columns(in: "migration_import").contains { $0.name == "apple_album_unavailable_reason" }
         }
-        XCTAssertFalse(recoveryWasMigrated, "validation must not mutate a historical recovery catalog")
+        XCTAssertEqual(recoveryWasMigrated, includeCatalog, "validation must not mutate a historical recovery catalog")
         let reopenedImporter = VerifiedPhoneArchiveImporter(
             database: try CatalogDatabase.open(at: fixture.databaseURL)
         )
@@ -270,6 +292,18 @@ final class PhoneArchiveImportTests: XCTestCase {
             migrationID: header.migrationID
         ), completion)
         XCTAssertEqual(try reopenedImporter.auditCompletionReceipt(completion), integrity)
+        if let catalog {
+            try await restoredImporter.database.pool.write { db in
+                try db.execute(sql: "UPDATE migration_import_apple_album_catalog SET catalog_json = ? WHERE migration_id = ?",
+                    arguments: [Data("[]".utf8), header.migrationID.uuidString.lowercased()])
+            }
+            XCTAssertThrowsError(try reopenedImporter.auditCompletionReceipt(completion))
+            try await restoredImporter.database.pool.write { db in
+                try db.execute(sql: "UPDATE migration_import_apple_album_catalog SET catalog_json = ? WHERE migration_id = ?",
+                    arguments: [try JSONEncoder().encode(catalog), header.migrationID.uuidString.lowercased()])
+            }
+            XCTAssertEqual(try reopenedImporter.auditCompletionReceipt(completion), integrity)
+        }
         try Data("changed-recovery".utf8).write(
             to: recovery.restoredArchiveURL.appendingPathComponent(
                 try XCTUnwrap(resource.relativePath)
@@ -278,7 +312,7 @@ final class PhoneArchiveImportTests: XCTestCase {
         XCTAssertThrowsError(try reopenedImporter.auditValidationRecord(loadedValidation))
         XCTAssertThrowsError(try reopenedImporter.auditCompletionReceipt(completion))
         let wrongBinding = ImageAllMigrationFactSnapshot(
-            sourceDeviceID: deviceID, sourceEpoch: header.sourceEpoch,
+            sourceDeviceID: header.sourceDeviceID, sourceEpoch: header.sourceEpoch,
             scopeRevision: header.scopeRevision, snapshotSequence: 9,
             factWatermark: 9, items: facts.items,
             syncCheckpoint: .init(
