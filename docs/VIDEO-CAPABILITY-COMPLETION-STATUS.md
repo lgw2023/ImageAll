@@ -653,3 +653,12 @@
 - 首轮测试误将旧2.566667s合成素材声明为1s，被实际时长校验拒绝；改为测试内生成精确1s/30帧、白色矩形持续横移的MP4。未放宽源时长门禁来迁就错误fixture。
 - `story-motion-build-final.log` TEST BUILD SUCCEEDED；`story-motion-tests-final.log` 3/3 PASS。照片+静音视频成片可解码、时长一致，两处解码画面中白色标记质心差>5像素，证明运动保留；旧照片带/不带配乐导出及手动多片段回归通过。未保留本轮临时成片，尚无整页操作/视觉验收。
 - 原声合成未实现时明确拒绝 gain>0，不能静默丢弃音轨；旧OpenMontage包仍保持拒绝视频的默认门禁。下一步完成原声/配乐受控合成、Mac剪辑UI和新协议。整体 active，P6未完成。
+
+## P6 原声范围、静音和配乐增益合成（2026-09-28）
+
+- 原生 renderer 撤销 gain>0 临时拒绝：将冻结视频音轨与选定片段求交，按同一30fps时间轴放置；转场中的片段独立轨道/增益合成，增益0不加入轨道，无原声轨视频合法。读取失败继续抛错，不伪装保留原声成功。
+- 配乐合成保留成片已有原声音轨。TimeStoryMusicSelection 新增可选 volume，显式值0...1在原生合成/故事包均使用；旧缺值保留原有默认（原生1、包0.22），不回填旧故事。控件接线仍待完成。
+- 首轮缺 Core Media 参数标签已修正；首次音频测试遇到 AVFoundation -12780，改为显式持有源 AVAsset 至异步导出结束后专项及完整回归通过，保留失败日志，不仅据此泛化所有系统错误成因。
+- `story-audio-build-repair.log` TEST BUILD SUCCEEDED；`story-audio-tests-final.log` 4/4 PASS：实际有声视频裁剪到0.6秒、原声/0.25增益/静音/叠加配乐PCM测量，混合运动、无原声轨、旧照片配乐、旧包回归。另由ffprobe/ffmpeg独立验证6个MP4：四分之一幅度比0.249906，静音无音轨，输出0.6秒。
+- 证据目录 `story-audio/` 保存 source/original/quarter/muted/original-and-muted-music/original-and-music.mp4、measurements.json 与含逐文件SHA的 independent-verification.json。测量来自合成440Hz音源，不代表复杂音乐混音质量或真实媒体验收。
+- 下一步接 Mac 片段预览/范围/原声及配乐控件，再完成混合包/OpenMontage协议和实际成片综合验证；整体 active，P6未完成。

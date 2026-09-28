@@ -641,10 +641,111 @@ final class TimeStoryFeatureTests: XCTestCase {
         XCTAssertGreaterThan(abs(try centroid(segment.startFrame + 10) - centroid(segment.startFrame + 24)), 5,
                              "Moving fixture must not become one repeated poster")
         project.shots[1].videoClip?.originalAudioGain = 1
-        do {
-            try await renderer.render(project: project, destinationURL: root.appendingPathComponent("unsupported.mp4")) { _ in }
-            XCTFail("Original audio must not be silently discarded")
-        } catch {}
+        let noAudio = root.appendingPathComponent("source-without-audio.mp4")
+        try await renderer.render(project: project, destinationURL: noAudio) { _ in }
+        try await assertPlayableVideo(noAudio, expectsAudio: false, expectedDuration: timeline.durationSeconds)
+    }
+
+    func testVideoStoryOriginalAudioGainMuteAndMusicPreserveSound() async throws {
+        let root = try temporaryDirectory("story-original-audio")
+        let silent = root.appendingPathComponent("moving.mp4")
+        try await FixtureMixedStoryMedia.makeMovingVideo(at: silent)
+        let tone = root.appendingPathComponent("tone.wav")
+        try writeSineWave(to: tone, seconds: 1)
+        let composition = AVMutableComposition()
+        let sourceVideoAsset = AVURLAsset(url: silent)
+        let videoTracks = try await sourceVideoAsset.loadTracks(withMediaType: .video)
+        let videoTrack = try XCTUnwrap(videoTracks.first)
+        let sourceAudioAsset = AVURLAsset(url: tone)
+        let audioTracks = try await sourceAudioAsset.loadTracks(withMediaType: .audio)
+        let audioTrack = try XCTUnwrap(audioTracks.first)
+        let range = CMTimeRange(start: .zero, duration: CMTime(value: 1, timescale: 1))
+        try composition.addMutableTrack(withMediaType: .video, preferredTrackID: kCMPersistentTrackID_Invalid)!
+            .insertTimeRange(range, of: videoTrack, at: .zero)
+        try composition.addMutableTrack(withMediaType: .audio, preferredTrackID: kCMPersistentTrackID_Invalid)!
+            .insertTimeRange(range, of: audioTrack, at: .zero)
+        let source = root.appendingPathComponent("source.mp4")
+        let exporter = try XCTUnwrap(AVAssetExportSession(asset: composition, presetName: AVAssetExportPresetHighestQuality))
+        exporter.timeRange = range
+        do { try await exporter.export(to: source, as: .mp4) }
+        catch { throw TimeStoryError.renderingFailed("Fixture source export: \(error)") }
+        withExtendedLifetime([sourceVideoAsset, sourceAudioAsset]) {}
+        var video = candidate(UUID().uuidString, time: timestamp(2024, 1, 1))
+        video.mediaKind = .video; video.durationMs = 1000
+        let planner = TimeStoryPlanner()
+        var project = planner.makeFreeformProject(snapshot: makeSnapshot([video]), nowMs: 1)
+        project.showsProjectTitle = false
+        project = try planner.manuallyInserting(video, in: project, nowMs: 2,
+            videoClip: .init(inPointMs: 200, outPointMs: 800, sourceDurationMs: 1000))
+        let renderer = AVFoundationTimeStoryRenderer(media: FixtureMixedStoryMedia(images: [:], video: source),
+            temporaryDirectory: root.appendingPathComponent("work"))
+        let full = root.appendingPathComponent("original.mp4")
+        do { try await renderer.render(project: project, destinationURL: full) { _ in } }
+        catch { throw TimeStoryError.renderingFailed("Original audio render: \(error)") }
+        try await assertPlayableVideo(full, expectsAudio: true, expectedDuration: 0.6)
+        let fullRMS = try await storyAudioRMS(full)
+        XCTAssertGreaterThan(fullRMS, 0.01)
+        project.shots[0].videoClip?.originalAudioGain = 0.25
+        let quarter = root.appendingPathComponent("quarter.mp4")
+        try await renderer.render(project: project, destinationURL: quarter) { _ in }
+        let quarterRMS = try await storyAudioRMS(quarter)
+        XCTAssertTrue((0.18...0.32).contains(quarterRMS / fullRMS))
+        project.shots[0].videoClip?.originalAudioGain = 0
+        let muted = root.appendingPathComponent("muted.mp4")
+        try await renderer.render(project: project, destinationURL: muted) { _ in }
+        let muteRMS = try await storyAudioRMS(muted)
+        XCTAssertEqual(muteRMS, 0)
+        project.shots[0].videoClip?.originalAudioGain = 1
+        project.music = TimeStoryMusicSelection(displayName: "tone", filePath: tone.path, securityScopedBookmark: nil, volume: 0)
+        let mixed = root.appendingPathComponent("original-and-muted-music.mp4")
+        try await renderer.render(project: project, destinationURL: mixed) { _ in }
+        let mixedRMS = try await storyAudioRMS(mixed)
+        XCTAssertTrue((0.8...1.2).contains(mixedRMS / fullRMS), "Adding music must not drop original audio")
+        project.music?.volume = 0.25
+        let audible = root.appendingPathComponent("original-and-music.mp4")
+        try await renderer.render(project: project, destinationURL: audible) { _ in }
+        let audibleRMS = try await storyAudioRMS(audible)
+        XCTAssertGreaterThan(abs(audibleRMS - mixedRMS), fullRMS * 0.05)
+        if let directory = ProcessInfo.processInfo.environment["IMAGEALL_VIDEO_EVIDENCE_DIR"] {
+            let destination = URL(fileURLWithPath: directory)
+            try FileManager.default.createDirectory(at: destination, withIntermediateDirectories: true)
+            for file in [source, full, quarter, muted, mixed, audible] {
+                try FileManager.default.copyItem(at: file, to: destination.appendingPathComponent(file.lastPathComponent))
+            }
+            let measurements = ["fullRMS": fullRMS, "quarterRMS": quarterRMS, "muteRMS": muteRMS,
+                "originalWithMutedMusicRMS": mixedRMS, "originalWithMusicRMS": audibleRMS]
+            try JSONSerialization.data(withJSONObject: measurements, options: [.prettyPrinted, .sortedKeys])
+                .write(to: destination.appendingPathComponent("measurements.json"))
+        }
+    }
+
+    private func storyAudioRMS(_ url: URL) async throws -> Double {
+        let asset = AVURLAsset(url: url)
+        let tracks = try await asset.loadTracks(withMediaType: .audio)
+        guard !tracks.isEmpty else { return 0 }
+        let reader = try AVAssetReader(asset: asset)
+        let output = AVAssetReaderAudioMixOutput(audioTracks: tracks, audioSettings: [
+            AVFormatIDKey: kAudioFormatLinearPCM, AVLinearPCMIsFloatKey: true,
+            AVLinearPCMBitDepthKey: 32, AVLinearPCMIsNonInterleaved: false])
+        reader.add(output)
+        guard reader.startReading() else { throw TimeStoryError.renderingFailed("audio reader") }
+        var energy = 0.0, count = 0
+        while let sample = output.copyNextSampleBuffer() {
+            guard let block = CMSampleBufferGetDataBuffer(sample) else { continue }
+            let size = CMBlockBufferGetDataLength(block)
+            var bytes = Data(count: size)
+            let status = bytes.withUnsafeMutableBytes { CMBlockBufferCopyDataBytes(block, atOffset: 0, dataLength: size, destination: $0.baseAddress!) }
+            XCTAssertEqual(status, noErr)
+            bytes.withUnsafeBytes { raw in
+                for offset in stride(from: 0, to: size - 3, by: 4) {
+                    let value = Double(raw.loadUnaligned(fromByteOffset: offset, as: Float.self))
+                    energy += value * value; count += 1
+                }
+            }
+        }
+        XCTAssertEqual(reader.status, .completed)
+        XCTAssertGreaterThan(count, 0)
+        return sqrt(energy / Double(max(1, count)))
     }
 
     func testRendererExportsPlayableMP4WithAndWithoutMusic() async throws {

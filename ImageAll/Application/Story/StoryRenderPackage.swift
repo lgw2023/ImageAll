@@ -129,6 +129,7 @@ struct StoryRenderPackageExporter: TimeStoryPackageExporting, Sendable {
 
         var audio: StoryRenderPackageDocument.Audio?
         if let music = project.music {
+            guard (music.volume ?? 0.22).isFinite, (0...1).contains(music.volume ?? 0.22) else { throw TimeStoryError.storyPackageExportFailed("配乐音量无效") }
             try Task.checkCancellation()
             let resolved = try Self.resolveMusicURL(music)
             let didAccess = resolved.startAccessingSecurityScopedResource()
@@ -157,7 +158,7 @@ struct StoryRenderPackageExporter: TimeStoryPackageExporting, Sendable {
             audio = .init(
                 assetID: assetID,
                 offsetFrame: 0,
-                volume: 0.22,
+                volume: music.volume ?? 0.22,
                 fadeInFrames: min(60, timeline.totalFrames),
                 fadeOutFrames: min(90, timeline.totalFrames),
                 loop: true

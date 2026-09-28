@@ -212,6 +212,7 @@ struct TimeStoryMusicSelection: Codable, Sendable, Equatable {
     let displayName: String
     let filePath: String
     let securityScopedBookmark: Data?
+    var volume: Double? = nil
 }
 
 struct TimeStoryProject: Codable, Sendable, Equatable, Identifiable {
@@ -1398,9 +1399,6 @@ struct AVFoundationTimeStoryRenderer: TimeStoryRendering, Sendable {
     ) async throws {
         guard !project.shots.isEmpty else { throw TimeStoryError.noSelectedShots }
         let timeline = try TimeStoryTimeline.normalize(project: project, allowsVideoClips: true)
-        guard project.shots.allSatisfy({ ($0.videoClip?.originalAudioGain ?? 0) == 0 }) else {
-            throw TimeStoryError.renderingFailed("视频原声合成尚未启用，请显式静音片段后再导出")
-        }
         guard destinationURL.pathExtension.lowercased() == "mp4" else {
             throw TimeStoryError.invalidDestination
         }
@@ -1415,6 +1413,7 @@ struct AVFoundationTimeStoryRenderer: TimeStoryRendering, Sendable {
 
         var images: [UUID: CGImage] = [:]
         var videos: [UUID: StoryVideoFrames] = [:]
+        var videoSources: [UUID: URL] = [:]
         let uniqueAssetIDs = project.shots.reduce(into: [UUID]()) { result, shot in
             if !result.contains(shot.assetID) { result.append(shot.assetID) }
         }
@@ -1429,6 +1428,7 @@ struct AVFoundationTimeStoryRenderer: TimeStoryRendering, Sendable {
                 let frozen = try await media.freezeStoryVideo(assetID: assetID, expectedRevision: revision,
                     destination: workingDirectory.appendingPathComponent("source-\(assetID.uuidString).mov"))
                 guard frozen.contentRevision == revision else { throw TimeStoryError.renderingFailed("视频版本已变化") }
+                videoSources[assetID] = frozen.url
                 let asset = AVURLAsset(url: frozen.url)
                 let duration = try await asset.load(.duration)
                 guard duration.isNumeric, duration.seconds.isFinite, duration.seconds > 0,
@@ -1462,6 +1462,9 @@ struct AVFoundationTimeStoryRenderer: TimeStoryRendering, Sendable {
             outputURL: silentURL,
             onProgress: onProgress
         )
+        let originalAudioURL = try await addOriginalAudio(videoURL: silentURL,
+            outputURL: workingDirectory.appendingPathComponent("original-audio.mp4"),
+            project: project, timeline: timeline, sources: videoSources)
         let finalWorkingURL: URL
         if let music = project.music {
             onProgress(TimeStoryRenderProgress(phase: .addingMusic, fraction: 0))
@@ -1471,14 +1474,15 @@ struct AVFoundationTimeStoryRenderer: TimeStoryRendering, Sendable {
                 if didAccessMusic { resolvedMusicURL.stopAccessingSecurityScopedResource() }
             }
             try await addMusic(
-                videoURL: silentURL,
+                videoURL: originalAudioURL,
                 musicURL: resolvedMusicURL,
-                outputURL: composedURL
+                outputURL: composedURL,
+                volume: music.volume ?? 1
             )
             finalWorkingURL = composedURL
             onProgress(TimeStoryRenderProgress(phase: .addingMusic, fraction: 1))
         } else {
-            finalWorkingURL = silentURL
+            finalWorkingURL = originalAudioURL
         }
         try Task.checkCancellation()
         onProgress(TimeStoryRenderProgress(phase: .publishing, fraction: 0))
@@ -1762,7 +1766,55 @@ struct AVFoundationTimeStoryRenderer: TimeStoryRendering, Sendable {
         CTLineDraw(line, context)
     }
 
-    private func addMusic(videoURL: URL, musicURL: URL, outputURL: URL) async throws {
+    private func addOriginalAudio(videoURL: URL, outputURL: URL, project: TimeStoryProject,
+                                  timeline: TimeStoryFrameTimeline, sources: [UUID: URL]) async throws -> URL {
+        guard project.shots.contains(where: { ($0.videoClip?.originalAudioGain ?? 0) > 0 }) else { return videoURL }
+        let silent = AVURLAsset(url: videoURL)
+        let composition = AVMutableComposition()
+        guard let video = try await silent.loadTracks(withMediaType: .video).first,
+              let outputVideo = composition.addMutableTrack(withMediaType: .video, preferredTrackID: kCMPersistentTrackID_Invalid) else {
+            throw TimeStoryError.renderingFailed("成片视频轨不可用")
+        }
+        let fullRange = CMTimeRange(start: .zero, duration: CMTime(value: Int64(timeline.totalFrames), timescale: 30))
+        try outputVideo.insertTimeRange(fullRange, of: video, at: .zero)
+        var parameters: [AVAudioMixInputParameters] = []
+        var retainedAssets: [AVAsset] = []
+        for shot in project.shots {
+            guard let clip = shot.videoClip, clip.originalAudioGain > 0,
+                  let url = sources[shot.assetID], let segment = timeline.segments.first(where: { $0.shotID == shot.id }) else { continue }
+            try Task.checkCancellation()
+            let frames = try clip.validatedFrameRange(actualDurationMs: clip.sourceDurationMs)
+            let selected = CMTimeRange(start: CMTime(value: frames.startFrame, timescale: 30),
+                                       duration: CMTime(value: frames.frameCount, timescale: 30))
+            let sourceAsset = AVURLAsset(url: url)
+            retainedAssets.append(sourceAsset)
+            for track in try await sourceAsset.loadTracks(withMediaType: .audio) {
+                let intersection = CMTimeRangeGetIntersection(try await track.load(.timeRange), otherRange: selected)
+                guard intersection.isValid, intersection.duration > .zero else { continue }
+                guard let output = composition.addMutableTrack(withMediaType: .audio, preferredTrackID: kCMPersistentTrackID_Invalid) else {
+                    throw TimeStoryError.renderingFailed("无法创建原声音轨")
+                }
+                let placement = CMTime(value: Int64(segment.startFrame), timescale: 30) + intersection.start - selected.start
+                try output.insertTimeRange(intersection, of: track, at: placement)
+                let gain = AVMutableAudioMixInputParameters(track: output)
+                gain.setVolume(Float(clip.originalAudioGain), at: .zero)
+                parameters.append(gain)
+            }
+        }
+        guard !parameters.isEmpty else { return videoURL }
+        guard let exporter = AVAssetExportSession(asset: composition, presetName: AVAssetExportPresetHighestQuality) else {
+            throw TimeStoryError.renderingFailed("无法创建原声导出器")
+        }
+        let mix = AVMutableAudioMix(); mix.inputParameters = parameters
+        exporter.audioMix = mix; exporter.timeRange = fullRange
+        try await exporter.export(to: outputURL, as: .mp4)
+        withExtendedLifetime(retainedAssets) {}
+        try Task.checkCancellation()
+        return outputURL
+    }
+
+    private func addMusic(videoURL: URL, musicURL: URL, outputURL: URL, volume: Double) async throws {
+        guard volume.isFinite, (0...1).contains(volume) else { throw TimeStoryError.renderingFailed("配乐音量无效") }
         let videoAsset = AVURLAsset(url: videoURL)
         let musicAsset = AVURLAsset(url: musicURL)
         guard let videoTrack = try await videoAsset.loadTracks(withMediaType: .video).first,
@@ -1790,6 +1842,13 @@ struct AVFoundationTimeStoryRenderer: TimeStoryRendering, Sendable {
             of: videoTrack,
             at: .zero
         )
+        for track in try await videoAsset.loadTracks(withMediaType: .audio) {
+            guard let retained = composition.addMutableTrack(withMediaType: .audio, preferredTrackID: kCMPersistentTrackID_Invalid) else {
+                throw TimeStoryError.renderingFailed("无法保留视频原声")
+            }
+            let range = CMTimeRangeGetIntersection(try await track.load(.timeRange), otherRange: CMTimeRange(start: .zero, duration: videoDuration))
+            if range.duration > .zero { try retained.insertTimeRange(range, of: track, at: range.start) }
+        }
         var cursor = CMTime.zero
         while cursor < videoDuration {
             try Task.checkCancellation()
@@ -1805,6 +1864,10 @@ struct AVFoundationTimeStoryRenderer: TimeStoryRendering, Sendable {
         guard let exporter = AVAssetExportSession(asset: composition, presetName: AVAssetExportPresetHighestQuality) else {
             throw TimeStoryError.renderingFailed("无法创建配乐导出器")
         }
+        let musicParameters = AVMutableAudioMixInputParameters(track: compositionAudio)
+        musicParameters.setVolume(Float(volume), at: .zero)
+        let mix = AVMutableAudioMix(); mix.inputParameters = [musicParameters]
+        exporter.audioMix = mix
         try await exporter.export(to: outputURL, as: .mp4)
     }
 
