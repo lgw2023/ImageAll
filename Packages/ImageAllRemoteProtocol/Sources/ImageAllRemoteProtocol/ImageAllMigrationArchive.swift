@@ -56,12 +56,14 @@ public struct ImageAllMigrationResource: Codable, Sendable, Equatable {
     public let relativePath: String?
     public let byteCount: Int64?
     public let sha256: String?
+    /// Display/provenance only. Never used to resolve an archive path.
+    public let originalFilename: String?
 
     public init(
         id: UUID, role: String, version: Int64,
         uniformTypeIdentifier: String,
         required: Bool, status: ImageAllMigrationResourceStatus,
-        relativePath: String?, byteCount: Int64?, sha256: String?
+        relativePath: String?, byteCount: Int64?, sha256: String?, originalFilename: String? = nil
     ) {
         self.id = id
         self.role = role
@@ -72,6 +74,7 @@ public struct ImageAllMigrationResource: Codable, Sendable, Equatable {
         self.relativePath = relativePath
         self.byteCount = byteCount
         self.sha256 = sha256
+        self.originalFilename = originalFilename
     }
 }
 
@@ -414,7 +417,8 @@ public enum ImageAllMigrationArchive {
                     guard resourceIDs.insert(resource.id).inserted else {
                         throw ImageAllMigrationArchiveError.duplicateIdentity
                     }
-                    guard !resource.role.isEmpty, resource.version > 0,
+                    guard resource.originalFilename.map({ !$0.isEmpty && $0.utf8.count <= 4_096 && !$0.contains("\0") }) ?? true,
+                          !resource.role.isEmpty, resource.version > 0,
                           !resource.uniformTypeIdentifier.isEmpty else {
                         throw ImageAllMigrationArchiveError.invalidManifest
                     }

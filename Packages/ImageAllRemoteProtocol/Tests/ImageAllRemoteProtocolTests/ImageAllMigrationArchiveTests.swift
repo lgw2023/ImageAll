@@ -538,6 +538,24 @@ final class ImageAllMigrationArchiveTests: XCTestCase {
         XCTAssertThrowsError(try ImageAllMigrationArchive.verify(at: root))
     }
 
+    func testOriginalNamesAreMetadataNotPaths() throws {
+        for name in [nil, "../原图.JPG", "", String(repeating: "a", count: 4_097), "bad\0name"] as [String?] {
+            let root = makeRoot()
+            defer { try? FileManager.default.removeItem(at: root) }
+            let item = try makeItem(root: root, resourceID: UUID(), bytes: Data("name-fixture".utf8), originalFilename: name)
+            try ImageAllMigrationArchive.write(header: header(migrationID: UUID(), count: 1), items: [item], to: root)
+            if name == nil || name == "../原图.JPG" {
+                var restored: ImageAllMigrationItem?
+                _ = try ImageAllMigrationArchive.visitVerifiedRecords(at: root, onHeader: { _ in }, onItem: { restored = $0 })
+                XCTAssertEqual(restored?.resources.first?.originalFilename, name)
+                XCTAssertEqual(restored?.resources.first?.relativePath, item.resources.first?.relativePath)
+                XCTAssertTrue(restored?.resources.first?.relativePath?.hasPrefix("resources/") == true)
+            } else {
+                XCTAssertThrowsError(try ImageAllMigrationArchive.verify(at: root))
+            }
+        }
+    }
+
     private func makeRoot() -> URL {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("ImageAllArchive-\(UUID().uuidString)", isDirectory: true)
@@ -550,7 +568,7 @@ final class ImageAllMigrationArchiveTests: XCTestCase {
               scopeRevision: 1, inventoryWatermark: 9, declaredItemCount: count)
     }
 
-    private func makeItem(root: URL, resourceID: UUID, bytes: Data) throws -> ImageAllMigrationItem {
+    private func makeItem(root: URL, resourceID: UUID, bytes: Data, originalFilename: String? = nil) throws -> ImageAllMigrationItem {
         let directory = root.appendingPathComponent("resources", isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         let name = "\(resourceID.uuidString.lowercased()).jpg"
@@ -567,7 +585,7 @@ final class ImageAllMigrationArchiveTests: XCTestCase {
                       uniformTypeIdentifier: "public.jpeg",
                       required: true, status: .present,
                       relativePath: "resources/\(name)",
-                      byteCount: Int64(bytes.count), sha256: hash)
+                      byteCount: Int64(bytes.count), sha256: hash, originalFilename: originalFilename)
             ]
         )
     }

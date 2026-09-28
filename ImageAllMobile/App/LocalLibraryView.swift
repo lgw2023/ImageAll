@@ -1851,6 +1851,7 @@ private enum LocalPhotoArchiveExporter {
                 guard expected.status == .present,
                       expected.role == (index == primary ? "original" : resourceRole(resource.type)),
                       expected.uniformTypeIdentifier == uti,
+                      expected.originalFilename == (resource.originalFilename.isEmpty ? nil : resource.originalFilename),
                       let bytes = expected.byteCount,
                       let hash = expected.sha256 else {
                     throw LocalArchiveExportError.sourceChanged
@@ -1985,7 +1986,8 @@ private enum LocalPhotoArchiveExporter {
                     exported.append(ImageAllMigrationResource(
                         id: id, role: role, version: 1, uniformTypeIdentifier: uti,
                         required: true, status: .present, relativePath: relativePath,
-                        byteCount: digest.0, sha256: digest.1
+                        byteCount: digest.0, sha256: digest.1,
+                        originalFilename: resource.originalFilename.isEmpty ? nil : resource.originalFilename
                     ))
                 } catch {
                     try? manager.removeItem(at: destination)
@@ -2008,7 +2010,8 @@ private enum LocalPhotoArchiveExporter {
                     exported.append(ImageAllMigrationResource(
                         id: id, role: role, version: 1, uniformTypeIdentifier: uti,
                         required: true, status: resourceStatus, relativePath: nil,
-                        byteCount: nil, sha256: nil
+                        byteCount: nil, sha256: nil,
+                        originalFilename: resource.originalFilename.isEmpty ? nil : resource.originalFilename
                     ))
                 }
             }
@@ -2144,7 +2147,7 @@ private enum LocalPhotoArchiveExporter {
             modificationDate: asset.modificationDate,
             creationDate: asset.creationDate, metadata: sourceMetadata(asset),
             resourceSignature: PHAssetResource.assetResources(for: asset).map {
-                "\($0.type.rawValue):\($0.uniformTypeIdentifier)"
+                "\($0.type.rawValue):\($0.uniformTypeIdentifier):\($0.originalFilename)"
             }
         )
     }

@@ -99,7 +99,7 @@ final class PhoneArchiveImportTests: XCTestCase {
         let fixture = try Fixture()
         defer { fixture.remove() }
         let resource = try fixture.resource(
-            "original", bytes: Data("network-stage-original".utf8)
+            "original", bytes: Data("network-stage-original".utf8), originalFilename: "../原图.heic"
         )
         let metadata = ImageAllMigrationSourceMetadata(pixelWidth: 4032, pixelHeight: 3024,
             modifiedAtMs: 900, location: .init(latitude: 0, longitude: 0, horizontalAccuracyMeters: 25))
@@ -207,6 +207,11 @@ final class PhoneArchiveImportTests: XCTestCase {
         let restoredImporter = VerifiedPhoneArchiveImporter(database: try CatalogDatabase.open(at: recovery.recoveredCatalogURL))
         XCTAssertEqual(try restoredImporter.verifiedPreview(migrationID: header.migrationID,
             mediaID: item.mediaID, archiveRoot: recovery.restoredArchiveURL).sourceMetadata, metadata)
+        let restoredPreview = try restoredImporter.verifiedPreview(migrationID: header.migrationID,
+            mediaID: item.mediaID, archiveRoot: recovery.restoredArchiveURL)
+        XCTAssertEqual(restoredPreview.resources.first?.originalFilename, "../原图.heic")
+        XCTAssertEqual(restoredPreview.originalURL.deletingLastPathComponent().lastPathComponent, "resources")
+        XCTAssertNotEqual(restoredPreview.originalURL.lastPathComponent, "原图.heic")
         XCTAssertEqual(recovery.integrity.factSnapshot?.auditRecords, facts.auditRecords)
         XCTAssertNotEqual(recovery.restoredArchiveURL, imported.archiveURL)
         XCTAssertEqual(try Data(contentsOf: recovery.restoredArchiveURL.appendingPathComponent(
@@ -1531,7 +1536,7 @@ final class PhoneArchiveImportTests: XCTestCase {
                   appleAlbumCoverage: appleAlbumCoverage)
         }
 
-        func resource(_ role: String, bytes: Data, uti: String = "public.data") throws -> ImageAllMigrationResource {
+        func resource(_ role: String, bytes: Data, uti: String = "public.data", originalFilename: String? = nil) throws -> ImageAllMigrationResource {
             let id = UUID()
             let directory = incoming.appendingPathComponent("resources", isDirectory: true)
             try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -1542,7 +1547,7 @@ final class PhoneArchiveImportTests: XCTestCase {
             return .init(id: id, role: role, version: 1,
                          uniformTypeIdentifier: uti, required: true,
                          status: .present, relativePath: "resources/\(name)",
-                         byteCount: Int64(bytes.count), sha256: hash)
+                         byteCount: Int64(bytes.count), sha256: hash, originalFilename: originalFilename)
         }
 
         func item(resource: ImageAllMigrationResource, sourceMetadata: ImageAllMigrationSourceMetadata? = nil) -> ImageAllMigrationItem {

@@ -328,6 +328,7 @@ struct PhoneArchivePreviewResource: Identifiable, Sendable {
     let role: String
     let version: Int64
     let isVideo: Bool
+    let originalFilename: String?
 
     var label: String {
         let name: String = switch role {
@@ -340,7 +341,7 @@ struct PhoneArchivePreviewResource: Identifiable, Sendable {
         case "photoProxy": "照片代理资源"
         default: "附加媒体资源"
         }
-        return "\(name) · v\(version) · \(id.uuidString.prefix(6))"
+        return "\(name) · \(originalFilename ?? "来源名称未记录") · v\(version) · \(id.uuidString.prefix(6))"
     }
 }
 
@@ -2650,9 +2651,15 @@ struct VerifiedPhoneArchiveImporter: Sendable {
         migrationID: UUID, mediaID: UUID, archiveRoot: URL
     ) throws -> PhoneArchiveVerifiedPreview {
         var sourceMetadata: ImageAllMigrationSourceMetadata?
+        var sourceNames: [UUID: String] = [:]
         _ = try auditImportedArchive(
             migrationID: migrationID, archiveRoot: archiveRoot,
-            onVerifiedItem: { if $0.mediaID == mediaID { sourceMetadata = $0.sourceMetadata } }
+            onVerifiedItem: { item in
+                if item.mediaID == mediaID {
+                    sourceMetadata = item.sourceMetadata
+                    for resource in item.resources { sourceNames[resource.id] = resource.originalFilename }
+                }
+            }
         )
         let resources: [PhoneArchivePreviewResource] = try database.pool.read { db in
             try Row.fetchAll(db, sql: """
@@ -2680,7 +2687,8 @@ struct VerifiedPhoneArchiveImporter: Sendable {
                     }
                     return PhoneArchivePreviewResource(id: id, url: archiveRoot.appendingPathComponent(relative),
                         role: role, version: row["version"],
-                        isVideo: type?.conforms(to: .movie) == true || (role == "original" && mediaKind == "video"))
+                        isVideo: type?.conforms(to: .movie) == true || (role == "original" && mediaKind == "video"),
+                        originalFilename: sourceNames[id])
                 }
         }
         guard let original = resources.first(where: { $0.role == "original" }) else {
