@@ -78,8 +78,17 @@ final class MigrationTransferClientTests: XCTestCase {
         // Simulate the one-resource window being released, then regenerated for
         // an archive retry. The receiver must retain exactly the first copy.
         try FileManager.default.removeItem(at: resourceURL)
-        try resourceBytes.write(to: resourceURL)
+        try Data("unexpected manifest contents".utf8).write(to: manifestURL)
+        do {
+            _ = try await client.finishPreparedMigration(at: source, header: header, items: [item])
+            XCTFail("planning manifest changed without detection")
+        } catch let error as RemoteAPIError { XCTAssertEqual(error.code, .conflict) }
         try manifest.write(to: manifestURL)
+        let streamed = try await client.finishPreparedMigration(at: source, header: header, items: [item])
+        XCTAssertEqual(streamed.verifiedBytes, Int64(resourceBytes.count))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: resourceURL.path),
+                       "stream completion must not require a full local resource copy")
+        try resourceBytes.write(to: resourceURL)
         let receipt = try await client.uploadMigrationArchive(at: source, pairedDeviceID: deviceID)
         XCTAssertEqual(receipt.migrationID, migrationID)
         XCTAssertEqual(receipt.resourceCount, 1)

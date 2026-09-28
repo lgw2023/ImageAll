@@ -114,6 +114,66 @@ public final class ImageAllMigrationExportCheckpoint {
         }
     }
 
+    /// Freeze small planning state before any network writes. Kept only in an
+    /// app-owned streaming staging root, never inside a published archive.
+    public func frozenContext(_ proposed: Data) throws -> Data {
+        try checkOpenRoot()
+        let maximum = 128 * 1_024 * 1_024
+        guard !proposed.isEmpty, proposed.count <= maximum else {
+            throw ImageAllMigrationArchiveError.invalidManifest
+        }
+        let url = root.appendingPathComponent("stream-context.json")
+        var info = stat()
+        if Darwin.lstat(url.path, &info) == 0 {
+            guard (info.st_mode & S_IFMT) == S_IFREG,
+                  info.st_size > 0, info.st_size <= maximum else {
+                throw ImageAllMigrationArchiveError.unsafeResourcePath
+            }
+            return try Data(contentsOf: url)
+        }
+        guard errno == ENOENT else { throw ImageAllMigrationArchiveError.unsafeResourcePath }
+        try proposed.write(to: url, options: .atomic)
+        return proposed
+    }
+
+    /// A new streaming attempt regenerates only its own disposable resource
+    /// window. The server's committed offsets survive; Photos originals and
+    /// frozen planning state are not touched. Validate every entry before edits.
+    public func streamingResourceWindow() throws -> [URL] {
+        try checkOpenRoot()
+        let context = try root.appendingPathComponent("stream-context.json").resourceValues(
+            forKeys: [.isRegularFileKey, .isSymbolicLinkKey])
+        guard context.isRegularFile == true, context.isSymbolicLink != true else {
+            throw ImageAllMigrationArchiveError.unsafeResourcePath
+        }
+        let directory = root.appendingPathComponent("resources", isDirectory: true)
+        guard FileManager.default.fileExists(atPath: directory.path) else { return [] }
+        let values = try directory.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey])
+        guard values.isDirectory == true, values.isSymbolicLink != true else {
+            throw ImageAllMigrationArchiveError.unsafeResourcePath
+        }
+        let files = try FileManager.default.contentsOfDirectory(at: directory,
+            includingPropertiesForKeys: [.isRegularFileKey, .isSymbolicLinkKey])
+        for file in files {
+            let pieces = file.lastPathComponent.split(separator: ".", omittingEmptySubsequences: false)
+            let values = try file.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey])
+            guard pieces.count == 2, UUID(uuidString: String(pieces[0])) != nil,
+                  (1...12).contains(pieces[1].count),
+                  pieces[1].allSatisfy({ $0.isASCII && ($0.isLetter || $0.isNumber) }),
+                  values.isRegularFile == true, values.isSymbolicLink != true else {
+                throw ImageAllMigrationArchiveError.unsafeResourcePath
+            }
+        }
+        return files
+    }
+
+    /// The caller must first confirm all pending resources remain locally
+    /// readable from their source. Revalidate paths immediately before removal.
+    public func resetStreamingResourceWindow() throws {
+        let files = try streamingResourceWindow()
+        for file in files { try FileManager.default.removeItem(at: file) }
+    }
+
     private func checkOpenRoot() throws {
         let values = try root.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey])
         guard descriptor >= 0, values.isDirectory == true, values.isSymbolicLink != true,

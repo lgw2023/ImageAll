@@ -1,6 +1,7 @@
 import CryptoKit
 import CoreTransferable
 import ImageAllLocalLibrary
+import ImageAllRemoteClient
 import ImageAllRemoteProtocol
 import Photos
 import SwiftUI
@@ -371,6 +372,57 @@ final class LocalLibraryModel: ObservableObject {
             try? FileManager.default.removeItem(at: result.0)
             throw error
         }
+    }
+
+    /// Explicit resource-first network export. Each local scratch resource is
+    /// released only after the paired receiver independently confirms its bytes.
+    func streamSelectedArchive(to remote: RemoteCompanionModel) async throws -> ImageAllMigrationTransferSealReceipt {
+        let connection = try remote.migrationStreamingConnection()
+        let snapshot = try await makeMigrationFactSnapshot()
+        guard !snapshot.selectedAssetIDs.isEmpty else { throw LocalArchiveExportError.emptySelection }
+        guard Set(snapshot.selectedAssetIDs) == Set(snapshot.assets.map(\.id)) else {
+            throw LocalArchiveExportError.selectionNotVisible
+        }
+        let check: @Sendable () async throws -> Void = { [self, remote] in
+            try Task.checkCancellation()
+            try await remote.validateMigrationStreamingConnection(
+                hostID: connection.hostID, deviceID: connection.deviceID)
+            try await self.validateSharedSnapshotScope(snapshot)
+        }
+        return try await LocalPhotoArchiveExporter.stream(snapshot: snapshot, configuration: .init(
+            destination: "\(connection.hostID.uuidString)|\(connection.deviceID.uuidString)",
+            beforeResource: { try await check() },
+            uploadResource: { migrationID, file, resource in
+                guard let path = resource.relativePath, let size = resource.byteCount,
+                      let hash = resource.sha256 else { throw LocalArchiveExportError.incompleteArchive }
+                _ = try await connection.client.uploadMigrationFile(
+                    at: file, migrationID: migrationID, relativePath: path,
+                    byteCount: size, sha256: hash, beforeChunk: check)
+                try await check()
+                let receipt = try await connection.client.verifyMigrationResource(
+                    migrationID: migrationID, deviceID: connection.deviceID,
+                    request: .init(relativePath: path, byteCount: size, sha256: hash))
+                try await check()
+                return receipt
+            },
+            finish: { [self] root, header, items in
+                try await check()
+                let current = try await self.makeMigrationFactSnapshot()
+                guard current.installID == header.sourceDeviceID, current.sourceEpoch == header.sourceEpoch,
+                      current.scopeRevision == header.scopeRevision,
+                      Set(current.selectedAssetIDs) == Set(items.map(\.mediaID)),
+                      Set(current.assets.map(\.id)) == Set(items.map(\.mediaID)) else {
+                    throw LocalArchiveExportError.selectionChanged
+                }
+                let facts = try LocalMigrationFactExporter.export(snapshot: current)
+                defer { try? FileManager.default.removeItem(at: facts) }
+                _ = try ImageAllMigrationFacts.publish(from: facts, into: root)
+                let receipt = try await connection.client.finishPreparedMigration(
+                    at: root, header: header, items: items, beforeChunk: check)
+                try await check()
+                return receipt
+            }
+        ))
     }
 
     func exportSelectedFacts() async throws -> URL {
@@ -1304,6 +1356,8 @@ private struct LocalShareScopeView: View {
     @State private var isCheckingCollectionHistory = false
     @State private var isExporting = false
     @State private var isExportingFacts = false
+    @State private var isStreamingArchive = false
+    @State private var streamTask: Task<Void, Never>?
     @State private var isUploadingArchive = false
     @State private var exportedArchive: URL?
     @State private var exportedArchiveComplete = false
@@ -1600,10 +1654,34 @@ private struct LocalShareScopeView: View {
             archiveSection
         }
         .navigationTitle("待分享范围")
+        .onDisappear { streamTask?.cancel() }
     }
 
     private var archiveSection: some View {
         Section("本机原件归档") {
+            Button(isStreamingArchive ? "正在逐资源传输并校验…" : "所选项目逐资源传到 Mac（减少暂存）") {
+                guard !isStreamingArchive else { return }
+                isStreamingArchive = true
+                streamTask = Task {
+                    archiveStatusMessage = nil
+                    defer { isStreamingArchive = false; streamTask = nil }
+                    do {
+                        let receipt = try await model.streamSelectedArchive(to: remoteModel)
+                        archiveStatusMessage = "Mac 已接收并复验 \(receipt.itemCount) 项、\(receipt.resourceCount) 个资源；手机原件保留。请在 Mac 接收目录中入库，再完成尾部对账和独立恢复验收。"
+                    } catch is CancellationError {
+                        archiveStatusMessage = "传输已暂停。恢复连接后可按原范围重试，Mac 已落盘进度保留。"
+                    } catch {
+                        archiveStatusMessage = "逐资源传输未完成：\(error.localizedDescription)；请恢复原范围和连接后重试。"
+                    }
+                }
+            }
+            .disabled(isStreamingArchive || isExporting || isUploadingArchive || isSending
+                      || model.sharedSelections.isEmpty || !remoteModel.isConnected)
+            if isStreamingArchive {
+                Button("暂停逐资源传输") { streamTask?.cancel() }
+            }
+            Text("每次仅暂存一个资源，Mac 校验后释放手机暂存，保留 Photos 原件。仍需容纳单个最大资源；请保持 App 在前台。重试会重新准备资源，并继续 Mac 已落盘进度。")
+                .font(.footnote).foregroundStyle(.secondary)
             Button(isExporting ? "正在读取并核对原件…" : "生成所选项目的本机归档包") {
                 Task {
                     isExporting = true
@@ -1623,7 +1701,7 @@ private struct LocalShareScopeView: View {
                     }
                 }
             }
-            .disabled(isExporting || isSending || model.sharedSelections.isEmpty)
+            .disabled(isStreamingArchive || isExporting || isSending || model.sharedSelections.isEmpty)
             if let exportedArchive {
                 LocalArchiveShareButton(
                     url: exportedArchive, isComplete: exportedArchiveComplete
@@ -1643,7 +1721,7 @@ private struct LocalShareScopeView: View {
                     }
                 }
                 .disabled(!exportedArchiveComplete || !remoteModel.isConnected
-                          || isUploadingArchive || isExporting)
+                          || isUploadingArchive || isExporting || isStreamingArchive)
             }
             Button("查找本机已生成的归档以继续上传") {
                 do {
@@ -2199,15 +2277,42 @@ private enum LocalPhotoArchiveExporter {
         }.sorted { $0.lastPathComponent > $1.lastPathComponent }
     }
 
-    static func export(
-        snapshot: LocalSharedSnapshot
-    ) async throws -> (URL, ImageAllMigrationVerification) {
+    struct Stream {
+        let destination: String
+        let beforeResource: @MainActor () async throws -> Void
+        let uploadResource: @MainActor (UUID, URL, ImageAllMigrationResource) async throws -> ImageAllMigrationResourceVerificationReceipt
+        let finish: @MainActor (URL, ImageAllMigrationHeader, [ImageAllMigrationItem]) async throws -> ImageAllMigrationTransferSealReceipt
+    }
+
+    private enum Output {
+        case archive(URL, ImageAllMigrationVerification)
+        case stream(ImageAllMigrationTransferSealReceipt)
+    }
+
+    static func export(snapshot: LocalSharedSnapshot) async throws -> (URL, ImageAllMigrationVerification) {
+        guard case let .archive(url, verification) = try await build(snapshot: snapshot) else {
+            throw LocalArchiveExportError.incompleteArchive
+        }
+        return (url, verification)
+    }
+
+    static func stream(snapshot: LocalSharedSnapshot, configuration: Stream) async throws -> ImageAllMigrationTransferSealReceipt {
+        guard case let .stream(receipt) = try await build(snapshot: snapshot, stream: configuration) else {
+            throw LocalArchiveExportError.incompleteArchive
+        }
+        return receipt
+    }
+
+    private static func build(
+        snapshot initialSnapshot: LocalSharedSnapshot, stream: Stream? = nil
+    ) async throws -> Output {
+        var snapshot = initialSnapshot
         let manager = FileManager.default
         let support = try manager.url(
             for: .applicationSupportDirectory, in: .userDomainMask,
             appropriateFor: nil, create: true
         )
-        let parent = support.appendingPathComponent("LocalLibrary/MigrationArchives", isDirectory: true)
+        let parent = support.appendingPathComponent(stream == nil ? "LocalLibrary/MigrationArchives" : "LocalLibrary/MigrationStreaming", isDirectory: true)
         try manager.createDirectory(at: parent, withIntermediateDirectories: true)
         var parentValues = URLResourceValues()
         parentValues.isExcludedFromBackup = true
@@ -2236,15 +2341,57 @@ private enum LocalPhotoArchiveExporter {
             let mediaLocators: [String: String]
             let sources: [String: SourceVersion]
             let albums: [String: [ImageAllMigrationAppleAlbumMembership]]
+            let destination: String?
         }
         let binding = ResumeBinding(installID: snapshot.installID, sourceEpoch: snapshot.sourceEpoch,
             scopeRevision: snapshot.scopeRevision,
             mediaLocators: Dictionary(uniqueKeysWithValues: snapshot.assets.map { ($0.id.uuidString, $0.localIdentifier) }),
-            sources: sourceVersions, albums: albumMemberships)
+            sources: sourceVersions, albums: albumMemberships, destination: stream?.destination)
         let bindingEncoder = JSONEncoder()
         bindingEncoder.outputFormatting = [.sortedKeys]
         let checkpoint = try ImageAllMigrationExportCheckpoint(parent: parent, binding: bindingEncoder.encode(binding))
         defer { checkpoint.close() }
+        if stream != nil {
+            let frozen = try checkpoint.frozenContext(bindingEncoder.encode(initialSnapshot))
+            snapshot = try JSONDecoder().decode(LocalSharedSnapshot.self, from: frozen)
+            guard snapshot.installID == initialSnapshot.installID,
+                  snapshot.sourceEpoch == initialSnapshot.sourceEpoch,
+                  snapshot.scopeRevision == initialSnapshot.scopeRevision,
+                  snapshot.snapshotSequence <= initialSnapshot.snapshotSequence,
+                  snapshot.outboxWatermark <= initialSnapshot.outboxWatermark,
+                  Set(snapshot.selectedAssetIDs) == Set(initialSnapshot.selectedAssetIDs),
+                  Set(snapshot.assets.map(\.id)).count == snapshot.assets.count,
+                  Set(snapshot.assets.map(\.localIdentifier)).count == snapshot.assets.count,
+                  Dictionary(uniqueKeysWithValues: snapshot.assets.map { ($0.id, $0.localIdentifier) })
+                    == Dictionary(uniqueKeysWithValues: initialSnapshot.assets.map { ($0.id, $0.localIdentifier) }) else {
+                throw LocalArchiveExportError.archiveScopeChanged
+            }
+            try manager.setAttributes([.protectionKey: FileProtectionType.complete],
+                ofItemAtPath: checkpoint.root.appendingPathComponent("stream-context.json").path)
+            let pending = Set(try checkpoint.streamingResourceWindow().map(\.path))
+            var revalidated = Set<String>()
+            if !pending.isEmpty {
+                for selected in snapshot.assets {
+                    guard let source = byLocator[selected.localIdentifier] else {
+                        throw LocalArchiveExportError.selectionNotVisible
+                    }
+                    for (index, resource) in PHAssetResource.assetResources(for: source).enumerated() {
+                        let location = try checkpoint.resourceLocation(
+                            key: "\(selected.id.uuidString)|\(index)", fileExtension: fileExtension(for: resource))
+                        if pending.contains(location.url.path) {
+                            try await stream?.beforeResource()
+                            // Do not discard the interrupted cache if Photos can
+                            // no longer supply the current resource without cloud.
+                            _ = try await hashSourceResource(resource)
+                            revalidated.insert(location.url.path)
+                        }
+                    }
+                }
+                guard revalidated == pending else { throw LocalArchiveExportError.sourceChanged }
+                try await stream?.beforeResource()
+            }
+            try checkpoint.resetStreamingResourceWindow()
+        }
         let migrationID = checkpoint.migrationID
         let staging = checkpoint.root
         let published = parent.appendingPathComponent("\(migrationID.uuidString).imageallarchive", isDirectory: true)
@@ -2259,20 +2406,19 @@ private enum LocalPhotoArchiveExporter {
             }
             let sourceResources = PHAssetResource.assetResources(for: source)
             let primary = primaryResourceIndex(mediaType: source.mediaType, resources: sourceResources)
+            if stream != nil, primary == nil { throw LocalArchiveExportError.incompleteArchive }
             var exported: [ImageAllMigrationResource] = []
             for (index, resource) in sourceResources.enumerated() {
                 let uti = resource.uniformTypeIdentifier.isEmpty
                     ? UTType.data.identifier : resource.uniformTypeIdentifier
                 let role = index == primary ? "original" : resourceRole(resource.type)
-                let preferredExtension = UTType(uti)?.preferredFilenameExtension ?? "bin"
-                let fileExtension = preferredExtension.count <= 12
-                    && preferredExtension.allSatisfy({ $0.isASCII && ($0.isLetter || $0.isNumber) })
-                    ? preferredExtension : "bin"
+                let fileExtension = Self.fileExtension(for: resource)
                 let location = try checkpoint.resourceLocation(key: "\(selected.id.uuidString)|\(index)", fileExtension: fileExtension)
                 let id = location.id, relativePath = location.relativePath, destination = location.url
                 var preserveCachedResource = manager.fileExists(atPath: destination.path)
                 do {
                     try Task.checkCancellation()
+                    try await stream?.beforeResource()
                     var verifiedCache: (Int64, String)?
                     if preserveCachedResource {
                         let cached = try await Task.detached { try hashFile(destination) }.value
@@ -2296,13 +2442,29 @@ private enum LocalPhotoArchiveExporter {
                     try manager.setAttributes(
                         [.protectionKey: FileProtectionType.complete], ofItemAtPath: destination.path
                     )
-                    exported.append(ImageAllMigrationResource(
+                    let record = ImageAllMigrationResource(
                         id: id, role: role, version: 1, uniformTypeIdentifier: uti,
                         required: true, status: .present, relativePath: relativePath,
                         byteCount: digest.0, sha256: digest.1,
                         originalFilename: resource.originalFilename.isEmpty ? nil : resource.originalFilename
-                    ))
+                    )
+                    if let stream {
+                        let receipt = try await stream.uploadResource(migrationID, destination, record)
+                        guard receipt.migrationID == migrationID,
+                              receipt.resource.relativePath == relativePath,
+                              receipt.resource.byteCount == digest.0,
+                              receipt.resource.sha256 == digest.1 else {
+                            throw LocalArchiveExportError.sourceChanged
+                        }
+                        // Only our deterministic scratch resource is removed,
+                        // after independent receiver verification. Never PhotoKit.
+                        let checked = try checkpoint.resourceLocation(
+                            key: "\(selected.id.uuidString)|\(index)", fileExtension: fileExtension)
+                        try manager.removeItem(at: checked.url)
+                    }
+                    exported.append(record)
                 } catch {
+                    if stream != nil { throw error }
                     // If source revalidation fails, keep the prior cache and stop this attempt.
                     if preserveCachedResource { throw error }
                     try? manager.removeItem(at: destination)
@@ -2391,13 +2553,18 @@ private enum LocalPhotoArchiveExporter {
             try manager.removeItem(at: resourcesDirectory)
         }
         try ImageAllMigrationArchive.write(header: header, items: items, to: staging)
+        if let stream {
+            try manager.setAttributes([.protectionKey: FileProtectionType.complete],
+                ofItemAtPath: staging.appendingPathComponent(ImageAllMigrationArchive.manifestFilename).path)
+            return .stream(try await stream.finish(staging, header, items))
+        }
         let verification = try ImageAllMigrationArchive.verify(at: staging)
         try manager.setAttributes(
             [.protectionKey: FileProtectionType.complete],
             ofItemAtPath: staging.appendingPathComponent(ImageAllMigrationArchive.manifestFilename).path
         )
         try manager.moveItem(at: staging, to: published)
-        return (published, verification)
+        return .archive(published, verification)
     }
 
     /// Traverse only user-created Photos albums/folders. A membership is kept
@@ -2444,6 +2611,13 @@ private enum LocalPhotoArchiveExporter {
             }
         }
         return result
+    }
+
+    private static func fileExtension(for resource: PHAssetResource) -> String {
+        let uti = resource.uniformTypeIdentifier.isEmpty ? UTType.data.identifier : resource.uniformTypeIdentifier
+        let candidate = UTType(uti)?.preferredFilenameExtension ?? "bin"
+        return (1...12).contains(candidate.count)
+            && candidate.allSatisfy({ $0.isASCII && ($0.isLetter || $0.isNumber) }) ? candidate : "bin"
     }
 
     private static func primaryResourceIndex(

@@ -325,6 +325,73 @@ public struct RemoteLibraryClient: Sendable {
         return (count, migrationHex(digest.finalize()))
     }
 
+    /// Finalize a resource-first transfer. Only the manifest and fact sidecars
+    /// need remain on the phone. The receiver independently validates the whole
+    /// archive before the returned receipt is compared with this exact plan.
+    public func finishPreparedMigration(
+        at planningRoot: URL, header: ImageAllMigrationHeader, items: [ImageAllMigrationItem],
+        beforeChunk: @Sendable () async throws -> Void = {}
+    ) async throws -> ImageAllMigrationTransferSealReceipt {
+        guard header.declaredItemCount == items.count else {
+            throw RemoteAPIError(code: .badRequest, message: "migration plan count mismatch")
+        }
+        var totalBytes: Int64 = 0
+        var resourceCount = 0
+        for resource in items.flatMap(\.resources) {
+            guard resource.status == .present, let size = resource.byteCount, size > 0,
+                  size <= Int64.max - totalBytes else {
+                throw RemoteAPIError(code: .badRequest, message: "migration plan is incomplete")
+            }
+            totalBytes += size
+            resourceCount += 1
+        }
+        let facts = try ImageAllMigrationFacts.inspectPublished(
+            at: planningRoot, sourceDeviceID: header.sourceDeviceID, sourceEpoch: header.sourceEpoch,
+            scopeRevision: header.scopeRevision, inventoryWatermark: header.inventoryWatermark,
+            minimumFactWatermark: items.map(\.factRevision).max() ?? 0,
+            mediaIDs: Set(items.map(\.mediaID)))
+        let manifest = planningRoot.appendingPathComponent(ImageAllMigrationArchive.manifestFilename)
+        let manifestDigest = try Self.migrationFileDigest(at: manifest)
+        let canonical = JSONEncoder()
+        canonical.outputFormatting = [.sortedKeys]
+        var expectedManifest = SHA256()
+        func include<T: Encodable>(_ record: T) throws {
+            var line = try canonical.encode(record)
+            guard line.count < 1_048_576 else {
+                throw RemoteAPIError(code: .badRequest, message: "manifest record exceeds limit")
+            }
+            line.append(0x0A)
+            expectedManifest.update(data: line)
+        }
+        try include(header)
+        for item in items { try include(item) }
+        guard Self.migrationHex(expectedManifest.finalize()) == manifestDigest.sha256 else {
+            throw RemoteAPIError(code: .conflict, message: "manifest differs from captured plan")
+        }
+        var paths = [ImageAllMigrationArchive.manifestFilename]
+        let factsDirectory = planningRoot.appendingPathComponent(ImageAllMigrationFacts.sidecarDirectoryName)
+        if facts.latestURL != nil {
+            paths += try FileManager.default.contentsOfDirectory(atPath: factsDirectory.path)
+                .sorted().map { "\(ImageAllMigrationFacts.sidecarDirectoryName)/\($0)" }
+        }
+        for path in paths {
+            let file = planningRoot.appendingPathComponent(path)
+            let digest = try Self.migrationFileDigest(at: file)
+            _ = try await uploadMigrationFile(at: file, migrationID: header.migrationID,
+                relativePath: path, byteCount: digest.bytes, sha256: digest.sha256, beforeChunk: beforeChunk)
+        }
+        try Task.checkCancellation()
+        try await beforeChunk()
+        let receipt = try await sealMigrationTransfer(migrationID: header.migrationID)
+        guard receipt.migrationID == header.migrationID,
+              receipt.manifestSHA256 == manifestDigest.sha256,
+              receipt.itemCount == items.count, receipt.resourceCount == resourceCount,
+              receipt.verifiedBytes == totalBytes, receipt.factsSHA256 == facts.sha256 else {
+            throw RemoteAPIError(code: .conflict, message: "receiver archive differs from streaming plan")
+        }
+        return receipt
+    }
+
     /// Sends a previously exported local package file by file. Resume always
     /// uses the receiver's committed offsets; the final receipt proves only
     /// verified staging on Mac, not catalog import or migration completion.

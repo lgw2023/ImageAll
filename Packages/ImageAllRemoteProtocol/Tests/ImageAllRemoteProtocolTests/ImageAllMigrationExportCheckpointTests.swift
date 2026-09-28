@@ -37,6 +37,38 @@ final class ImageAllMigrationExportCheckpointTests: XCTestCase {
         XCTAssertEqual(try Data(contentsOf: published.appendingPathComponent(location.relativePath)), Data("complete synthetic resource".utf8))
     }
 
+    func testStreamingContextSurvivesRetryWhileOnlyOwnedResourceWindowIsReset() throws {
+        let parent = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: parent, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: parent) }
+        let binding = Data("source scope plus paired destination".utf8)
+        let first = try ImageAllMigrationExportCheckpoint(parent: parent, binding: binding)
+        let frozen = Data("first immutable planning snapshot".utf8)
+        XCTAssertEqual(try first.frozenContext(frozen), frozen)
+        let resource = try first.resourceLocation(key: "asset|0", fileExtension: "bin")
+        try Data([1, 2, 3]).write(to: resource.url)
+        let id = first.migrationID
+        first.close()
+        let retry = try ImageAllMigrationExportCheckpoint(parent: parent, binding: binding)
+        defer { retry.close() }
+        XCTAssertEqual(retry.migrationID, id)
+        XCTAssertEqual(try retry.frozenContext(Data("new facts must not rewrite old manifest".utf8)), frozen)
+        try retry.resetStreamingResourceWindow()
+        XCTAssertFalse(FileManager.default.fileExists(atPath: resource.url.path))
+        XCTAssertEqual(try retry.frozenContext(Data([4])), frozen)
+        let sentinel = parent.appendingPathComponent("original.bin")
+        try Data([5, 6]).write(to: sentinel)
+        try FileManager.default.createSymbolicLink(at: resource.url, withDestinationURL: sentinel)
+        XCTAssertThrowsError(try retry.resetStreamingResourceWindow())
+        XCTAssertEqual(try Data(contentsOf: sentinel), Data([5, 6]))
+        let context = retry.root.appendingPathComponent("stream-context.json")
+        try FileManager.default.removeItem(at: context)
+        try FileManager.default.createSymbolicLink(at: context, withDestinationURL: sentinel)
+        XCTAssertThrowsError(try retry.frozenContext(Data([7])))
+        XCTAssertThrowsError(try retry.resetStreamingResourceWindow())
+        XCTAssertEqual(try Data(contentsOf: sentinel), Data([5, 6]))
+    }
+
     func testCheckpointRejectsResourceAndManifestSymlinks() throws {
         let parent = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: parent, withIntermediateDirectories: true)

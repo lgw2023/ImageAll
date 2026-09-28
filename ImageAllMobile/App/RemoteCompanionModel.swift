@@ -650,6 +650,23 @@ final class RemoteCompanionModel: ObservableObject {
         )
     }
 
+    func migrationStreamingConnection() throws -> (client: RemoteLibraryClient, hostID: UUID, deviceID: UUID) {
+        guard isConnected, let client, let sessionTokens, let capabilities,
+              capabilities.hostID == sessionTokens.hostID,
+              capabilities.capabilities.contains(.migrationTransfer),
+              capabilities.capabilities.contains(.migrationResourceVerification) else {
+            throw RemoteAPIError(code: .unauthorized, message: "请连接支持逐资源校验且已设置接收目录的 Mac")
+        }
+        return (client, sessionTokens.hostID, sessionTokens.deviceID)
+    }
+
+    func validateMigrationStreamingConnection(hostID: UUID, deviceID: UUID) throws {
+        let current = try migrationStreamingConnection()
+        guard current.hostID == hostID, current.deviceID == deviceID else {
+            throw RemoteAPIError(code: .conflict, message: "迁移期间配对身份已变化，请重新连接原 Mac")
+        }
+    }
+
     func uploadMigrationArchive(
         at archiveRoot: URL
     ) async throws -> ImageAllMigrationTransferSealReceipt {
