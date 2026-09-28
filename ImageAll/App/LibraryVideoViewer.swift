@@ -200,6 +200,7 @@ struct LibraryVideoViewer: View {
     @State private var contentCandidates: [FolderVideoAnalysisService.ContentCandidate] = []
     @State private var analysisFrames: [VideoAnalysisFrame] = []
     @State private var analysisMessage: String?
+    @State private var predictionEvidence: VideoPredictionEvidenceReader.Snapshot?
     @State private var reloadGeneration = 0
     @State private var showsTechnicalInformation = false
     @State private var confirmsCloudDownload = false
@@ -215,6 +216,13 @@ struct LibraryVideoViewer: View {
 
     private var identity: LibraryVideoViewingSession.Identity {
         .init(assetID: assetID, revision: contentRevision)
+    }
+
+    private var reviewTagID: UUID? {
+        guard case .tagQueue(let tagID, _) = model.reviewMode,
+              model.selectedReviewItemID?.assetID == assetID,
+              model.selectedReviewItemID?.suggestionOrigin == .featurePrint else { return nil }
+        return tagID
     }
 
     private func recordTechnicalMetadata(_ metadata: VideoTechnicalMetadata) async {
@@ -427,9 +435,25 @@ struct LibraryVideoViewer: View {
             }
             .padding(.horizontal, 12)
             .padding(.bottom, 8)
+            if let predictionEvidence {
+                VideoPredictionEvidenceStrip(snapshot: predictionEvidence) { time in
+                    Task { _ = await session.seekToAnalysisTime(time, expected: identity) }
+                }
+            }
             analysisEvidence
         }
         .accessibilityIdentifier("libraryVideoViewer")
+        .task(id: "evidence:\(assetID):\(contentRevision):\(String(describing: reviewTagID))") {
+            predictionEvidence = nil
+            guard let tagID = reviewTagID, let service = model.videoAnalysisService else { return }
+            let selected = identity
+            let snapshot = try? await Task.detached {
+                try VideoPredictionEvidenceReader(database: service.database).read(
+                    assetID: selected.assetID, revision: selected.revision, tagID: tagID)
+            }.value
+            guard !Task.isCancelled, identity == selected, reviewTagID == tagID else { return }
+            predictionEvidence = snapshot
+        }
         .task(id: "\(assetID):\(contentRevision):\(reloadGeneration)") {
             let download = pendingCloudDownload
             pendingCloudDownload = nil
@@ -490,5 +514,33 @@ private struct LibraryVideoPlayerSurface: NSViewRepresentable {
 
     static func dismantleNSView(_ view: AVPlayerView, coordinator: ()) {
         view.player = nil
+    }
+}
+
+struct VideoPredictionEvidenceStrip: View {
+    let snapshot: VideoPredictionEvidenceReader.Snapshot
+    let seek: (Int64) -> Void
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("建议输入证据 · 模型版本 \(snapshot.modelRevision)").font(.caption.bold())
+            Text("这些帧共同参与评分，不代表模型单独依据某一帧作出判断。缓存缺失时保留原时间点，不自动重建。")
+                .font(.caption).foregroundStyle(.secondary)
+            ScrollView(.horizontal) {
+                HStack(spacing: 8) {
+                    ForEach(snapshot.frames, id: \.actualTimeMs) { frame in
+                        Button { seek(frame.actualTimeMs) } label: {
+                            VStack {
+                                if let bytes = frame.jpegBytes, let image = NSImage(data: bytes) {
+                                    Image(nsImage: image).resizable().scaledToFit().frame(width: 112, height: 64)
+                                } else {
+                                    Text("历史帧缓存缺失").font(.caption).frame(width: 112, height: 64)
+                                }
+                                Text(String(format: "%.3f 秒", Double(frame.actualTimeMs) / 1_000)).font(.caption.monospacedDigit())
+                            }
+                        }.buttonStyle(.bordered)
+                    }
+                }
+            }
+        }.padding(.horizontal, 12)
     }
 }

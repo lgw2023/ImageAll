@@ -3,6 +3,7 @@ import AppKit
 import Foundation
 import GRDB
 import XCTest
+import SwiftUI
 @testable import ImageAll
 
 @MainActor
@@ -10,6 +11,36 @@ final class LibraryVideoViewingTests: XCTestCase {
     private var syntheticVideo: URL {
         URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
             .appendingPathComponent("docs/evidence/time-story-phase-1-20260918/synthetic-silent.mp4")
+    }
+
+    func testFrozenPredictionEvidenceStripRendersPresentAndMissingFrames() async throws {
+        let generator = AVAssetImageGenerator(asset: AVURLAsset(url: syntheticVideo))
+        generator.appliesPreferredTrackTransform = true
+        let cgImage = try generator.copyCGImage(at: CMTime(seconds: 0.5, preferredTimescale: 600), actualTime: nil)
+        let jpeg = try XCTUnwrap(NSBitmapImageRep(cgImage: cgImage).representation(using: .jpeg, properties: [:]))
+        let snapshot = VideoPredictionEvidenceReader.Snapshot(modelRevision: 7,
+            frames: [.init(actualTimeMs: 500, jpegBytes: jpeg), .init(actualTimeMs: 750, jpegBytes: nil)])
+        let host = NSHostingView(rootView: VideoPredictionEvidenceStrip(snapshot: snapshot, seek: { _ in })
+            .frame(width: 720, height: 190).background(Color(nsColor: .windowBackgroundColor))
+            .environment(\.colorScheme, .light))
+        host.appearance = NSAppearance(named: .aqua)
+        host.frame = NSRect(x: 0, y: 0, width: 720, height: 190)
+        host.layoutSubtreeIfNeeded()
+        try await Task.sleep(for: .milliseconds(200))
+        host.layoutSubtreeIfNeeded()
+        let bitmap = try XCTUnwrap(host.bitmapImageRepForCachingDisplay(in: host.bounds))
+        host.cacheDisplay(in: host.bounds, to: bitmap)
+        let png = try XCTUnwrap(bitmap.representation(using: .png, properties: [:]))
+        XCTAssertGreaterThan(png.count, 5000)
+        let attachment = XCTAttachment(data: png, uniformTypeIdentifier: "public.png")
+        attachment.name = "video-frozen-review-evidence"
+        attachment.lifetime = .keepAlways
+        add(attachment)
+        if let directory = ProcessInfo.processInfo.environment["IMAGEALL_VIDEO_EVIDENCE_DIR"] {
+            let root = URL(fileURLWithPath: directory, isDirectory: true)
+            try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+            try png.write(to: root.appendingPathComponent("video-frozen-review-evidence.png"))
+        }
     }
 
     func testPhotosAnalysisWaitIsCancellableAndCompletionIsOneShot() throws {

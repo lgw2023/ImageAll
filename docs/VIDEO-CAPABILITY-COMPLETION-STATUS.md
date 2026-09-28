@@ -597,3 +597,10 @@
 - 发布校验视频域、模型 preprocessing=2、证据资产/修订和合法摘要；评分入口校验证据向量摘要与实际 payload 一致。证据为聚合输入，不宣称单帧因果贡献或目标“命中”解释。
 - `video-prediction-evidence-build.log` TEST BUILD SUCCEEDED；`video-prediction-evidence-tests.log` 4/4 PASS。真实多帧 loader 的帧/向量摘要一致，合成预测发布后 JSON 时间点可重读，版本2队列及 migration 重开回归通过。
 - 尚需审核读取接口和摘要匹配显示，缺失/淘汰缓存不能拿新帧补造旧证据；完整真实视频训练→审核及 UI 验收待续。整体 active。
+
+## P5 Mac 审核冻结证据读取与显示（2026-09-28）
+
+- 新只读 VideoPredictionEvidenceReader 仅读取当前标签模型的 pendingReview 视频预测，检查模型预处理版本2、资产修订、来源/标签有效状态及未被人工决定覆盖。旧 NULL 证据不补造。
+- 历史帧以策略、实际时间和冻结 JPEG SHA 匹配，并重新计算缓存字节摘要。缺失、损坏或已淘汰帧保留原时间点并明确提示，不调用解码/重建。Mac 标签队列的 Feature KNN 视频查看器显示模型版本和输入帧，时间按钮连接受资产/修订保护的播放器定位。
+- `video-review-evidence-build-final.log` TEST BUILD SUCCEEDED；`video-review-evidence-tests-final.log` 3/3 PASS，覆盖实际预测读取、缺失/损坏/匹配缓存、错误标签/修订拒绝、播放器定位回归、原生证据条渲染。
+- 已目视检查 `mac-review-evidence/video-frozen-review-evidence.png`，有效帧及缺失提示同时正常显示。该图为独立 NSHostingView 合成渲染，不等同完整审核页面人工点击；模型预测测试仍使用合成向量。完整真实解码视频训练→建议→审核端到端、P6/P7 及前阶段未决项继续推进，整体 active。

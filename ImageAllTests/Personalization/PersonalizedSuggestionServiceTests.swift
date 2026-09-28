@@ -1034,6 +1034,31 @@ final class PersonalizedSuggestionServiceTests: XCTestCase {
         let evidence = try JSONDecoder().decode(VideoPredictionEvidence.self, from: Data(try XCTUnwrap(json).utf8))
         XCTAssertTrue(evidence.isValid(assetID: candidate, revision: 1))
         XCTAssertEqual(evidence.frames.map(\.actualTimeMs), [500])
+        let reader = VideoPredictionEvidenceReader(database: fixture.database)
+        let missing = try XCTUnwrap(reader.read(assetID: candidate, revision: 1, tagID: fixture.ids.tagFamily))
+        XCTAssertEqual(missing.frames.map(\.actualTimeMs), [500])
+        XCTAssertNil(missing.frames.first?.jpegBytes)
+        XCTAssertNil(try reader.read(assetID: candidate, revision: 2, tagID: fixture.ids.tagFamily))
+        XCTAssertNil(try reader.read(assetID: candidate, revision: 1, tagID: UUID()))
+        // The database digest alone is not trusted: corrupt cached bytes must stay missing.
+        try await fixture.database.pool.write { db in
+            try db.execute(sql: "INSERT INTO video_analysis_frame VALUES (?, 1, ?, 'synthetic-evidence', 500, 500, ?, ?, ?)",
+                arguments: [candidate.uuidString.lowercased(), VideoAnalysisSamplingPolicy.identity,
+                            Data([1, 2, 3]), evidence.frames[0].jpegSHA256, DatabaseTestSupport.timestampMs])
+        }
+        XCTAssertNil(try reader.read(assetID: candidate, revision: 1, tagID: fixture.ids.tagFamily)?.frames.first?.jpegBytes)
+        let bytes = Data([10, 20, 30])
+        let matching = VideoPredictionEvidence(assetID: candidate, contentRevision: 1,
+            representation: evidence.representation, vectorSHA256: evidence.vectorSHA256,
+            frames: [.init(actualTimeMs: 500, jpegSHA256: Data(SHA256.hash(data: bytes)))])
+        let matchingJSON = String(decoding: try JSONEncoder().encode(matching), as: UTF8.self)
+        try await fixture.database.pool.write { db in
+            try db.execute(sql: "UPDATE prediction SET video_evidence_json = ? WHERE asset_id = ?",
+                arguments: [matchingJSON, candidate.uuidString.lowercased()])
+            try db.execute(sql: "UPDATE video_analysis_frame SET jpeg = ?, sha256 = ? WHERE asset_id = ?",
+                arguments: [bytes, matching.frames[0].jpegSHA256, candidate.uuidString.lowercased()])
+        }
+        XCTAssertEqual(try reader.read(assetID: candidate, revision: 1, tagID: fixture.ids.tagFamily)?.frames.first?.jpegBytes, bytes)
         do {
             _ = try await service.generateSuggestions(tagID: fixture.ids.tagFamily,
                 candidateAssetIDs: [candidate], mediaKind: .video)

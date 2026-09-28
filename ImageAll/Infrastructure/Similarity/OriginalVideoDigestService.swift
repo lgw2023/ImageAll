@@ -690,3 +690,45 @@ extension FolderVideoAnalysisService {
         return ContentCandidates(items: items, skippedCount: skipped, limited: rows.count > 20)
     }
 }
+
+/// Reads only the frozen inputs of a current pending prediction. Never decodes or rebuilds media.
+struct VideoPredictionEvidenceReader: Sendable {
+    let database: CatalogDatabase
+    struct Snapshot: Sendable {
+        let modelRevision: Int
+        let frames: [Frame]
+    }
+    struct Frame: Sendable {
+        let actualTimeMs: Int64
+        let jpegBytes: Data?
+    }
+    func read(assetID: UUID, revision: Int, tagID: UUID) throws -> Snapshot? {
+        try database.pool.read { db in
+            guard let row = try Row.fetchOne(db, sql: """
+                SELECT p.video_evidence_json, p.model_revision FROM prediction p
+                JOIN tag_model m ON m.media_kind = p.media_kind AND m.tag_id = p.tag_id AND m.current_revision = p.model_revision
+                JOIN tag_model_revision r ON r.media_kind = p.media_kind AND r.tag_id = p.tag_id AND r.revision = p.model_revision
+                JOIN asset a ON a.id = p.asset_id AND a.content_revision = p.content_revision
+                JOIN source s ON s.id = a.source_id AND s.state = 'active'
+                JOIN tag t ON t.id = p.tag_id AND t.state = 'active'
+                WHERE p.asset_id = ? AND p.content_revision = ? AND p.tag_id = ?
+                  AND p.media_kind = 'video' AND a.media_kind = 'video' AND p.state = 'pendingReview'
+                  AND a.locator_state = 'current' AND a.availability = 'available' AND r.preprocessing_revision = 2
+                  AND NOT EXISTS (SELECT 1 FROM asset_tag_decision d WHERE d.asset_id = p.asset_id AND d.tag_id = p.tag_id)
+                """, arguments: [assetID.uuidString.lowercased(), revision, tagID.uuidString.lowercased()]),
+                  let json: String = row["video_evidence_json"], json.utf8.count <= 8192,
+                  let evidence = try? JSONDecoder().decode(VideoPredictionEvidence.self, from: Data(json.utf8)),
+                  evidence.isValid(assetID: assetID, revision: revision) else { return nil }
+            let frames = try evidence.frames.map { frame in
+                let bytes = try Data.fetchOne(db, sql: """
+                    SELECT jpeg FROM video_analysis_frame WHERE asset_id = ? AND content_revision = ?
+                    AND policy = ? AND actual_ms = ? AND sha256 = ? LIMIT 1
+                    """, arguments: [assetID.uuidString.lowercased(), revision, VideoAnalysisSamplingPolicy.identity,
+                                       frame.actualTimeMs, frame.jpegSHA256])
+                return Frame(actualTimeMs: frame.actualTimeMs,
+                    jpegBytes: bytes.flatMap { Data(SHA256.hash(data: $0)) == frame.jpegSHA256 ? $0 : nil })
+            }
+            return Snapshot(modelRevision: row["model_revision"], frames: frames)
+        }
+    }
+}
