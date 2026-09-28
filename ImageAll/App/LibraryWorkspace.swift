@@ -280,7 +280,7 @@ struct LibraryGridDensityPicker: View {
 
     init(
         selection: Binding<LibraryGridDensity>,
-        help: String = "调整照片网格缩略图大小",
+        help: String = "调整媒体网格缩略图大小",
         displayMode: LibraryToolbarDisplayMode = .iconOnly
     ) {
         _selection = selection
@@ -11344,7 +11344,7 @@ extension LibraryWorkspaceModel {
             let displayName = tagDisplayName(for: tagID)
             contextualTagFeedStatusMessage = switch action {
             case .accept:
-                "已为选中的 \(assetIDs.count) 张照片打上“\(displayName)”标签。"
+                "已为选中的 \(assetIDs.count) 项媒体打上“\(displayName)”标签。"
             case .reject:
                 "已把选中的 \(assetIDs.count) 张照片标为不属于“\(displayName)”。"
             case .clear:
@@ -13089,7 +13089,7 @@ struct LibraryInspectorTagDecisionChip: View {
             accessibilityHintOverride
                 ?? (isEnabled
                     ? "左键打上标签，右键取消标签"
-                    : "先选择照片再打标签")
+                    : "先选择媒体再打标签")
         )
     }
 
@@ -13097,7 +13097,7 @@ struct LibraryInspectorTagDecisionChip: View {
         switch decision {
         case .accepted: "已打上标签"
         case .rejected: "已明确不属于"
-        case .mixed: "所选照片状态不一致"
+        case .mixed: "所选媒体状态不一致"
         case .unknown: "未打上标签"
         }
     }
@@ -13105,13 +13105,13 @@ struct LibraryInspectorTagDecisionChip: View {
     private var helpText: String {
         let reorderSuffix = supportsReordering ? "；拖拽可调整顺序" : ""
         guard isEnabled else {
-            return "选择照片后，左键打上标签，右键取消\(reorderSuffix)"
+            return "选择媒体后，左键打上标签，右键取消\(reorderSuffix)"
         }
         switch decision {
         case .accepted:
             return "已打上“\(tag.displayName)”；左键保持打上，右键取消\(reorderSuffix)"
         case .mixed:
-            return "所选照片对该标签状态不一致；左键全部打上，右键全部取消\(reorderSuffix)"
+            return "所选媒体对该标签状态不一致；左键全部打上，右键全部取消\(reorderSuffix)"
         case .rejected, .unknown:
             return "左键打上“\(tag.displayName)”，右键取消\(reorderSuffix)"
         }
@@ -14579,7 +14579,7 @@ struct LibraryWorkspaceView: View {
                 Label("时光故事", systemImage: "film.stack")
                     .tag(LibrarySidebarSelection.timeStory)
                     .accessibilityIdentifier("timeStorySidebarEntry")
-                Label("全部照片", systemImage: "photo.on.rectangle.angled")
+                Label("全部\(model.selectedMediaKind.displayName)", systemImage: model.selectedMediaKind.systemImage)
                     .tag(LibrarySidebarSelection.all)
                 Label("红心收藏", systemImage: "heart.fill")
                     .foregroundStyle(selection == .favorites ? .red : .primary)
@@ -14838,7 +14838,7 @@ struct LibraryWorkspaceView: View {
         Button("在图库中查看全部") {
             selection = .all
         }
-        .persistentHelp("切换到全部照片；不会改变任何来源。")
+        .persistentHelp("切换到全部\(model.selectedMediaKind.displayName)；不会改变任何来源。")
 
         Button("立即更新所有来源") {
             Task { await model.refreshAllSources() }
@@ -16313,9 +16313,9 @@ struct LibraryWorkspaceView: View {
             VStack(alignment: .leading, spacing: 18) {
                 if model.selectedAssetIDs.isEmpty {
                     ContentUnavailableView(
-                        "未选择照片",
+                        "未选择媒体",
                         systemImage: "sidebar.right",
-                        description: Text("选择一张或多张照片后，可左键打上标签、右键取消标签。")
+                        description: Text("选择一项或多项媒体后，可左键打上标签、右键取消标签。")
                     )
                     .frame(maxWidth: .infinity)
                     .padding(.vertical, 12)
@@ -16401,7 +16401,7 @@ struct LibraryWorkspaceView: View {
                 } label: {
                     Image(systemName: "plus")
                 }
-                .persistentHelp("创建新标签，并立即将它确认为所选照片所属的标签。")
+                .persistentHelp("创建新标签，并立即将它确认为所选媒体所属的标签。")
                 .disabled(
                     model.selectedAssetIDs.isEmpty ||
                     TagNameNormalizer.trimUnicodeWhiteSpace(newTagName).isEmpty
@@ -17888,7 +17888,7 @@ struct LibraryWorkspaceView: View {
         case .cleared: "清除"
         case .createdAndApplied: "创建并应用"
         }
-        return "已为 \(count) 张照片\(verb)“\(tagName)”"
+        return "已为 \(count) 项媒体\(verb)“\(tagName)”"
     }
 
     private func errorTitle(_ error: LibraryWorkspaceSafeError) -> String {
