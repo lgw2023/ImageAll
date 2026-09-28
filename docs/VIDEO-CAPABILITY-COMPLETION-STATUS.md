@@ -833,3 +833,10 @@
 - 上轮7cb0ef63为progress；本轮核对main及并行脏文件后继续P7.8，不重复播放器测试。新增VIDEO-MAC-ACCEPTANCE.md，以实际源码按钮名称编写Xcode、观看/整理、元数据/地图、分析/审核/精确比较、混合故事导出重开路线，明确每项预期与未运行范围。
 - 新增create_video_acceptance_fixtures.py，只创建不存在的新输出目录，拒绝HDD2输出；FFmpeg生成3秒有声已知时间/GPS、字节副本、MOV重封装、2秒竖屏无声和照片，共五媒体。运行到manual-acceptance-inputs退出0，逐文件ffprobe与全片解码通过；完整摘要确认01/02相同、03不同，manifest保留输入信息。未连接日常App、未读取真实媒体、未执行回收。
 - 人工指南交付完成不等于UI路线执行。P7.8文档缺口已补；其他完整入口操作、逐条证据链接和最终版本收口仍继续。脚本/指南/矩阵/记录仅本地提交，不夹带并行改动，不push。
+
+## P6 混合故事入口文案核对（2026-09-28）
+
+- 从实际materialBrowser、handleDrop、addCandidate、replace及planner.manuallyEditableCandidates追踪：添加区支持照片/视频，视频必须经片段确认；替换操作当前只接收照片候选，不应改成暗示任意视频替换。
+- 修正五处共用入口文案：空故事标题/说明、拖入添加区、拖动帮助、总数使用“个镜头”。保留照片专用替换与外部照片创作路径的准确表述，没有扩展替换能力或改动业务逻辑。
+- TimeStoryWorkspaceUI.swift已有并行编辑，采用HEAD到五处目标字符串的独立补丁暂存；并行内容保持未暂存。xcrun swiftc -frontend -parse退出0、暂存diff检查通过。纯文案切片未新增重复测试、未声称新完整App构建或UI点击通过；此前运行证据仍按其版本生效。
+- 后续仍需正式工作区UI操作与最终证据收口，目标active；未真实媒体、未push。

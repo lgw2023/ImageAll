@@ -1472,8 +1472,8 @@ struct TimeStoryWorkspaceView: View {
                                 .aspectRatio(16.0 / 9.0, contentMode: .fit)
                             Button("返回成片预览") { selectedCandidateID = nil }
                         } else if project.shots.isEmpty {
-                            ContentUnavailableView("拖入照片开始编排", systemImage: "film.stack",
-                                description: Text("从左侧素材库添加照片，或在创作中选用自动模板。"))
+                            ContentUnavailableView("添加照片或视频开始编排", systemImage: "film.stack",
+                                description: Text("从左侧素材库添加照片或视频；视频需确认使用片段。"))
                         } else {
                             TimeStoryTimelinePreview(project: project, thumbnails: model.thumbnails)
                             if project.shots.contains(where: { $0.videoClip != nil }) {
@@ -1578,7 +1578,7 @@ struct TimeStoryWorkspaceView: View {
                     Button("取消") { replacementShotID = nil }
                 }
             } else {
-                Text("拖到下方添加区加入故事；拖到镜头上替换照片。")
+                Text("拖到下方添加区加入照片或视频；照片可拖到镜头上替换。")
                     .font(.caption).foregroundStyle(.secondary)
             }
             ScrollView {
@@ -1713,7 +1713,7 @@ struct TimeStoryWorkspaceView: View {
                         }
                         .accessibilityIdentifier("timeStoryTimelineClip")
                     }
-                    Label("拖入照片\n添加镜头", systemImage: "plus.rectangle.on.rectangle")
+                    Label("拖入素材\n添加镜头", systemImage: "plus.rectangle.on.rectangle")
                         .font(.callout).frame(width: 136, height: 120)
                         .background(Color.accentColor.opacity(0.06), in: RoundedRectangle(cornerRadius: 8))
                         .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(style: StrokeStyle(lineWidth: 1, dash: [5])).foregroundStyle(.secondary))
@@ -1902,7 +1902,7 @@ struct TimeStoryWorkspaceView: View {
     private func productionSettings(_ project: TimeStoryProject) -> some View {
         VStack(alignment: .leading, spacing: 16) {
             Text("制作视频").font(.headline)
-            Text("\(project.shots.count) 张照片 · 当前编排 \(formattedDuration(project.timelineDurationSeconds))")
+            Text("\(project.shots.count) 个镜头 · 当前编排 \(formattedDuration(project.timelineDurationSeconds))")
                 .font(.caption).foregroundStyle(.secondary)
             Picker("制作步骤", selection: $productionPage) {
                 Text("设置").tag("设置")
