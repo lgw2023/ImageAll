@@ -322,8 +322,32 @@ struct PhoneArchiveImportedFacts: Sendable, Equatable {
     let appleAlbums: [ImageAllMigrationAppleAlbumMembership]
 }
 
+struct PhoneArchivePreviewResource: Identifiable, Sendable {
+    let id: UUID
+    let url: URL
+    let role: String
+    let version: Int64
+    let isVideo: Bool
+
+    var label: String {
+        let name: String = switch role {
+        case "original": "原始资源"
+        case "fullSizePhoto", "fullSizeVideo": "已保存的编辑版"
+        case "pairedVideo": "Live Photo 原始配对视频"
+        case "fullSizePairedVideo": "Live Photo 编辑版配对视频"
+        case "alternatePhoto": "备选照片资源"
+        case "adjustmentBasePhoto", "adjustmentBaseVideo", "adjustmentBasePairedVideo": "编辑基底"
+        case "photoProxy": "照片代理资源"
+        default: "附加媒体资源"
+        }
+        return "\(name) · v\(version) · \(id.uuidString.prefix(6))"
+    }
+}
+
 struct PhoneArchiveVerifiedPreview: Sendable {
     let originalURL: URL
+    let resources: [PhoneArchivePreviewResource]
+    let preferredResourceID: UUID
     let facts: PhoneArchiveImportedFacts
 }
 
@@ -2625,11 +2649,44 @@ struct VerifiedPhoneArchiveImporter: Sendable {
         _ = try auditImportedArchive(
             migrationID: migrationID, archiveRoot: archiveRoot
         )
+        let resources: [PhoneArchivePreviewResource] = try database.pool.read { db in
+            try Row.fetchAll(db, sql: """
+                SELECT r.id,r.role,r.version,r.uti,r.relative_path,i.media_kind
+                FROM migration_import_item i JOIN migration_import_resource r
+                  ON r.source_device_id=i.source_device_id AND r.source_epoch=i.source_epoch AND r.media_id=i.media_id
+                WHERE i.migration_id=? AND i.media_id=? ORDER BY r.role,r.version,r.id
+                """, arguments: [migrationID.uuidString.lowercased(), mediaID.uuidString.lowercased()])
+                .compactMap { row in
+                    let role: String = row["role"]
+                    let uti: String = row["uti"]
+                    let mediaKind: String = row["media_kind"]
+                    let type = UTType(uti)
+                    // Adjustment data and unknown roles are never handed to external viewers.
+                    let allowed = ["original", "photo", "video", "alternatePhoto", "fullSizePhoto", "fullSizeVideo",
+                                   "pairedVideo", "fullSizePairedVideo", "adjustmentBasePhoto", "adjustmentBaseVideo",
+                                   "adjustmentBasePairedVideo", "photoProxy"]
+                    guard allowed.contains(role), role == "original" || type?.conforms(to: .image) == true
+                            || type?.conforms(to: .movie) == true else { return nil }
+                    let rawID: String = row["id"]
+                    let relative: String = row["relative_path"]
+                    guard let id = UUID(uuidString: rawID), relative.hasPrefix("resources/"),
+                          relative.split(separator: "/").count == 2 else {
+                        throw PhoneArchiveImportError.catalogDiverged
+                    }
+                    return PhoneArchivePreviewResource(id: id, url: archiveRoot.appendingPathComponent(relative),
+                        role: role, version: row["version"],
+                        isVideo: type?.conforms(to: .movie) == true || (role == "original" && mediaKind == "video"))
+                }
+        }
+        guard let original = resources.first(where: { $0.role == "original" }) else {
+            throw PhoneArchiveImportError.missingImportJournal
+        }
+        let edited = resources.filter {
+            $0.role == (original.isVideo ? "fullSizeVideo" : "fullSizePhoto") && $0.isVideo == original.isVideo
+        }
         return PhoneArchiveVerifiedPreview(
-            originalURL: try verifiedOriginalURL(
-                migrationID: migrationID, mediaID: mediaID,
-                archiveRoot: archiveRoot
-            ),
+            originalURL: original.url, resources: resources,
+            preferredResourceID: edited.count == 1 ? edited[0].id : original.id,
             facts: try importedFacts(migrationID: migrationID, mediaID: mediaID)
         )
     }

@@ -1344,6 +1344,8 @@ struct PhoneArchivePreview: Identifiable {
     let title: String
     let url: URL
     let isVideo: Bool
+    let resources: [PhoneArchivePreviewResource]
+    let preferredResourceID: UUID
     let facts: PhoneArchiveImportedFacts
 }
 
@@ -1639,6 +1641,7 @@ final class PhoneArchiveImportModel: ObservableObject {
                 preview = PhoneArchivePreview(
                     id: mediaID, title: title,
                     url: verified.originalURL, isVideo: isVideo,
+                    resources: verified.resources, preferredResourceID: verified.preferredResourceID,
                     facts: verified.facts
                 )
                 message = nil
@@ -3338,6 +3341,13 @@ private struct PhoneArchivePreviewSheet: View {
     @State private var image: NSImage?
     @State private var player: AVPlayer?
     @State private var didLoadImage = false
+    @State private var selectedResourceID: UUID?
+
+    private var selectedResource: PhoneArchivePreviewResource? {
+        preview.resources.first { $0.id == (selectedResourceID ?? preview.preferredResourceID) }
+    }
+    private var activeURL: URL { selectedResource?.url ?? preview.url }
+    private var isVideo: Bool { selectedResource?.isVideo ?? preview.isVideo }
 
     var body: some View {
         VStack(spacing: 12) {
@@ -3348,13 +3358,24 @@ private struct PhoneArchivePreviewSheet: View {
                         .font(.caption).foregroundStyle(.secondary)
                 }
                 Spacer()
-                Button("使用系统打开") { NSWorkspace.shared.open(preview.url) }
+                Button("使用系统打开") { NSWorkspace.shared.open(activeURL) }
                     .buttonStyle(.bordered)
             }
             .padding(.horizontal, 16)
             .padding(.top, 12)
+            Picker("归档版本", selection: Binding(
+                get: { selectedResourceID ?? preview.preferredResourceID },
+                set: { selectedResourceID = $0 }
+            )) {
+                ForEach(preview.resources) { resource in
+                    Text(resource.label).tag(resource.id)
+                }
+            }
+            .padding(.horizontal, 16)
+            Text("仅查看归档中已保存的资源；调整数据不等于可重建全部编辑效果。")
+                .font(.caption).foregroundStyle(.secondary)
             Group {
-                if preview.isVideo {
+                if isVideo {
                     if let player {
                         VideoPlayer(player: player)
                     } else {
@@ -3370,7 +3391,7 @@ private struct PhoneArchivePreviewSheet: View {
                     ContentUnavailableView(
                         "无法在 App 中预览此格式",
                         systemImage: "photo",
-                        description: Text("可使用系统打开已校验的 Mac 归档原件。")
+                        description: Text("可使用系统打开已校验的所选归档版本。")
                     )
                 }
             }
@@ -3391,13 +3412,17 @@ private struct PhoneArchivePreviewSheet: View {
             .frame(maxHeight: 115)
         }
         .frame(minWidth: 720, minHeight: 540)
-        .task(id: preview.id) {
-            if preview.isVideo {
-                let playback = AVPlayer(url: preview.url)
+        .task(id: activeURL) {
+            player?.pause()
+            player = nil
+            image = nil
+            didLoadImage = false
+            if isVideo {
+                let playback = AVPlayer(url: activeURL)
                 player = playback
                 playback.play()
             } else {
-                let url = preview.url
+                let url = activeURL
                 let data = await Task.detached(priority: .utility) {
                     PhoneArchiveImagePreview.thumbnailData(
                         at: url, maxPixelSize: 2_048, isVideo: false

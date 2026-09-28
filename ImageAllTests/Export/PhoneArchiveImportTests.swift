@@ -60,6 +60,41 @@ final class PhoneArchiveImportTests: XCTestCase {
         XCTAssertTrue(playable)
     }
 
+    func testArchivePreviewOffersVerifiedVersionsWithoutGuessingAmbiguousEdits() throws {
+        for editedCount in [1, 2] {
+            let fixture = try Fixture()
+            defer { fixture.remove() }
+            let original = try fixture.resource("original", bytes: Data("original".utf8), uti: "public.jpeg")
+            let paired = try fixture.resource("pairedVideo", bytes: Data("paired".utf8), uti: "public.mpeg-4")
+            // A renderable UTI must not turn adjustment data into a viewable resource.
+            let adjustment = try fixture.resource("adjustmentData", bytes: Data("private-format".utf8), uti: "public.jpeg")
+            let edited = try (0..<editedCount).map {
+                try fixture.resource("fullSizePhoto", bytes: Data("edited-\($0)".utf8), uti: "public.jpeg")
+            }
+            let item = ImageAllMigrationItem(mediaID: UUID(), sourceLocalIdentifier: "synthetic-edited",
+                mediaKind: .image, createdAtMs: nil, favoriteTarget: nil, observedFavorite: false,
+                factRevision: 0, tagDecisions: [], collections: [], resources: [original, paired, adjustment] + edited)
+            let header = fixture.header(count: 1)
+            try fixture.write(header: header, items: [item])
+            let importer = VerifiedPhoneArchiveImporter(database: fixture.database)
+            let receipt = try importer.importArchive(from: fixture.incoming, to: fixture.target)
+            try FileManager.default.removeItem(at: fixture.incoming)
+            let reopened = VerifiedPhoneArchiveImporter(database: try CatalogDatabase.open(at: fixture.databaseURL))
+            let preview = try reopened.verifiedPreview(migrationID: header.migrationID,
+                mediaID: item.mediaID, archiveRoot: receipt.archiveURL)
+            XCTAssertEqual(preview.resources.count, editedCount + 2)
+            XCTAssertEqual(preview.preferredResourceID, editedCount == 1 ? edited[0].id : original.id)
+            XCTAssertEqual(try Data(contentsOf: preview.originalURL), Data("original".utf8))
+            XCTAssertTrue(try XCTUnwrap(preview.resources.first { $0.id == paired.id }).isVideo)
+            XCTAssertFalse(try XCTUnwrap(preview.resources.first { $0.id == edited[0].id }).isVideo)
+            let editedURL = try XCTUnwrap(preview.resources.first { $0.id == edited[0].id }).url
+            XCTAssertEqual(try Data(contentsOf: editedURL), Data("edited-0".utf8))
+            try Data("tampered".utf8).write(to: editedURL)
+            XCTAssertThrowsError(try reopened.verifiedPreview(migrationID: header.migrationID,
+                mediaID: item.mediaID, archiveRoot: receipt.archiveURL))
+        }
+    }
+
     func testSealedNetworkStageImportsIntoSiblingMacArchive() async throws {
         let fixture = try Fixture()
         defer { fixture.remove() }
@@ -1491,7 +1526,7 @@ final class PhoneArchiveImportTests: XCTestCase {
                   appleAlbumCoverage: appleAlbumCoverage)
         }
 
-        func resource(_ role: String, bytes: Data) throws -> ImageAllMigrationResource {
+        func resource(_ role: String, bytes: Data, uti: String = "public.data") throws -> ImageAllMigrationResource {
             let id = UUID()
             let directory = incoming.appendingPathComponent("resources", isDirectory: true)
             try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -1500,7 +1535,7 @@ final class PhoneArchiveImportTests: XCTestCase {
             let hash = Data(SHA256.hash(data: bytes))
                 .map { String(format: "%02x", $0) }.joined()
             return .init(id: id, role: role, version: 1,
-                         uniformTypeIdentifier: "public.data", required: true,
+                         uniformTypeIdentifier: uti, required: true,
                          status: .present, relativePath: "resources/\(name)",
                          byteCount: Int64(bytes.count), sha256: hash)
         }
