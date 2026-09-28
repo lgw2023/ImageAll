@@ -748,3 +748,10 @@
 - 复核发现readTask仅要求task/complete自洽，未约束已知story版本/摘要配对，也未核对story正文版本。生成契约现暴露JSON中已有legacy身份；读取只接受active或legacy精确配对，并要求正文版本与封套一致。新提交仍使用active，不改写旧包。
 - `story-legacy-reader-build.log` TEST BUILD SUCCEEDED；`story-legacy-reader-tests.log` 3/3 PASS：legacy0.1等待态可重新读取、正文/封套混用拒绝；现有取消/恢复/修订隔离与新提交/重复拒绝回归通过。
 - 新测试明确属于执行前读取身份测试：为构造legacy读取形状修改了合成包封套，没有把该变体伪装成重新签署的成功结果。旧0.1已完成MP4离线恢复仍需独立实证，未据此标记P6完成。所有运行均独立合成目录与直接XCTest，未真实媒体访问、未push。
+
+## P6旧0.1已完成成片离线恢复实证（2026-09-28）
+
+- 扩展真实执行器验收脚本legacy模式，使用有效0.1照片包生成完整manifest→真实后台渲染→结果及报告发布；包布局统一为Mac客户端实际读取的submission/package/story.json，未在成片之后改写包版本或伪造成功状态。
+- `story-legacy-completed.log`实际succeeded，1920×1080、30fps、30帧/1秒、无音轨。完整任务位于 `story-legacy-completed/executor-84186ff7/`，acceptance.json保存结果与各报告摘要；执行器脚本已退出，无活跃heartbeat。
+- `story-legacy-result-build.log` TEST BUILD SUCCEEDED；`story-legacy-result-tests.log` 1/1 PASS：当前Swift客户端确认非ready后仍恢复succeeded，verifiedResult复核成片并由AVFoundation确认播放。随后改动该合成成片，用新客户端重开被拒绝；测试恢复原字节后再次独立核对SHA一致（de0423391c296b2e83e908dc32b993503089d19f39510688923ca8f936cd727a）。
+- 这证明旧schema已完成任务的合成离线恢复兼容，不代表读取任何用户历史任务。P6该项证据已补；完整UI路线、方向样本及P7总体验收继续推进。未访问真实媒体，未push。

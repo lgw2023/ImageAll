@@ -16,6 +16,7 @@ from test_mixed_story_assets import MixedStoryAssetTests
 parser = argparse.ArgumentParser()
 parser.add_argument('engine', type=Path)
 parser.add_argument('output', type=Path)
+parser.add_argument('--legacy', action='store_true', help='Render a 0.1 photo package for offline Mac recovery')
 args = parser.parse_args()
 engine = args.engine.resolve()
 identity = apply(engine)
@@ -32,17 +33,17 @@ def sha(path):
 def submit(document, task_id, *, wrong_hash=False):
     submission = root/'tasks'/task_id/'submission'
     submission.mkdir(parents=True)
-    shutil.copytree(MixedStoryAssetTests.root/'assets', submission/'assets')
+    shutil.copytree(MixedStoryAssetTests.root/'assets', submission/'package/assets')
     # Register only the assets belonging to this document.
     used = {a['relativePath'] for a in document['assets']}
-    for path in (submission/'assets').iterdir():
-        if str(path.relative_to(submission)) not in used:
+    for path in (submission/'package/assets').iterdir():
+        if str(path.relative_to(submission/'package')) not in used:
             path.unlink()
-    (submission/'story.json').write_text(json.dumps(document))
+    (submission/'package/story.json').write_text(json.dumps(document))
     now = datetime.now(timezone.utc).isoformat()
     producer = {'application': 'ImageAllSyntheticAcceptance', 'applicationVersion': '1', 'installationID': 'synthetic'}
-    story = {'entrypoint': 'story.json', 'schemaVersion': document['schemaVersion'],
-             'schemaSHA256': identity['storyPackageSchemas']['0.1' if wrong_hash else document['schemaVersion']]}
+    story = {'entrypoint': 'package/story.json', 'schemaVersion': document['schemaVersion'],
+             'schemaSHA256': identity['storyPackageSchemas'][('0.2' if document['schemaVersion'] == '0.1' else '0.1') if wrong_hash else document['schemaVersion']]}
     task = {'documentType': 'story-task', 'protocolVersion': '1.1', 'taskType': 'story-render',
             'taskID': task_id, 'projectID': document['projectID'], 'projectRevision': document['projectRevision'],
             'submittedBy': producer, 'submittedAt': now, 'storyPackage': story}
@@ -69,6 +70,9 @@ try:
     legacy['assets'] = legacy['assets'][:1]
     legacy['chapters'][0]['shots'] = legacy['chapters'][0]['shots'][:1]
     legacy['export']['totalFrames'] = 30
+    if args.legacy:
+        document = copy.deepcopy(legacy)
+        document['export'].update(width=1920, height=1080)
     legacy_dir = submit(legacy, 'legacy-validation')
     assert verify_submission(legacy_dir) is not None
     # The validated legacy fixture is evidence, not a queued task.
@@ -106,8 +110,9 @@ try:
     assert sha(root/result['output']['path']) == result['output']['sha256']
     for report in result['reports'].values():
         assert sha(root/report['path']) == report['sha256']
-    assert result['media']['frames'] == 60 and result['media']['audioCodec'] == 'aac', result
-    assert result['storyPackageSHA256'] == sha(task/'submission/story.json')
+    assert result['media']['frames'] == document['export']['totalFrames'], result
+    assert result['media']['audioCodec'] == (None if args.legacy else 'aac'), result
+    assert result['storyPackageSHA256'] == sha(task/'submission/package/story.json')
     evidence = {'taskRoot': str(root), 'identities': identity, 'legacyAccepted': True, 'wrongPairRejected': True,
                 'result': result, 'elapsedSeconds': time.monotonic()-started}
     (root/'acceptance.json').write_text(json.dumps(evidence, indent=2))

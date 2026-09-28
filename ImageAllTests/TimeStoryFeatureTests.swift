@@ -919,6 +919,33 @@ final class TimeStoryFeatureTests: XCTestCase {
         XCTAssertEqual(cancellableProject.shots.count, 2)
     }
 
+    func testLegacyCompletedResultReopensOfflineWhenRequested() async throws {
+        guard let path = ProcessInfo.processInfo.environment["IMAGEALL_LEGACY_RESULT_ROOT"] else {
+            throw XCTSkip("Requires a real completed synthetic legacy task")
+        }
+        let root = URL(fileURLWithPath: path, isDirectory: true)
+        let evidence = try jsonObject(at: root.appendingPathComponent("acceptance.json"))
+        let published = try XCTUnwrap(evidence["result"] as? [String: Any])
+        let taskID = try XCTUnwrap(published["taskID"] as? String)
+        let client = makeOpenMontageClient(root: root, projectAssetImages: [:], now: Date())
+        let capability = await client.capability()
+        XCTAssertNotEqual(capability.state, .ready)
+        let snapshot = try await client.task(taskID: taskID)
+        XCTAssertEqual(snapshot.phase, .succeeded)
+        let result = try await client.verifiedResult(taskID: taskID)
+        XCTAssertEqual(result.width, 1920)
+        XCTAssertEqual(result.totalFrames, 30)
+        try await assertPlayableVideo(result.fileURL, expectsAudio: false, expectedDuration: 1)
+        let bytes = try Data(contentsOf: result.fileURL)
+        defer { try? bytes.write(to: result.fileURL) }
+        try Data("changed synthetic result".utf8).write(to: result.fileURL)
+        let reopened = makeOpenMontageClient(root: root, projectAssetImages: [:], now: Date())
+        do { _ = try await reopened.verifiedResult(taskID: taskID); XCTFail("Changed output was trusted") }
+        catch let error as OpenMontageTaskError {
+            guard case .resultValidationFailed = error else { return XCTFail("Unexpected error: \(error)") }
+        }
+    }
+
     func testTaskReaderAcceptsLegacySchemaAndRejectsMismatchedIdentity() async throws {
         let root = try temporaryDirectory("legacy-schema-reader")
         let now = Date()
