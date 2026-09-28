@@ -8,6 +8,110 @@ import XCTest
 @testable import ImageAll
 
 final class IdenticalDuplicateDetectionTests: XCTestCase {
+    func testLateTargetAndSharedCoverVideoControlsWithRealVision() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("VideoControls-\(UUID())")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: false)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let late = root.appendingPathComponent("late-circle.mov")
+        let different = root.appendingPathComponent("same-cover-squares.mov")
+        let target = root.appendingPathComponent("target-circle.mov")
+        try await Self.writeVideoControl(late, variant: 1)
+        try await Self.writeVideoControl(different, variant: 2)
+        try await Self.writeVideoControl(target, variant: 3)
+        let sampler = AVFoundationVideoAnalysisSampler()
+        let sampling = try sampler.sample(sourceFileDescriptorURL: late, mediaType: "com.apple.quicktime-movie", durationMs: 4_000)
+        let otherSampling = try sampler.sample(sourceFileDescriptorURL: different, mediaType: "com.apple.quicktime-movie", durationMs: 4_000)
+        let targetSampling = try sampler.sample(sourceFileDescriptorURL: target, mediaType: "com.apple.quicktime-movie", durationMs: 4_000)
+        let features = try VideoMultiFrameFeatureSet.generate(sampling)
+        let other = try VideoMultiFrameFeatureSet.generate(otherSampling)
+        let reference = try VideoMultiFrameFeatureSet.generate(targetSampling)
+        let evidence = try features.contentMatch(to: reference)
+        let coverScore = zip(features.frames[0].values, other.frames[0].values).reduce(Float(0)) { $0 + $1.0 * $1.1 }
+        let candidateScore = try features.contentMatch(to: other).score
+        let poster = try AVFoundationDerivedVideoPosterGenerator().makePosterBytes(
+            sourceFileDescriptorURL: late, mediaType: "com.apple.quicktime-movie", durationMs: 4_000, maximumPixelSize: 512)
+        // Use the same Vision generator directly for the existing single-poster input.
+        let posterFeature = try VideoMultiFrameFeatureSet.singleImageUnitFeature(poster)
+        let posterTargetScore = zip(posterFeature, reference.frames[0].values).reduce(Float(0)) { $0 + $1.0 * $1.1 }
+        let hit = try XCTUnwrap(features.frames.first(where: { $0.timeMs == evidence.leftTimeMs }))
+        let hitScore = zip(hit.values, reference.frames[0].values).reduce(Float(0)) { $0 + $1.0 * $1.1 }
+        XCTAssertEqual(sampling.frames.count, 5)
+        XCTAssertGreaterThanOrEqual(evidence.leftTimeMs, 2_000)
+        XCTAssertGreaterThan(hitScore, posterTargetScore + 0.05)
+        XCTAssertGreaterThan(coverScore, 0.98)
+        XCTAssertLessThan(candidateScore, coverScore - 0.05)
+        let report: [String: Any] = ["fixtureOnly": true, "posterTargetCosine": posterTargetScore,
+            "bestFrameTargetCosine": hitScore, "evidenceTimeMs": evidence.leftTimeMs,
+            "sharedCoverCosine": coverScore, "multiFrameCoverageCosine": candidateScore,
+            "decodedFrames": sampling.attemptedFrameCount, "jpegBytes": sampling.encodedByteCount,
+            "samplingSeconds": sampling.elapsedSeconds, "actualTimesMs": sampling.frames.map(\.actualTimeMs),
+            "representation": features.representationIdentity]
+        let json = try JSONSerialization.data(withJSONObject: report, options: [.prettyPrinted, .sortedKeys])
+        print("VIDEO_CONTENT_CONTROL \(String(decoding: json, as: UTF8.self))")
+        if let evidenceRoot = ProcessInfo.processInfo.environment["IMAGEALL_VIDEO_EVIDENCE_DIR"] {
+            let output = URL(fileURLWithPath: evidenceRoot)
+            try FileManager.default.createDirectory(at: output, withIntermediateDirectories: true)
+            try json.write(to: output.appendingPathComponent("content-control-measurements.json"))
+            for url in [late, different, target] {
+                try Data(contentsOf: url).write(to: output.appendingPathComponent(url.lastPathComponent))
+            }
+            for frame in sampling.frames {
+                try frame.jpegBytes.write(to: output.appendingPathComponent("late-circle-\(frame.actualTimeMs)ms.jpg"))
+            }
+        }
+    }
+
+    private static func writeVideoControl(_ url: URL, variant: Int) async throws {
+        let writer = try AVAssetWriter(outputURL: url, fileType: .mov)
+        let input = AVAssetWriterInput(mediaType: .video, outputSettings: [
+            AVVideoCodecKey: AVVideoCodecType.h264, AVVideoWidthKey: 256, AVVideoHeightKey: 192])
+        let adaptor = AVAssetWriterInputPixelBufferAdaptor(assetWriterInput: input,
+            sourcePixelBufferAttributes: [kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA,
+                kCVPixelBufferWidthKey as String: 256, kCVPixelBufferHeightKey as String: 192])
+        writer.add(input)
+        guard writer.startWriting() else { throw writer.error! }
+        writer.startSession(atSourceTime: .zero)
+        for frame in 0..<40 {
+            try Task.checkCancellation()
+            let deadline = ProcessInfo.processInfo.systemUptime + 10
+            while !input.isReadyForMoreMediaData {
+                guard writer.status == .writing, ProcessInfo.processInfo.systemUptime < deadline else {
+                    writer.cancelWriting(); throw FeaturePrintError.generationFailed
+                }
+                try await Task.sleep(for: .milliseconds(1))
+            }
+            var buffer: CVPixelBuffer?
+            guard CVPixelBufferCreate(nil, 256, 192, kCVPixelFormatType_32BGRA, nil, &buffer) == kCVReturnSuccess,
+                  let buffer else { throw FeaturePrintError.generationFailed }
+            CVPixelBufferLockBaseAddress(buffer, [])
+            let pixels = CVPixelBufferGetBaseAddress(buffer)!.assumingMemoryBound(to: UInt8.self)
+            let stride = CVPixelBufferGetBytesPerRow(buffer)
+            let kind = variant == 3 ? 1 : (frame < 20 ? 0 : variant)
+            for y in 0..<192 { for x in 0..<256 {
+                let offset = y * stride + x * 4
+                var red = 230, green = 230, blue = 230
+                if kind == 0 {
+                    let shade = (x / 16) % 2 == 0 ? 40 : 200
+                    red = shade; green = shade; blue = shade
+                } else if kind == 1, (x - 128) * (x - 128) + (y - 96) * (y - 96) < 65 * 65 {
+                    red = 235; green = 25; blue = 30
+                } else if kind == 2, (x / 32 + y / 32) % 2 == 0 {
+                    red = 20; green = 40; blue = 230
+                }
+                pixels[offset] = UInt8(blue); pixels[offset + 1] = UInt8(green)
+                pixels[offset + 2] = UInt8(red); pixels[offset + 3] = 255
+            }}
+            CVPixelBufferUnlockBaseAddress(buffer, [])
+            guard adaptor.append(buffer, withPresentationTime: CMTime(value: Int64(frame), timescale: 10)) else {
+                throw writer.error ?? FeaturePrintError.generationFailed
+            }
+        }
+        writer.endSession(atSourceTime: CMTime(value: 4, timescale: 1))
+        input.markAsFinished()
+        await writer.finishWriting()
+        guard writer.status == .completed else { throw writer.error ?? FeaturePrintError.generationFailed }
+    }
+
     func testVideoMultiFrameFeaturesUseVisionAndRejectPosterModelIdentity() throws {
         let fixture = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
             .deletingLastPathComponent().deletingLastPathComponent()

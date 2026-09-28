@@ -695,6 +695,14 @@ struct VideoMultiFrameFeatureSet: Sendable {
         return Match(score: min(1, max(-1, (forward + reverse) / 2)), leftTimeMs: best.left, rightTimeMs: best.right)
     }
 
+    static func singleImageUnitFeature(_ bytes: Data) throws -> [Float] {
+        let artifact = try VisionFeaturePrintGenerator().generate(sourceBytes: bytes, expectedMediaType: nil)
+        let values = artifact.vectorData.withUnsafeBytes { raw in
+            (0..<artifact.elementCount).map { raw.loadUnaligned(fromByteOffset: $0 * 4, as: Float.self) }
+        }
+        return try unit(values)
+    }
+
     private static func unit(_ values: [Float]) throws -> [Float] {
         guard !values.isEmpty, values.allSatisfy(\.isFinite) else { throw FeaturePrintError.generationFailed }
         let norm = sqrt(values.reduce(Double(0)) { $0 + Double($1) * Double($1) })

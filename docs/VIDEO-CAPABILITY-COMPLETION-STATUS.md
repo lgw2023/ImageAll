@@ -524,3 +524,10 @@
 - 当前入口仅允许详情匹配且时长有效的文件夹视频；Photos 多帧尚未接入。点击帧会核对当前播放器身份和时长，再精确 seek 并保持暂停。操作不生成正式标签建议、不启用旧模型、不写精确去重证据。
 - `video-analysis-ui-build-final.log` TEST BUILD SUCCEEDED；`video-analysis-ui-tests.log` 4/4 PASS，覆盖实际合成视频 0.5s 定位、错误身份/越界/停止拒绝、播放器释放、缓存续跑和真实 Vision。此为服务与播放器运行证据，整页渲染和人工按钮点击仍未验；不称 P5 闭环全部完成。
 - LibraryWorkspace 仅新增服务注入属性，其他 75/5 并行变更保留，project 4/0 保留。下一步补齐代表帧界面证据、策略重建入口和语义对照，再完成正式模型/建议持久化、Photos 多帧与独立内容候选。整体 active。
+
+## P5 后段目标与同封面对照（2026-09-28）
+
+- 动态生成三段 4 秒合成视频：条纹→红圆、相同条纹→蓝方格、全程红圆参考；不读真实素材。实际 AVFoundation 取帧和现有 Vision 特征对照，保留旧 poster 路径作为基线。
+- `video-content-controls-build.log` TEST BUILD SUCCEEDED；`video-content-controls-tests.log` 2/2 PASS。旧封面对参考余弦 0.524054，最佳帧对参考 0.991022，证据时间 3000 ms；同封面分数 1.000，整段多帧覆盖 0.752481。请求/解码 5 帧，JPEG 21,458 字节，采样 0.099672 秒（不包含 Vision 与写视频耗时）。
+- 证据根 `content-controls/` 保存三份 MOV、五张采样 JPEG、测量 JSON、SHA manifest 和 Xcode 手工路线；已目视核对 200ms 条纹与 3000ms 红圆。仅对这组合成几何图形成立，不是自然对象识别、真实库准确率或候选阈值证据。
+- P5 尚缺正式模型训练/推理身份贯通、结果证据持久化、Photos 多帧、明确策略切换/强制重建、内容候选服务/列表及原生完整 UI 验收；本轮不将这些缺口改为可选，整体目标 active。
