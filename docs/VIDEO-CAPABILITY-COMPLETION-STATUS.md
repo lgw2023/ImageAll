@@ -32,7 +32,7 @@
 | P3 | IN_PROGRESS | 共享服务到真实质心模型和持久审核链 PASS；Mac 运行待验 | 继续全库建议、训练命令与审核持久事实闭环 |
 | P4 | VERIFIED（合成） | 完整原件／分组／安全清理与恢复、原生比较渲染通过 | 实现及最小合成验收已覆盖；真实 Photos／iCloud、日常配置点击和最终版本总回归仍未验证，见 P7 |
 | P5 | IN_PROGRESS | 实际合成视频解码→Vision→直接建议→审核证据 PASS | 文件夹/Photos 本地资源接线、版本化聚合、候选及原生证据条已交付；后台实际视频主路径已验；完整 UI 路线待验 |
-| P6 | NOT_STARTED | NOT_RUN | 显式片段与原声规则，合成混合故事可解码验证 |
+| P6 | IN_PROGRESS | 片段持久化/范围与旧照片兼容 PASS | 视频候选、剪辑 UI、资源冻结、混合渲染与可解码验证待实施 |
 | P7 | NOT_STARTED | NOT_RUN | 必需集成、最终构建与人工路线 |
 
 首个切片输入：生产 `AssetGridItemProjection.mediaKind` / `AssetInspectorDetail.mediaKind`；输出：摘要／详情 DTO 显式字段，兼容已知 UTI 和 MIME，未知格式明确不可用；验收：新旧 JSON、MP4／MOV／照片／未知类型、Web 分支与相关构建。不能据此宣称完整 P1 通过。
@@ -617,3 +617,10 @@
 - 延伸实际视频测试，在直接建议完成后清空独立临时库的帧/聚合缓存，经 PersonalizationReviewService 冻结2正2负样本与多帧策略、创建 TrainingRun、正式入队并由 JobExecutionCoordinator 执行。
 - `video-real-queue-build.log` TEST BUILD SUCCEEDED；`video-real-queue-tests.log` 1/1 PASS。后台冷缓存实际解码/Vision/模型发布完成，任务 completed；模型 revision 递增，5个历史帧均可读，正式视频审核队列只返回预期候选，Run 存在；人工接受后待审核证据消失。
 - 该测试使用固定测试时钟，不证明长视频 lease 续租或同步解码立即取消；已有取消/续跑检查点证据与此主路径各自保留。完整原生页面路线仍待 P7 验收。下一阶段按 ADR-VIDEO-MIXED-STORY.md 实施 P6，故事并行文件未改动。
+
+## P6 视频片段持久化契约（2026-09-28）
+
+- TimeStoryShot 新增可选 videoClip；旧项目缺字段保持照片语义。片段保存入点/出点、冻结源时长、原声音量；验证半开正范围、源时长一致、范围不越界及音量有限且0...1。
+- 输出范围向内量化到30fps：起点向上、终点向下，避免读取用户范围之外；不足一完整输出帧拒绝。使用整数运算并设溢出门禁，静音为增益0，默认原声增益1。
+- 混合渲染接通前，公共时间轴入口明确拒绝 videoClip，防止本地导出或故事包把其当照片。此门禁是实施期间保护，不代表 P6 完成，后续须以实际视频渲染替代。
+- `story-video-contract-build.log` TEST BUILD SUCCEEDED；`story-video-contract-tests.log` 3/3 PASS：片段编码/解码、旧镜头无字段兼容、合法范围/静音、非法时长/音量与过短片段拒绝、旧照片时间轴及故事包回归。下一步接候选媒体契约和视频资源，再接剪辑 UI/渲染。未读取真实媒体，未改 OpenMontage 种子。

@@ -143,6 +143,36 @@ enum TimeStoryPresentationMode: String, Codable, Sendable, Equatable, CaseIterab
     }
 }
 
+/// Persisted source interval; ranges are half-open and audio gain is independent of music.
+struct TimeStoryVideoClip: Codable, Sendable, Equatable {
+    var inPointMs: Int64
+    var outPointMs: Int64
+    var sourceDurationMs: Int64
+    var originalAudioGain: Double = 1
+
+    struct FrameRange: Equatable, Sendable {
+        let startFrame: Int64
+        let endFrame: Int64
+        var frameCount: Int64 { endFrame - startFrame }
+    }
+
+    func validatedFrameRange(actualDurationMs: Int64) throws -> FrameRange {
+        guard actualDurationMs > 0, sourceDurationMs == actualDurationMs,
+              inPointMs >= 0, outPointMs > inPointMs, outPointMs <= actualDurationMs,
+              outPointMs <= (Int64.max - 999) / 30,
+              originalAudioGain.isFinite, (0...1).contains(originalAudioGain) else {
+            throw TimeStoryError.invalidTimeline("视频片段范围、源时长或原声音量无效")
+        }
+        // Quantize inward so rendering never requests outside the selected source interval.
+        let range = FrameRange(startFrame: (inPointMs * 30 + 999) / 1000,
+                               endFrame: outPointMs * 30 / 1000)
+        guard range.frameCount > 0 else {
+            throw TimeStoryError.invalidTimeline("视频片段短于一个完整的 30 fps 帧")
+        }
+        return range
+    }
+}
+
 struct TimeStoryShot: Codable, Sendable, Equatable, Identifiable {
     let id: UUID
     var assetID: UUID
@@ -158,6 +188,8 @@ struct TimeStoryShot: Codable, Sendable, Equatable, Identifiable {
     var explicitLock: Bool? = nil
     var captionEdited: Bool? = nil
     var durationEdited: Bool? = nil
+    // Missing in existing photo-only projects. Never infer a video from a preview image.
+    var videoClip: TimeStoryVideoClip? = nil
 
     var hasExplicitLock: Bool {
         explicitLock ?? (isLocked && (reasons.contains("用户锁定") || !reasons.contains("手动编排")) && !reasons.contains("用户替换"))
@@ -358,6 +390,9 @@ enum TimeStoryTimeline {
     /// render timeline. Persisted values are never rewritten by this operation.
     static func normalize(project: TimeStoryProject) throws -> TimeStoryFrameTimeline {
         guard !project.shots.isEmpty else { throw TimeStoryError.noSelectedShots }
+        guard project.shots.allSatisfy({ $0.videoClip == nil }) else {
+            throw TimeStoryError.invalidTimeline("视频片段渲染尚未启用，不能作为静态照片导出")
+        }
         guard !project.chapters.isEmpty else {
             throw TimeStoryError.invalidTimeline("没有章节")
         }

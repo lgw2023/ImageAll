@@ -43,6 +43,29 @@ final class LibraryVideoViewingTests: XCTestCase {
         }
     }
 
+    func testStoryVideoClipPersistsAndValidatesHalfOpenRangeAndGain() throws {
+        let clip = TimeStoryVideoClip(inPointMs: 101, outPointMs: 901, sourceDurationMs: 1000)
+        let decoded = try JSONDecoder().decode(TimeStoryVideoClip.self, from: JSONEncoder().encode(clip))
+        XCTAssertEqual(decoded, clip)
+        let range = try decoded.validatedFrameRange(actualDurationMs: 1000)
+        XCTAssertEqual(range.startFrame, 4)
+        XCTAssertEqual(range.endFrame, 27)
+        XCTAssertEqual(range.frameCount, 23)
+        XCTAssertThrowsError(try clip.validatedFrameRange(actualDurationMs: 999))
+        for (start, end, gain) in [(0, 0, 1.0), (-1, 500, 1), (0, 1001, 1),
+                                    (10, 20, 1), (0, 500, -0.1), (0, 500, 1.1), (0, 500, Double.nan)] {
+            XCTAssertThrowsError(try TimeStoryVideoClip(inPointMs: Int64(start), outPointMs: Int64(end),
+                sourceDurationMs: 1000, originalAudioGain: gain).validatedFrameRange(actualDurationMs: 1000))
+        }
+        XCTAssertNoThrow(try TimeStoryVideoClip(inPointMs: 0, outPointMs: 1000,
+            sourceDurationMs: 1000, originalAudioGain: 0).validatedFrameRange(actualDurationMs: 1000))
+        let legacy = Data("{\"id\":\"00000000-0000-4000-8000-000000000001\",\"assetID\":\"00000000-0000-4000-8000-000000000002\",\"contentRevision\":1,\"chapterID\":\"00000000-0000-4000-8000-000000000003\",\"caption\":\"\",\"durationSeconds\":3.5,\"presentationMode\":\"aspectFitBlack\",\"reasons\":[],\"isLocked\":false,\"isUserEdited\":false}".utf8)
+        var shot = try JSONDecoder().decode(TimeStoryShot.self, from: legacy)
+        XCTAssertNil(shot.videoClip)
+        shot.videoClip = clip
+        XCTAssertEqual(try JSONDecoder().decode(TimeStoryShot.self, from: JSONEncoder().encode(shot)).videoClip, clip)
+    }
+
     func testPhotosAnalysisWaitIsCancellableAndCompletionIsOneShot() throws {
         let cancelled = PhotosVideoAnalysisRequestState()
         XCTAssertThrowsError(try cancelled.wait(checkCancellation: { throw CancellationError() })) {
