@@ -88,6 +88,13 @@ final class MigrationTransferClientTests: XCTestCase {
         XCTAssertEqual(streamed.verifiedBytes, Int64(resourceBytes.count))
         XCTAssertFalse(FileManager.default.fileExists(atPath: resourceURL.path),
                        "stream completion must not require a full local resource copy")
+        let planning = root.appendingPathComponent("planning", isDirectory: true)
+        try FileManager.default.createDirectory(at: planning, withIntermediateDirectories: true)
+        try manifest.write(to: planning.appendingPathComponent(ImageAllMigrationArchive.manifestFilename))
+        let streamRecord = try ImageAllMigrationStreamRecord(hostID: UUID(), deviceID: deviceID,
+            header: header, items: [item], receipt: streamed)
+        try streamRecord.save(in: planning)
+        XCTAssertEqual(try ImageAllMigrationStreamRecord.read(in: planning), streamRecord)
         try resourceBytes.write(to: resourceURL)
         let receipt = try await client.uploadMigrationArchive(at: source, pairedDeviceID: deviceID)
         XCTAssertEqual(receipt.migrationID, migrationID)
@@ -110,7 +117,13 @@ final class MigrationTransferClientTests: XCTestCase {
             )]
         ), to: factFile)
         _ = try ImageAllMigrationFacts.publish(from: factFile, into: source)
-        let updatedReceipt = try await client.uploadMigrationArchive(at: source, pairedDeviceID: deviceID)
+        _ = try ImageAllMigrationFacts.publish(from: factFile, into: planning)
+        let updatedReceipt = try await client.finishPreparedMigration(at: planning, header: header, items: [item])
+        XCTAssertTrue(streamRecord.matchesMedia(updatedReceipt))
+        XCTAssertNotEqual(streamRecord.receipt.factsSHA256, updatedReceipt.factsSHA256)
+        try ImageAllMigrationStreamRecord(hostID: streamRecord.hostID, deviceID: deviceID,
+            header: header, items: [item], receipt: updatedReceipt).save(in: planning)
+        XCTAssertEqual(try ImageAllMigrationStreamRecord.read(in: planning).receipt, updatedReceipt)
         XCTAssertNotNil(updatedReceipt.factsSHA256)
         XCTAssertEqual(updatedReceipt.verifiedBytes, receipt.verifiedBytes)
         let (_, updatedVerification) = try await store.sealVerifiedArchive(

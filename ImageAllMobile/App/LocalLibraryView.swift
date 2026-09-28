@@ -420,6 +420,10 @@ final class LocalLibraryModel: ObservableObject {
                 let receipt = try await connection.client.finishPreparedMigration(
                     at: root, header: header, items: items, beforeChunk: check)
                 try await check()
+                try ImageAllMigrationStreamRecord(hostID: connection.hostID, deviceID: connection.deviceID,
+                    header: header, items: items, receipt: receipt).save(in: root)
+                try FileManager.default.setAttributes([.protectionKey: FileProtectionType.complete],
+                    ofItemAtPath: root.appendingPathComponent(ImageAllMigrationStreamRecord.filename).path)
                 return receipt
             }
         ))
@@ -438,7 +442,9 @@ final class LocalLibraryModel: ObservableObject {
         }.value
     }
 
-    func exportCompletionCheckpointFacts(for archiveRoot: URL) async throws -> URL {
+    func exportCompletionCheckpointFacts(
+        for archiveRoot: URL, streamRecord: ImageAllMigrationStreamRecord? = nil
+    ) async throws -> URL {
         guard let store else { throw LocalFavoriteSourceError.storeUnavailable }
         let identifiers = try await observedSharedVisibleIdentifiers()
         let before: (snapshot: LocalSharedSnapshot, checkpoint: LocalMigrationSyncCheckpoint)
@@ -453,9 +459,19 @@ final class LocalLibraryModel: ObservableObject {
         } catch LocalLibraryError.syncScopeNotAcknowledged {
             throw LocalArchiveExportError.syncNotAcknowledged
         }
-        let verification = try await LocalPhotoArchiveExporter.verifyCurrentSourcesMatchArchive(
-            at: archiveRoot, snapshot: before.snapshot
-        )
+        let manifestSHA256: String
+        if let streamRecord {
+            guard before.checkpoint.hostID == streamRecord.hostID,
+                  before.checkpoint.deviceID == streamRecord.deviceID else {
+                throw LocalArchiveExportError.archiveScopeChanged
+            }
+            try await LocalPhotoArchiveExporter.verifyCurrentSourcesMatchStream(
+                streamRecord, snapshot: before.snapshot)
+            manifestSHA256 = streamRecord.receipt.manifestSHA256
+        } else {
+            manifestSHA256 = try await LocalPhotoArchiveExporter.verifyCurrentSourcesMatchArchive(
+                at: archiveRoot, snapshot: before.snapshot).manifestSHA256
+        }
         let latestIdentifiers = try await observedSharedVisibleIdentifiers()
         let after = try await store.migrationCompletionCheckpoint(
             visibleIdentifiers: latestIdentifiers
@@ -473,10 +489,48 @@ final class LocalLibraryModel: ObservableObject {
         return try await Task.detached(priority: .utility) {
             try LocalMigrationFactExporter.export(
                 snapshot: after.snapshot, checkpoint: after.checkpoint,
-                archiveManifestSHA256: verification.manifestSHA256,
+                archiveManifestSHA256: manifestSHA256,
                 sourceVerifiedAtMs: verifiedAtMs
             )
         }.value
+    }
+
+    func submitStreamingCompletionCheckpoint(
+        at root: URL, to remote: RemoteCompanionModel
+    ) async throws -> ImageAllMigrationTransferSealReceipt {
+        let connection = try remote.migrationStreamingConnection()
+        let lease = try ImageAllMigrationExportCheckpoint(streamingRoot: root)
+        defer { lease.close() }
+        let record = try ImageAllMigrationStreamRecord.read(in: lease.root)
+        guard record.header.migrationID == lease.migrationID,
+              record.hostID == connection.hostID, record.deviceID == connection.deviceID else {
+            throw LocalArchiveExportError.archiveScopeChanged
+        }
+        let scope = try await makeMigrationFactSnapshot()
+        let check: @Sendable () async throws -> Void = { [self, remote] in
+            try Task.checkCancellation()
+            try await remote.validateMigrationStreamingConnection(
+                hostID: record.hostID, deviceID: record.deviceID)
+            try await self.validateSharedSnapshotScope(scope)
+        }
+        try await check()
+        // A saved receipt is historical. Independently recheck the current Mac
+        // archive before spending time reading Photos or issuing a checkpoint.
+        let current = try await connection.client.sealMigrationTransfer(migrationID: record.header.migrationID)
+        guard record.matchesMedia(current) else { throw LocalArchiveExportError.sourceChanged }
+        try await check()
+        let facts = try await exportCompletionCheckpointFacts(for: lease.root, streamRecord: record)
+        defer { try? FileManager.default.removeItem(at: facts) }
+        try await check()
+        _ = try ImageAllMigrationFacts.publish(from: facts, into: lease.root)
+        let receipt = try await connection.client.finishPreparedMigration(
+            at: lease.root, header: record.header, items: record.items, beforeChunk: check)
+        try await check()
+        try ImageAllMigrationStreamRecord(hostID: record.hostID, deviceID: record.deviceID,
+            header: record.header, items: record.items, receipt: receipt).save(in: lease.root)
+        try FileManager.default.setAttributes([.protectionKey: FileProtectionType.complete],
+            ofItemAtPath: lease.root.appendingPathComponent(ImageAllMigrationStreamRecord.filename).path)
+        return receipt
     }
 
     func completeSharedSync(
@@ -1356,6 +1410,7 @@ private struct LocalShareScopeView: View {
     @State private var isCheckingCollectionHistory = false
     @State private var isExporting = false
     @State private var isExportingFacts = false
+    @State private var savedStreamingArchives: [LocalStreamingArchive] = []
     @State private var isStreamingArchive = false
     @State private var streamTask: Task<Void, Never>?
     @State private var isUploadingArchive = false
@@ -1659,7 +1714,7 @@ private struct LocalShareScopeView: View {
 
     private var archiveSection: some View {
         Section("本机原件归档") {
-            Button(isStreamingArchive ? "正在逐资源传输并校验…" : "所选项目逐资源传到 Mac（减少暂存）") {
+            Button(isStreamingArchive ? "正在处理逐资源批次…" : "所选项目逐资源传到 Mac（减少暂存）") {
                 guard !isStreamingArchive else { return }
                 isStreamingArchive = true
                 streamTask = Task {
@@ -1679,6 +1734,32 @@ private struct LocalShareScopeView: View {
                       || model.sharedSelections.isEmpty || !remoteModel.isConnected)
             if isStreamingArchive {
                 Button("暂停逐资源传输") { streamTask?.cancel() }
+            }
+            Button("查找逐资源批次以继续来源验收") {
+                do {
+                    savedStreamingArchives = try LocalPhotoArchiveExporter.existingStreamingArchives()
+                    if savedStreamingArchives.isEmpty {
+                        archiveStatusMessage = "没有已保存回执的逐资源批次；若上次响应丢失或由旧版生成，请按原来源和范围重试传输。"
+                    }
+                } catch { archiveStatusMessage = "读取逐资源批次失败：\(error.localizedDescription)" }
+            }
+            .disabled(isStreamingArchive || isExporting || isUploadingArchive)
+            ForEach(savedStreamingArchives) { archive in
+                Button("为批次 \(archive.migrationID.uuidString.prefix(8)) 生成并上传来源检查点") {
+                    guard !isStreamingArchive else { return }
+                    isStreamingArchive = true
+                    streamTask = Task {
+                        defer { isStreamingArchive = false; streamTask = nil }
+                        do {
+                            _ = try await model.submitStreamingCompletionCheckpoint(at: archive.root, to: remoteModel)
+                            archiveStatusMessage = "同批次已重新核对 Mac 归档与手机来源，并提交整理事实及同步水位。请在 Mac 再次入库、核查和独立恢复；这不是最终迁移完成回执。"
+                        } catch is CancellationError {
+                            archiveStatusMessage = "来源验收已暂停，批次记录保留，可重试。"
+                        } catch { archiveStatusMessage = "来源检查点未提交：\(error.localizedDescription)" }
+                    }
+                }
+                .disabled(isStreamingArchive || isExporting || isUploadingArchive || isSending
+                          || !remoteModel.isConnected)
             }
             Text("每次仅暂存一个资源，Mac 校验后释放手机暂存，保留 Photos 原件。仍需容纳单个最大资源；请保持 App 在前台。重试会重新准备资源，并继续 Mac 已落盘进度。")
                 .font(.footnote).foregroundStyle(.secondary)
@@ -1733,7 +1814,7 @@ private struct LocalShareScopeView: View {
                     archiveStatusMessage = "读取已有归档失败：\(error.localizedDescription)"
                 }
             }
-            .disabled(isExporting || isUploadingArchive)
+            .disabled(isStreamingArchive || isExporting || isUploadingArchive)
             ForEach(savedArchives, id: \.self) { archive in
                 Button("选用归档 \(archive.deletingPathExtension().lastPathComponent)") {
                     Task {
@@ -1755,7 +1836,7 @@ private struct LocalShareScopeView: View {
                         }
                     }
                 }
-                .disabled(isExporting || isUploadingArchive)
+                .disabled(isStreamingArchive || isExporting || isUploadingArchive)
             }
             Button(isExportingFacts ? "正在生成整理信息快照…" : "导出最新整理信息快照") {
                 Task {
@@ -1797,7 +1878,7 @@ private struct LocalShareScopeView: View {
                     }
                 }
                 .disabled(!exportedArchiveComplete || !remoteModel.isConnected
-                          || isUploadingArchive || isExporting || isExportingFacts)
+                          || isUploadingArchive || isExporting || isExportingFacts || isStreamingArchive)
                 Button(isUploadingArchive ? "正在上传检查点…" : "生成并上传验收检查点") {
                     Task {
                         isUploadingArchive = true
@@ -1822,7 +1903,7 @@ private struct LocalShareScopeView: View {
                     }
                 }
                 .disabled(!exportedArchiveComplete || !remoteModel.isConnected
-                          || isUploadingArchive || isExporting || isExportingFacts)
+                          || isUploadingArchive || isExporting || isExportingFacts || isStreamingArchive)
             }
             if let archiveStatusMessage {
                 Text(archiveStatusMessage).font(.footnote).foregroundStyle(.secondary)
@@ -2119,6 +2200,12 @@ private enum LocalMigrationFactExporter {
     }
 }
 
+private struct LocalStreamingArchive: Identifiable {
+    let root: URL
+    let migrationID: UUID
+    var id: URL { root }
+}
+
 @MainActor
 private enum LocalPhotoArchiveExporter {
     private struct SourceVersion: Codable, Equatable {
@@ -2164,8 +2251,22 @@ private enum LocalPhotoArchiveExporter {
             onHeader: { header = $0 },
             onItem: { items.append($0) }
         )
-        guard let header, verification.isComplete,
-              header.appleAlbumCoverage == .selectedAssetsOnly,
+        guard let header, verification.isComplete else { throw LocalArchiveExportError.incompleteArchive }
+        try await verifyCurrentSources(header: header, items: items, snapshot: snapshot)
+        return verification
+    }
+
+    static func verifyCurrentSourcesMatchStream(
+        _ record: ImageAllMigrationStreamRecord, snapshot: LocalSharedSnapshot
+    ) async throws {
+        try record.validate()
+        try await verifyCurrentSources(header: record.header, items: record.items, snapshot: snapshot)
+    }
+
+    private static func verifyCurrentSources(
+        header: ImageAllMigrationHeader, items: [ImageAllMigrationItem], snapshot: LocalSharedSnapshot
+    ) async throws {
+        guard header.appleAlbumCoverage == .selectedAssetsOnly,
               header.sourceDeviceID == snapshot.installID,
               header.sourceEpoch == snapshot.sourceEpoch,
               header.scopeRevision == snapshot.scopeRevision,
@@ -2189,6 +2290,7 @@ private enum LocalPhotoArchiveExporter {
         let selectedLocators = Set(byLocator.keys)
         let albums = try captureAlbumMemberships(selectedLocators: selectedLocators)
         for item in items {
+            try Task.checkCancellation()
             guard let selected = assetsByID[item.mediaID],
                   selected.localIdentifier == item.sourceLocalIdentifier,
                   let asset = byLocator[item.sourceLocalIdentifier],
@@ -2208,6 +2310,7 @@ private enum LocalPhotoArchiveExporter {
                 throw LocalArchiveExportError.sourceChanged
             }
             for (index, resource) in resources.enumerated() {
+                try Task.checkCancellation()
                 let expected = item.resources[index]
                 let uti = resource.uniformTypeIdentifier.isEmpty
                     ? UTType.data.identifier : resource.uniformTypeIdentifier
@@ -2235,7 +2338,6 @@ private enum LocalPhotoArchiveExporter {
               albums == (try captureAlbumMemberships(selectedLocators: selectedLocators)) else {
             throw LocalArchiveExportError.sourceChanged
         }
-        return verification
     }
 
     private static func hashSourceResource(_ resource: PHAssetResource) async throws -> (Int64, String) {
@@ -2253,6 +2355,30 @@ private enum LocalPhotoArchiveExporter {
             )
         }
         return try sink.result()
+    }
+
+    static func existingStreamingArchives() throws -> [LocalStreamingArchive] {
+        let manager = FileManager.default
+        let support = try manager.url(for: .applicationSupportDirectory, in: .userDomainMask,
+                                      appropriateFor: nil, create: true)
+        let parent = support.appendingPathComponent("LocalLibrary/MigrationStreaming", isDirectory: true)
+        guard manager.fileExists(atPath: parent.path) else { return [] }
+        var result: [LocalStreamingArchive] = []
+        for root in try manager.contentsOfDirectory(at: parent, includingPropertiesForKeys: nil)
+            where root.lastPathComponent.hasPrefix(".staging-") {
+            guard manager.fileExists(atPath: root.appendingPathComponent(ImageAllMigrationStreamRecord.filename).path)
+                else { continue }
+            let lease = try ImageAllMigrationExportCheckpoint(streamingRoot: root)
+            do {
+                let record = try ImageAllMigrationStreamRecord.read(in: lease.root)
+                guard record.header.migrationID == lease.migrationID else {
+                    throw LocalArchiveExportError.archiveScopeChanged
+                }
+                result.append(.init(root: lease.root, migrationID: record.header.migrationID))
+                lease.close()
+            } catch { lease.close(); throw error }
+        }
+        return result.sorted { $0.migrationID.uuidString < $1.migrationID.uuidString }
     }
 
     static func existingArchives() throws -> [URL] {

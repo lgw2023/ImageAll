@@ -13,13 +13,35 @@ public final class ImageAllMigrationExportCheckpoint {
     public let migrationID: UUID
     private var descriptor: Int32
 
-    public init(parent: URL, binding: Data) throws {
+    public convenience init(parent: URL, binding: Data) throws {
+        try self.init(parent: parent, digest: Self.hex(SHA256.hash(data: binding)))
+    }
+
+    /// Reopen an existing streaming batch under the same process lock used by
+    /// the exporter. No resource reset or new source binding is performed.
+    public convenience init(streamingRoot: URL) throws {
+        let name = streamingRoot.lastPathComponent
+        let prefix = ".staging-"
+        guard name.hasPrefix(prefix) else { throw ImageAllMigrationArchiveError.unsafeResourcePath }
+        let digest = String(name.dropFirst(prefix.count))
+        let values = try streamingRoot.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey])
+        guard digest.count == 64, digest.allSatisfy({ $0.isASCII && $0.isHexDigit && !$0.isUppercase }),
+              values.isDirectory == true, values.isSymbolicLink != true else {
+            throw ImageAllMigrationArchiveError.unsafeResourcePath
+        }
+        try self.init(parent: streamingRoot.deletingLastPathComponent(), digest: digest)
+        guard root == streamingRoot.resolvingSymlinksInPath().standardizedFileURL else {
+            close()
+            throw ImageAllMigrationArchiveError.unsafeResourcePath
+        }
+    }
+
+    private init(parent: URL, digest: String) throws {
         let manager = FileManager.default
         let values = try parent.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey])
         guard values.isDirectory == true, values.isSymbolicLink != true else {
             throw ImageAllMigrationArchiveError.unsafeResourcePath
         }
-        let digest = Self.hex(SHA256.hash(data: binding))
         let parent = parent.resolvingSymlinksInPath().standardizedFileURL
         let lock = parent.appendingPathComponent(".export-\(digest).lock")
         descriptor = Darwin.open(lock.path, O_RDWR | O_CREAT | O_NOFOLLOW, S_IRUSR | S_IWUSR)

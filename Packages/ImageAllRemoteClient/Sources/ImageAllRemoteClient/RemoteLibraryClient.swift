@@ -352,20 +352,8 @@ public struct RemoteLibraryClient: Sendable {
             mediaIDs: Set(items.map(\.mediaID)))
         let manifest = planningRoot.appendingPathComponent(ImageAllMigrationArchive.manifestFilename)
         let manifestDigest = try Self.migrationFileDigest(at: manifest)
-        let canonical = JSONEncoder()
-        canonical.outputFormatting = [.sortedKeys]
-        var expectedManifest = SHA256()
-        func include<T: Encodable>(_ record: T) throws {
-            var line = try canonical.encode(record)
-            guard line.count < 1_048_576 else {
-                throw RemoteAPIError(code: .badRequest, message: "manifest record exceeds limit")
-            }
-            line.append(0x0A)
-            expectedManifest.update(data: line)
-        }
-        try include(header)
-        for item in items { try include(item) }
-        guard Self.migrationHex(expectedManifest.finalize()) == manifestDigest.sha256 else {
+        guard try ImageAllMigrationStreamRecord.manifestSHA256(header: header, items: items)
+                == manifestDigest.sha256 else {
             throw RemoteAPIError(code: .conflict, message: "manifest differs from captured plan")
         }
         var paths = [ImageAllMigrationArchive.manifestFilename]
