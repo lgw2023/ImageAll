@@ -32,7 +32,7 @@
 | P3 | IN_PROGRESS | 共享服务到真实质心模型和持久审核链 PASS；Mac 运行待验 | 继续全库建议、训练命令与审核持久事实闭环 |
 | P4 | VERIFIED（合成） | 完整原件／分组／安全清理与恢复、原生比较渲染通过 | 实现及最小合成验收已覆盖；真实 Photos／iCloud、日常配置点击和最终版本总回归仍未验证，见 P7 |
 | P5 | IN_PROGRESS | 实际合成视频解码→Vision→直接建议→审核证据 PASS | 文件夹/Photos 本地资源接线、版本化聚合、候选及原生证据条已交付；后台实际视频主路径已验；完整 UI 路线待验 |
-| P6 | IN_PROGRESS | 原生/Remotion混合成片、Swift真实任务闭环 PASS | 自动选材与同源多片段重排已补；完整UI操作、方向样本及历史任务恢复待核 |
+| P6 | IN_PROGRESS | 原生/Remotion混合成片、Swift真实任务闭环 PASS | 自动选材、同源多片段、双渲染方向及旧完成任务恢复已验；完整UI操作待核 |
 | P7 | IN_PROGRESS | 已开始逐项要求复核 | Mac入口/运行证据、最终版本回归、依赖审计与人工路线未收口 |
 
 首个切片输入：生产 `AssetGridItemProjection.mediaKind` / `AssetInspectorDetail.mediaKind`；输出：摘要／详情 DTO 显式字段，兼容已知 UTI 和 MIME，未知格式明确不可用；验收：新旧 JSON、MP4／MOV／照片／未知类型、Web 分支与相关构建。不能据此宣称完整 P1 通过。
@@ -762,3 +762,11 @@
 - `story-mixed-orientation-final.log` PASS：成片红/蓝色块质心x均159.5，y分别176.39/63.41，证明实际呈现竖向且90度方向正确，而非仅交换宽高声明。代表帧已目视检查蓝上红下；全片FFmpeg解码成功，60帧/2秒与照片1秒+源0.5...1.5秒一致。
 - `story-mixed-orientation/`保存source.mov、orientation.mp4、frame.png、props.json、verification.json；成片SHA=48364817683b703300aa5ede70bd00e221efe785ca5278bca3cb10422d19478e。仅合成素材，Runtime种子未修改，测试临时素材已清理。
 - 此证据覆盖OpenMontage/Remotion的MOV旋转路径；原生方向样本、完整Mac UI操作与P7收口仍待完成，整体active，未push。
+
+## P6 原生旋转样本暴露并修复时间取帧缺陷（2026-09-28）
+
+- 新增带90度preferredTransform的合成运动源，比较0.2秒与0.7秒源/输出标记质心；源方向确实改变，成片必须保留同向垂直运动及可播放的1秒无音轨输出。首轮失败保留于story-native-rotation-tests.log与story-native-rotation/，输出仅约3像素位移；目视抽帧无字幕干扰。
+- 根因是StoryVideoFrames的requestedTimeToleranceBefore为positiveInfinity，允许重复返回早期帧。改为前后zero精确取帧；不改变方向变换、绘图坐标或测试阈值。修复后源y=35→81，输出y=306→682.01，x变化不足1像素，与源方向一致。
+- story-native-rotation-fix-build.log TEST BUILD SUCCEEDED；story-native-rotation-exact-tests.log 2/2 PASS（旋转与混合真实运动）；story-native-rotation-audio-regression.log 2/2 PASS（原声增益/静音/配乐与旧照片有无音乐）。FFmpeg全片解码成功，代表帧已目视核对。
+- story-native-rotation-exact/保存源、输出、质心JSON，输出SHA=f163d959e675c78800a528fe8504b3fcda946f8028778c24bff971ea828ef605。构建来自含并行未提交改动的工作区，不能据此宣称纯HEAD独立构建或发布验收。
+- 原生与Remotion方向样本均已有证据，旧完成结果恢复也已通过；P6完整Mac UI选材/片段/调序/成片重开与P7最终集成仍未完成。目标active，仅合成素材与直接XCTest，未真实媒体访问、未push。

@@ -671,6 +671,60 @@ final class TimeStoryFeatureTests: XCTestCase {
         XCTAssertEqual(issues.map(\.kind), [.versionChanged, .missing])
     }
 
+    func testNativeStoryPreservesRotatedVideoMotionDirection() async throws {
+        let root = try temporaryDirectory("native-rotated-story")
+        let source = root.appendingPathComponent("rotated.mp4")
+        try await FixtureMixedStoryMedia.makeMovingVideo(at: source,
+            transform: CGAffineTransform(a: 0, b: 1, c: -1, d: 0, tx: 128, ty: 0))
+        let sourceAsset = AVURLAsset(url: source)
+        let tracks = try await sourceAsset.loadTracks(withMediaType: .video)
+        let track = try XCTUnwrap(tracks.first)
+        let transform = try await track.load(.preferredTransform)
+        XCTAssertEqual(abs(transform.b), 1, accuracy: 0.001)
+        var video = candidate(UUID().uuidString, time: timestamp(2024, 1, 1))
+        video.mediaKind = .video; video.durationMs = 1000
+        let planner = TimeStoryPlanner()
+        var project = planner.makeFreeformProject(snapshot: makeSnapshot([video]), nowMs: 1)
+        project = try planner.manuallyInserting(video, in: project, nowMs: 2,
+            videoClip: .init(inPointMs: 0, outPointMs: 1000, sourceDurationMs: 1000, originalAudioGain: 0))
+        let output = root.appendingPathComponent("rendered.mp4")
+        try await AVFoundationTimeStoryRenderer(media: FixtureMixedStoryMedia(images: [:], video: source),
+            temporaryDirectory: root.appendingPathComponent("work")).render(project: project, destinationURL: output) { _ in }
+        try await assertPlayableVideo(output, expectsAudio: false, expectedDuration: 1)
+        func centers(_ url: URL) throws -> [CGPoint] {
+            let generator = AVAssetImageGenerator(asset: AVURLAsset(url: url))
+            generator.appliesPreferredTrackTransform = true
+            generator.requestedTimeToleranceBefore = .zero
+            generator.requestedTimeToleranceAfter = .zero
+            return try [6, 21].map { frame in
+                let image = try generator.copyCGImage(at: CMTime(value: Int64(frame), timescale: 30), actualTime: nil)
+                let bitmap = NSBitmapImageRep(cgImage: image)
+                var sx = 0.0, sy = 0.0, count = 0.0
+                for y in stride(from: 0, to: image.height, by: 2) {
+                    for x in stride(from: 0, to: image.width, by: 2) {
+                        if let color = bitmap.colorAt(x: x, y: y)?.usingColorSpace(.deviceRGB),
+                           color.redComponent > 0.85, color.greenComponent > 0.85, color.blueComponent > 0.85 {
+                            sx += Double(x); sy += Double(y); count += 1
+                        }
+                    }
+                }
+                XCTAssertGreaterThan(count, 10)
+                return CGPoint(x: sx / max(1, count), y: sy / max(1, count))
+            }
+        }
+        let expected = try centers(source), actual = try centers(output)
+        XCTAssertLessThan(abs(actual[1].x - actual[0].x), 10)
+        XCTAssertGreaterThan(abs(actual[1].y - actual[0].y), 100)
+        XCTAssertGreaterThan((actual[1].y - actual[0].y) * (expected[1].y - expected[0].y), 0)
+        if let evidence = ProcessInfo.processInfo.environment["IMAGEALL_VIDEO_EVIDENCE_DIR"] {
+            let directory = URL(fileURLWithPath: evidence)
+            try FileManager.default.copyItem(at: source, to: directory.appendingPathComponent("native-rotation-source.mp4"))
+            try FileManager.default.copyItem(at: output, to: directory.appendingPathComponent("native-rotation-result.mp4"))
+            try writeJSON(["sourceCenters": expected.map { [$0.x, $0.y] }, "outputCenters": actual.map { [$0.x, $0.y] }],
+                          to: directory.appendingPathComponent("native-rotation-centers.json"))
+        }
+    }
+
     func testMixedStoryRendersMovingMutedVideoInsteadOfPoster() async throws {
         let root = try temporaryDirectory("mixed-story-motion")
         let photo = candidate(UUID().uuidString, time: timestamp(2024, 1, 1))
@@ -2989,11 +3043,12 @@ private final class StoryTaskRootBookmarkFixture: SecurityScopedBookmarkPort, @u
 }
 
 private struct FixtureMixedStoryMedia: TimeStoryMediaLoading {
-    static func makeMovingVideo(at url: URL) async throws {
+    static func makeMovingVideo(at url: URL, transform: CGAffineTransform = .identity) async throws {
         let writer = try AVAssetWriter(outputURL: url, fileType: .mp4)
         let input = AVAssetWriterInput(mediaType: .video, outputSettings: [
             AVVideoCodecKey: AVVideoCodecType.h264, AVVideoWidthKey: 128, AVVideoHeightKey: 128])
         let adaptor = AVAssetWriterInputPixelBufferAdaptor(assetWriterInput: input, sourcePixelBufferAttributes: nil)
+        input.transform = transform
         writer.add(input)
         guard writer.startWriting() else { throw TimeStoryError.renderingFailed("fixture writer") }
         writer.startSession(atSourceTime: .zero)

@@ -1955,7 +1955,8 @@ private final class StoryVideoFrames {
         generator = AVAssetImageGenerator(asset: asset)
         generator.appliesPreferredTrackTransform = true
         generator.maximumSize = CGSize(width: TimeStoryConstants.outputWidth, height: TimeStoryConstants.outputHeight)
-        generator.requestedTimeToleranceBefore = .positiveInfinity
+        // Decode the requested source time; unlimited tolerance can repeat an old keyframe.
+        generator.requestedTimeToleranceBefore = .zero
         generator.requestedTimeToleranceAfter = .zero
     }
     func image(localFrame: Int) throws -> CGImage {
