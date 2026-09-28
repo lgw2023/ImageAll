@@ -134,6 +134,37 @@ final class IdenticalDuplicateDetectionTests: XCTestCase {
         }
         XCTAssertEqual(counts.0, 4)
         XCTAssertEqual(counts.1, 0)
+        // Re-run through the production enqueue/worker boundary with cold frame caches.
+        try await env.database.pool.write { db in
+            try db.execute(sql: "DELETE FROM video_analysis_frame")
+            try db.execute(sql: "DELETE FROM video_analysis_feature")
+        }
+        let now = FolderReconcileTestSupport.baseTimeMs + 100_000
+        let queue = JobTestSupport.makeQueue(database: env.database, nowMs: now, retryDelayMs: 0)
+        let handler = FullLibrarySuggestionsHandler(dependencies: .init(database: env.database, queue: queue,
+            featureLoader: loader, clock: FixedJobClock(nowMs: now), multiFrameFeatureLoader: loader))
+        let coordinator = JobExecutionCoordinator(queue: queue,
+            registry: MultiJobHandlerRegistry(handlers: [handler]),
+            leaseContextProvider: GRDBJobLeaseContextProvider(queue: queue))
+        let review = PersonalizationReviewService(database: env.database, queue: queue,
+            executionCoordinator: coordinator, tags: tags, clock: FixedJobClock(nowMs: now))
+        let jobID = try review.enqueueFullLibrarySuggestions(mediaKind: .video, tagID: tagID,
+            mode: .generate, sourceIDs: [env.sourceID], representation: .videoMultiFrame)
+        let payload = try FullLibrarySuggestionsCodec.decodePayload(queue.fetchJob(id: jobID).payload)
+        XCTAssertEqual(payload.representation, .videoMultiFrame)
+        XCTAssertEqual(payload.frozenPositiveSamples.count, 2)
+        XCTAssertEqual(payload.frozenNegativeSamples.count, 2)
+        _ = try coordinator.claimAndExecuteOnce(.init(owner: "synthetic-video-worker", leaseDurationMs: 60_000,
+            allowedKinds: [FullLibrarySuggestionsJobFactory.kind]))
+        XCTAssertEqual(try queue.fetchJob(id: jobID).state, .completed)
+        let queued = try XCTUnwrap(reader.read(assetID: assets[4], revision: 1, tagID: tagID))
+        XCTAssertGreaterThan(queued.modelRevision, snapshot.modelRevision)
+        XCTAssertEqual(queued.frames.count, 5)
+        XCTAssertTrue(queued.frames.allSatisfy { $0.jpegBytes != nil })
+        let page = try review.fetchReviewQueue(mediaKind: .video, tagID: tagID,
+            sourceIDs: [env.sourceID], cursor: nil, limit: 10)
+        XCTAssertEqual(page.items.map(\.assetID), [assets[4]])
+        XCTAssertNotNil(try GRDBTrainingRunRepository(database: env.database).fetch(jobID: jobID))
         _ = try tags.batchAccept(tagID: tagID, assetIDs: [assets[4]], timestampMs: 3)
         XCTAssertNil(try reader.read(assetID: assets[4], revision: 1, tagID: tagID))
     }

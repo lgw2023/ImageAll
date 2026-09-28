@@ -31,7 +31,7 @@
 | P2 | IN_PROGRESS | 首切片 PASS | 文件夹元数据、查询／地图／回填、原生云端获取及 PhotoKit 播放后技术信息持久化已分切片验；Mac 智能推流与完整 UI 待验 |
 | P3 | IN_PROGRESS | 共享服务到真实质心模型和持久审核链 PASS；Mac 运行待验 | 继续全库建议、训练命令与审核持久事实闭环 |
 | P4 | VERIFIED（合成） | 完整原件／分组／安全清理与恢复、原生比较渲染通过 | 实现及最小合成验收已覆盖；真实 Photos／iCloud、日常配置点击和最终版本总回归仍未验证，见 P7 |
-| P5 | IN_PROGRESS | 实际合成视频解码→Vision→直接建议→审核证据 PASS | 文件夹/Photos 本地资源接线、版本化聚合、候选及原生证据条已交付；后台真实视频训练及完整 UI 路线待验 |
+| P5 | IN_PROGRESS | 实际合成视频解码→Vision→直接建议→审核证据 PASS | 文件夹/Photos 本地资源接线、版本化聚合、候选及原生证据条已交付；后台实际视频主路径已验；完整 UI 路线待验 |
 | P6 | NOT_STARTED | NOT_RUN | 显式片段与原声规则，合成混合故事可解码验证 |
 | P7 | NOT_STARTED | NOT_RUN | 必需集成、最终构建与人工路线 |
 
@@ -611,3 +611,9 @@
 - 直接建议服务训练/发布版本2模型，4个样本注册为 preprocessing=2，产生1条视频建议且照片模型槽保持空。审核读取的5帧时间/字节与实际采样完全一致，再分析复用缓存且解码数为0。人工接受候选后历史输入不再作为待审核证据返回。
 - `video-real-training-build.log` TEST BUILD SUCCEEDED；`video-real-training-tests.log` 1/1 PASS（1.274s 为整个测试耗时，含视频生成，不是生产性能基准）。仅说明几何合成控制组工程连通，不推断真实图库分类准确率。
 - 后台正式队列此前使用合成向量验证，其实际视频端到端尚需补充；完整审核页点击也未验证。P6 静态检查确认当前 package 将镜头统一准备成 JPEG，需显式视频片段/原声契约，不能把候选扩容当作运动导出完成。故事/OpenMontage 并行工作保持原样，整体 active。
+
+## P5 正式后台队列实际视频闭环（2026-09-28）
+
+- 延伸实际视频测试，在直接建议完成后清空独立临时库的帧/聚合缓存，经 PersonalizationReviewService 冻结2正2负样本与多帧策略、创建 TrainingRun、正式入队并由 JobExecutionCoordinator 执行。
+- `video-real-queue-build.log` TEST BUILD SUCCEEDED；`video-real-queue-tests.log` 1/1 PASS。后台冷缓存实际解码/Vision/模型发布完成，任务 completed；模型 revision 递增，5个历史帧均可读，正式视频审核队列只返回预期候选，Run 存在；人工接受后待审核证据消失。
+- 该测试使用固定测试时钟，不证明长视频 lease 续租或同步解码立即取消；已有取消/续跑检查点证据与此主路径各自保留。完整原生页面路线仍待 P7 验收。下一阶段按 ADR-VIDEO-MIXED-STORY.md 实施 P6，故事并行文件未改动。
