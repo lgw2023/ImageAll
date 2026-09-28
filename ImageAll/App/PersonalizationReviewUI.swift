@@ -2053,6 +2053,7 @@ struct TagSuggestionThresholdControls: View {
 struct SuggestionEnqueueConfirmationSheet: View {
     @ObservedObject var model: LibraryWorkspaceModel
     let pending: SuggestionEnqueueConfirmation
+    @State private var representation: PersonalizationRepresentation = .legacy
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
@@ -2062,6 +2063,15 @@ struct SuggestionEnqueueConfirmationSheet: View {
                 .font(.callout)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
+
+            if pending.mediaKind == .video && pending.method == .featureKnn {
+                Picker("视频分析策略", selection: $representation) {
+                    Text("单封面（旧策略）").tag(PersonalizationRepresentation.legacy)
+                    Text("有限多帧（最多 5 帧）").tag(PersonalizationRepresentation.videoMultiFrame)
+                }
+                Text("选择多帧会新建对应版本的模型任务，不改历史训练记录。目前多帧支持文件夹视频；Photos 样本暂不支持。")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
 
             Text("扫描来源")
                 .font(.subheadline.weight(.semibold))
@@ -2092,7 +2102,8 @@ struct SuggestionEnqueueConfirmationSheet: View {
                 .keyboardShortcut(.cancelAction)
                 .persistentHelp("关闭确认窗口，不创建本次建议生成任务。")
                 Button("开始") {
-                    let captured = model.pendingSuggestionConfirmation ?? pending
+                    var captured = model.pendingSuggestionConfirmation ?? pending
+                    captured.representation = representation
                     Task { _ = await model.confirmPendingSuggestionEnqueue(captured) }
                 }
                 .keyboardShortcut(.defaultAction)

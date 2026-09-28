@@ -206,6 +206,7 @@ struct SuggestionEnqueueConfirmation: Identifiable, Equatable, Sendable {
     let method: SuggestionGenerationMethod
     let availableSources: [SuggestionEnqueueSourceOption]
     var selectedSourceIDs: Set<UUID>
+    var representation: PersonalizationRepresentation = .legacy
     let effectiveMinScore: Double
 
     init(
@@ -409,9 +410,21 @@ protocol PersonalizationReviewPort: Sendable {
         mode: PersonalizationReviewEnqueueMode,
         sourceIDs: [UUID]?
     ) throws -> UUID
+    func enqueueFullLibrarySuggestions(
+        mediaKind: MediaKind, tagID: UUID, mode: PersonalizationReviewEnqueueMode,
+        sourceIDs: [UUID]?, representation: PersonalizationRepresentation
+    ) throws -> UUID
 }
 
 extension PersonalizationReviewPort {
+    func enqueueFullLibrarySuggestions(
+        mediaKind: MediaKind, tagID: UUID, mode: PersonalizationReviewEnqueueMode,
+        sourceIDs: [UUID]?, representation: PersonalizationRepresentation
+    ) throws -> UUID {
+        guard representation == .legacy else { throw PersonalizationReviewError.persistenceFailure }
+        return try enqueueFullLibrarySuggestions(mediaKind: mediaKind, tagID: tagID, mode: mode, sourceIDs: sourceIDs)
+    }
+
     func reviewStateSnapshot(
         mediaKind: MediaKind,
         sourceIDs: [UUID]?

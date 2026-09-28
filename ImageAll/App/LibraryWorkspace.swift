@@ -12229,7 +12229,8 @@ extension LibraryWorkspaceModel {
                         mediaKind: pending.mediaKind,
                         tagID: pending.tagID,
                         mode: pending.mode,
-                        sourceIDs: selectedSourceIDs
+                        sourceIDs: selectedSourceIDs,
+                        representation: pending.representation
                     )
                 }
                 featureSuggestionCompletionContexts[jobID] = FeatureSuggestionCompletionContext(

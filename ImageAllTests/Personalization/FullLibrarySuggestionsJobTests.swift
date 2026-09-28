@@ -2905,13 +2905,20 @@ final class FullLibrarySuggestionsJobTests: XCTestCase {
         let handler = FullLibrarySuggestionsHandler(dependencies: FullLibrarySuggestionsHandlerDependencies(
             database: fixture.database, queue: queue, featureLoader: fixture.loader,
             clock: FixedJobClock(nowMs: fixture.cutoffMs), multiFrameFeatureLoader: loader))
-        let command = try FullLibrarySuggestionsJobEnqueue.makeEnqueueCommand(jobID: UUID(), tagID: fixture.tagID,
-            mediaKind: .video, representation: .videoMultiFrame, sourceIDs: [fixture.sourceID],
-            catalogCutoffMs: fixture.cutoffMs, modelRevision: 1,
-            frozenPositiveSamples: fixture.positiveIDs.map { .init(assetID: $0, contentRevision: 1) },
-            frozenNegativeSamples: fixture.negativeIDs.map { .init(assetID: $0, contentRevision: 1) },
-            notBeforeMs: fixture.cutoffMs)
-        let job = try queue.enqueue(command)
+        let reviewService = PersonalizationReviewService(database: fixture.database, queue: queue,
+            executionCoordinator: makeCoordinator(database: fixture.database, handler: handler, queue: queue),
+            tags: fixture.tags, clock: FixedJobClock(nowMs: fixture.cutoffMs))
+        let jobID = try reviewService.enqueueFullLibrarySuggestions(mediaKind: .video, tagID: fixture.tagID,
+            mode: .generate, sourceIDs: [fixture.sourceID], representation: .videoMultiFrame)
+        XCTAssertThrowsError(try reviewService.enqueueFullLibrarySuggestions(mediaKind: .video, tagID: fixture.tagID,
+            mode: .generate, sourceIDs: [fixture.sourceID], representation: .legacy)) { error in
+            XCTAssertEqual(error as? PersonalizationReviewError, .activeJobConflict)
+        }
+        let run = try XCTUnwrap(GRDBTrainingRunRepository(database: fixture.database).fetch(jobID: jobID))
+        let config = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(run.configJSON.utf8)) as? [String: Any])
+        XCTAssertEqual(config["representation"] as? Int, 2)
+        XCTAssertEqual(config["preprocessingRevision"] as? Int, 2)
+        let job = try queue.fetchJob(id: jobID)
         let frozen = try FullLibrarySuggestionsCodec.decodePayload(job.payload)
         XCTAssertEqual(frozen.contractVersion, 2)
         XCTAssertEqual(frozen.representation, .videoMultiFrame)
@@ -2924,7 +2931,7 @@ final class FullLibrarySuggestionsJobTests: XCTestCase {
              try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM tag_model_sample WHERE preprocessing_revision = 1"))
         }
         XCTAssertEqual(versions.0, 2)
-        XCTAssertEqual(versions.1, fixture.positiveIDs.count + fixture.negativeIDs.count)
+        XCTAssertEqual(versions.1, frozen.frozenPositiveSamples.count + frozen.frozenNegativeSamples.count)
         XCTAssertEqual(versions.2, 0)
         var legacy = try XCTUnwrap(JSONSerialization.jsonObject(with: job.payload) as? [String: Any])
         legacy["contractVersion"] = 1

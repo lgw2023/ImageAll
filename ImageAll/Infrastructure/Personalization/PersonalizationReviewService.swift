@@ -365,6 +365,15 @@ struct PersonalizationReviewService: PersonalizationReviewPort, Sendable {
         mode: PersonalizationReviewEnqueueMode,
         sourceIDs: [UUID]?
     ) throws -> UUID {
+        try enqueueFullLibrarySuggestions(mediaKind: mediaKind, tagID: tagID, mode: mode,
+            sourceIDs: sourceIDs, representation: .legacy)
+    }
+
+    func enqueueFullLibrarySuggestions(
+        mediaKind: MediaKind, tagID: UUID, mode: PersonalizationReviewEnqueueMode,
+        sourceIDs: [UUID]?, representation: PersonalizationRepresentation
+    ) throws -> UUID {
+        guard representation.supports(mediaKind) else { throw PersonalizationReviewError.persistenceFailure }
         let samples = try review.fetchFrozenSampleIdentities(
             mediaKind: mediaKind,
             tagID: tagID
@@ -398,6 +407,7 @@ struct PersonalizationReviewService: PersonalizationReviewPort, Sendable {
             jobID: jobID,
             tagID: tagID,
             mediaKind: mediaKind,
+            representation: representation,
             sourceIDs: resolvedSourceIDs,
             catalogCutoffMs: nowMs,
             modelRevision: modelRevision,
@@ -455,6 +465,9 @@ struct PersonalizationReviewService: PersonalizationReviewPort, Sendable {
                 "mediaKind": mediaKind.rawValue,
                 "action": mode == .generate ? "generate" : "update",
                 "provider": "vision.featurePrint",
+                "representation": representation.rawValue,
+                "preprocessingRevision": representation.preprocessingRevision,
+                "representationIdentity": representation == .legacy ? "videoPoster.v1-or-image" : VideoMultiFrameFeatureSet.identity,
                 "modelRevision": modelRevision,
                 "minimumPositiveCount": 2,
                 "minimumNegativeCount": 2,

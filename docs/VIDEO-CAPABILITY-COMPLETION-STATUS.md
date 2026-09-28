@@ -570,3 +570,10 @@
 - 后台样本/候选加载根据载荷选择专用 loader，统一校验表示；样本注册和模型发布使用被冻结的 preprocessing revision。CompositionRoot 注入真实多帧 loader，无配置时明确失败，不退回封面。
 - `video-frozen-model-build.log` TEST BUILD SUCCEEDED；`video-frozen-model-tests.log` 3/3 PASS。真实队列多帧合同发布模型/样本版本 2，旧合同兼容且不完整新合同拒绝；旧视频 KNN/照片隔离、旧训练 Run 成功和 artifact 回归通过。新队列测试使用合成向量，不冒称真实视频训练质量。
 - 正式 enqueue/review 服务仍需接用户策略选择、同一标签已有任务的冲突处理和新策略训练 Run/配置 artifact；本轮未把现有默认全库任务自动改为多帧。审核时间点绑定、Photos 多帧和 UI 验收仍待完成，整体 active。
+
+## P5 Mac 策略选择与正式训练记录（2026-09-28）
+
+- 正式建议确认页在视频 Feature KNN 下提供旧单封面/有限多帧选择，确认时捕获策略并经 ReviewPort 传到正式入队服务。旧调用仍默认旧策略，非支持端口拒绝新策略，不静默退回。页面说明当前多帧来源限制。
+- 正式入队服务写入 representation/preprocessingRevision/表示身份到 TrainingRun config，同时冻结任务合同。已有同标签/媒体任务时沿用 activeJobConflict，事务 coalescing 竞争同样拒绝；不复用不同策略任务，不覆盖历史 Run。
+- 首次测试预期仍使用手工 7 项样本列表，而正式服务冻结 8 项，产生一次计数失败；已将预期绑定正式 frozen payload。`video-strategy-entry-build-final.log` TEST BUILD SUCCEEDED；`video-strategy-entry-tests-final.log` 3/3 PASS：正式入队→Run 配置版本2→冲突拒绝→队列发布版本2，旧视频及旧 artifact 回归通过。
+- UI 确认页只完成构建/接线，渲染和人工选择未验。完整真实视频训练/审核时间点、Photos 多帧和 P5 汇总验收仍未完成，整体 active。LibraryWorkspace 仅提交本次参数传递，其他并行内容保持。

@@ -71,3 +71,7 @@ PersonalizationRepresentation 固定 legacy=1、videoMultiFrame=2，对应 prepr
 FullLibrarySuggestions 合同 1 绑定 legacy，合同 2 绑定 videoMultiFrame 且仅视频域。表示写入 payload 而非运行时读取 UI 偏好。新字段旧合同可省略，新合同不可省略；保留 job envelope version，使旧 handler 依据旧 contractVersion 门禁明确拒绝新合同。采样/候选与模型发布全部取同一冻结表示，生产 dependencies 注入独立多帧 loader。
 
 当前 tag/media coalescing key 保持原契约。正式用户切换入口必须在已有同标签媒体任务未结束时处理策略冲突，不得把不同策略静默合并成“已按新策略提交”；该入口和训练 Run 冻结配置将下一步实施。默认旧任务行为不变。
+
+## 正式选择与训练 Run
+
+视频 Feature KNN 确认页显式选择单封面或有限多帧，默认旧策略；选择捕获到确认对象并传入正式 ReviewPort。任务参数与 TrainingRun config 同步冻结表示及预处理版本。现有同 tag/media 活跃任务阻止任何新提交（包括策略不同），事务竞争同样返回 activeJobConflict；不按新策略提示成功却复用旧任务。历史配置不回填、不改写。未实现新策略的其他 ReviewPort 实现会拒绝多帧请求。
