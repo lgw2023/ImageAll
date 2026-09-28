@@ -1,0 +1,16 @@
+{
+  "integrationVersion": 1,
+  "sourceArchiveSHA256": "59438ce446c2916cf31a0952dddec1870cfd5b5fa9971bfb534031720aed097a",
+  "taskProtocolVersion": "1.1",
+  "taskProtocolSHA256": "12a265b8bab275955b5fb1b886250de23eef14c5a438ea372466e0560a3d1bb1",
+  "upstreamTaskProtocolSHA256": "da49966ac4b60c9a1b597768ff898eadf1c9c063bb91e95e4bb9754e5802e912",
+  "storySchemaVersion": "0.2",
+  "storySchemaSHA256": "2fbd8d755e7cd684b372b64ac221d90594d6b0baff82d6861af1019215030873",
+  "upstreamStorySchemaSHA256": "884a6fed3eb4d8cf3b37c450b8a9a4e2d21782220532a66d21dccdf8fe696841",
+  "creativeProtocolVersion": "1.2",
+  "creativePluginVersion": "1.2.2",
+  "templateProtocolVersion": "1.0",
+  "legacyStorySchemaVersion": "0.1",
+  "legacyStorySchemaSHA256": "62152ef8ff73882a459359f11f551bc3d6582a4b6d299e30cc8486846b28a1a0",
+  "legacyTaskProtocolSHA256": "7c66dba05d1a4d781a3bbc147ab5c70ada73b0559f0610ee361dc37f8733e018"
+}

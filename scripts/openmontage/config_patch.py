@@ -4,6 +4,14 @@ from pathlib import Path
 def apply(engine: Path):
     import typography_patch
     typography_patch.apply(engine)
+    import task_protocol_patch
+    task_protocol_patch.apply(engine)
+    import mixed_story_executor_patch
+    from integration_contract import CONTRACT
+    mixed_identity = mixed_story_executor_patch.apply(engine)
+    if (mixed_identity['taskProtocolSHA256'] != CONTRACT['taskProtocolSHA256'] or
+        mixed_identity['storyPackageSchemas'].get(CONTRACT['storySchemaVersion']) != CONTRACT['storySchemaSHA256']):
+        raise RuntimeError('Mixed story integration identity mismatch')
     module = engine / 'lib/config_model.py'
     source = module.read_text()
     original = 'config_path = Path(__file__).resolve().parent.parent / "config.yaml"'

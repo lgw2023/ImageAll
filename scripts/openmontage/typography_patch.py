@@ -1,6 +1,32 @@
 """Pinned PhotoStory typography extension, shared by preview and final render."""
 import json
+import hashlib
 from pathlib import Path
+
+from integration_contract import CONTRACT
+STORY_SCHEMA_SHA256 = CONTRACT['legacyStorySchemaSHA256']
+UPSTREAM_SCHEMA_SHA256 = CONTRACT['upstreamStorySchemaSHA256']
+
+
+def synchronize_story_schema_lock(engine: Path):
+    """Pin the reviewed extension, never bless arbitrary schema modifications."""
+    directory = engine / 'schemas/integrations'
+    data = (directory / 'story_render_package_v0_1.schema.json').read_bytes()
+    if hashlib.sha256(data).hexdigest() != STORY_SCHEMA_SHA256:
+        raise RuntimeError('Story typography schema changed; review the schema and Swift exporter digest')
+    path = directory / 'story_render_package_v0_1.lock.json'
+    lock = json.loads(path.read_text())
+    if lock.get('sha256') not in (UPSTREAM_SCHEMA_SHA256, STORY_SCHEMA_SHA256):
+        raise RuntimeError('Unknown upstream story schema lock; review before packaging')
+    if lock['sha256'] == UPSTREAM_SCHEMA_SHA256:
+        upstream = dict(lock)
+        lock = {key: value for key, value in lock.items() if key not in ('introducedInCommit', 'gitBlobSHA1')}
+        lock['upstreamLock'] = upstream
+    lock.update(sha256=STORY_SCHEMA_SHA256, byteLength=len(data), lineCount=data.count(b'\n'),
+                lineEnding='LF', finalNewline=data.endswith(b'\n'), utf8BOM=data.startswith(b'\xef\xbb\xbf'),
+                integration='ImageAll ADR-100 typography extension')
+    path.write_text(json.dumps(lock, ensure_ascii=False, indent=2) + '\n')
+
 
 def apply(engine: Path):
     fields = {
@@ -21,6 +47,7 @@ def apply(engine: Path):
                 for child in node: visit(child)
         visit(data)
         path.write_text(json.dumps(data, ensure_ascii=False, indent=2) + '\n')
+    synchronize_story_schema_lock(engine)
     path = engine / 'remotion-composer/src/PhotoStory.tsx'
     source = path.read_text()
     replacements = {

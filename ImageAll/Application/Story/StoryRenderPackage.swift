@@ -1,4 +1,5 @@
 import AppKit
+import AVFoundation
 import CryptoKit
 import Foundation
 import ImageIO
@@ -44,10 +45,10 @@ protocol TimeStoryPackageExporting: Sendable {
 }
 
 struct StoryRenderPackageExporter: TimeStoryPackageExporting, Sendable {
-    static let schemaVersion = "0.1"
+    static let schemaVersion = OpenMontageContract.storySchemaVersion
     static let schemaCommit = "30d412449354efce1ec002539e471b7c067e11c7"
-    static let schemaSHA256 = "62152ef8ff73882a459359f11f551bc3d6582a4b6d299e30cc8486846b28a1a0"
-    static let exporterVersion = "imageall-story-render-package-v0.1"
+    static let schemaSHA256 = OpenMontageContract.storySchemaSHA256
+    static let exporterVersion = "imageall-story-render-package-v0.2"
 
     let media: any TimeStoryMediaLoading
     let validator: any TimeStoryMediaValidating
@@ -63,7 +64,7 @@ struct StoryRenderPackageExporter: TimeStoryPackageExporting, Sendable {
         guard fileManager.fileExists(atPath: parent.path), destinationURL != parent else {
             throw TimeStoryError.invalidDestination
         }
-        let timeline = try TimeStoryTimeline.normalize(project: project)
+        let timeline = try TimeStoryTimeline.normalize(project: project, allowsVideoClips: true)
         let renderedProjectTitle = timeline.segments.first(where: { $0.kind == .projectTitle })?.title ?? ""
         guard renderedProjectTitle.count <= 240 else {
             throw TimeStoryError.storyPackageExportFailed("项目标题超过故事包允许的 240 个字符")
@@ -95,7 +96,7 @@ struct StoryRenderPackageExporter: TimeStoryPackageExporting, Sendable {
             if !result.contains(where: { $0.assetID == shot.assetID }) { result.append(shot) }
         }
         let revisionsByAsset = Dictionary(grouping: project.shots, by: \.assetID)
-        guard revisionsByAsset.values.allSatisfy({ Set($0.map(\.contentRevision)).count == 1 }) else {
+        guard revisionsByAsset.values.allSatisfy({ Set($0.map(\.contentRevision)).count == 1 && Set($0.map { $0.videoClip != nil }).count == 1 }) else {
             throw TimeStoryError.storyPackageExportFailed("同一素材在项目中出现了不同内容版本")
         }
 
@@ -103,6 +104,46 @@ struct StoryRenderPackageExporter: TimeStoryPackageExporting, Sendable {
         var packageAssetIDBySource: [UUID: String] = [:]
         for (index, shot) in referencedShots.enumerated() {
             try Task.checkCancellation()
+            if shot.videoClip != nil {
+                let packageAssetID = Self.opaqueID(prefix: "video", components: [project.id.uuidString, shot.assetID.uuidString])
+                let provisional = assetsDirectory.appendingPathComponent("\(packageAssetID).mov")
+                let frozen = try await media.freezeStoryVideo(assetID: shot.assetID,
+                    expectedRevision: shot.contentRevision, destination: provisional)
+                guard frozen.contentRevision == shot.contentRevision, frozen.url == provisional else {
+                    throw TimeStoryError.storyPackageExportFailed("视频冻结身份不一致")
+                }
+                let isMP4 = frozen.mediaType == "video/mp4" || UTType(frozen.mediaType)?.conforms(to: .mpeg4Movie) == true
+                let isMOV = frozen.mediaType == "video/quicktime" || UTType(frozen.mediaType)?.conforms(to: .quickTimeMovie) == true
+                guard isMP4 || isMOV else { throw TimeStoryError.storyPackageExportFailed("视频格式仅支持 MP4 或 MOV") }
+                let relativePath = "assets/\(packageAssetID).\(isMP4 ? "mp4" : "mov")"
+                let destination = staging.appendingPathComponent(relativePath)
+                if destination != provisional { try fileManager.moveItem(at: provisional, to: destination) }
+                let source = AVURLAsset(url: destination)
+                guard let videoTrack = try await source.loadTracks(withMediaType: .video).first else {
+                    throw TimeStoryError.storyPackageExportFailed("视频缺少可读取的视频轨")
+                }
+                let seconds = try await videoTrack.load(.timeRange).duration.seconds
+                guard seconds.isFinite, seconds > 0, seconds < Double(Int64.max) / 1000 else {
+                    throw TimeStoryError.storyPackageExportFailed("视频轨时长无效")
+                }
+                let durationMs = Int64((seconds * 1000).rounded(.down))
+                guard durationMs == frozen.durationMs else {
+                    throw TimeStoryError.storyPackageExportFailed("视频实际时长与冻结版本不一致")
+                }
+                for related in revisionsByAsset[shot.assetID] ?? [] {
+                    _ = try related.videoClip?.validatedFrameRange(actualDurationMs: durationMs)
+                }
+                let hasAudio = try await !source.loadTracks(withMediaType: .audio).isEmpty
+                let hash = try Self.fileSHA256(destination)
+                guard hash == frozen.sha256.map({ String(format: "%02x", $0) }).joined() else {
+                    throw TimeStoryError.storyPackageExportFailed("视频冻结摘要不一致")
+                }
+                packageAssetIDBySource[shot.assetID] = packageAssetID
+                packageAssets.append(.init(assetID: packageAssetID, relativePath: relativePath,
+                    mediaType: isMP4 ? "video/mp4" : "video/quicktime",
+                    sourceContentVersion: "catalog-revision-\(shot.contentRevision)", renderFileSHA256: hash,
+                    video: .init(durationMs: durationMs, hasAudio: hasAudio)))
+            } else {
             let packageAssetID = Self.opaqueID(
                 prefix: "photo",
                 components: [project.id.uuidString, shot.assetID.uuidString]
@@ -121,6 +162,7 @@ struct StoryRenderPackageExporter: TimeStoryPackageExporting, Sendable {
                 sourceContentVersion: "catalog-revision-\(shot.contentRevision)",
                 renderFileSHA256: hash
             ))
+            }
             onProgress(.init(
                 phase: .preparingAssets,
                 fraction: Double(index + 1) / Double(max(1, referencedShots.count + (project.music == nil ? 0 : 1)))
@@ -248,10 +290,12 @@ struct StoryRenderPackageExporter: TimeStoryPackageExporting, Sendable {
                 throw TimeStoryError.invalidTimeline("章节没有规范化镜头")
             }
             let shots = try segments.enumerated().map { sequenceIndex, segment in
+                let sourceClip = project.shots.first(where: { $0.id == segment.shotID })?.videoClip
+                let clipRange = try sourceClip.map { try $0.validatedFrameRange(actualDurationMs: $0.sourceDurationMs) }
                 let kind: String = switch segment.kind {
                 case .projectTitle: "title"
                 case .chapterTitle: "chapter-title"
-                case .photo: "photo"
+                case .photo: sourceClip == nil ? "photo" : "video"
                 }
                 let assetID: String?
                 if let sourceAssetID = segment.assetID {
@@ -272,6 +316,8 @@ struct StoryRenderPackageExporter: TimeStoryPackageExporting, Sendable {
                     assetID: assetID,
                     startFrame: segment.startFrame,
                     durationFrames: segment.durationFrames,
+                    videoClip: clipRange.map { .init(inFrame: $0.startFrame, outFrame: $0.endFrame,
+                        originalAudioGain: sourceClip!.originalAudioGain) },
                     title: segment.title,
                     caption: segment.caption.flatMap { value in
                         value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
@@ -279,7 +325,7 @@ struct StoryRenderPackageExporter: TimeStoryPackageExporting, Sendable {
                             : .init(body: value)
                     },
                     fit: segment.kind == .photo ? .init(mode: "contain", allowCrop: false) : nil,
-                    motion: segment.kind == .photo
+                    motion: segment.kind == .photo && sourceClip == nil
                         ? .init(type: "subtle-push", startScale: segment.presentationMode == .fullFrameWithBackground ? 0.985 : 1.0, endScale: 1.0)
                         : nil,
                     transitionIn: .init(
@@ -549,6 +595,18 @@ struct StoryRenderPackageDocument: Codable, Sendable, Equatable {
         var mediaType: String
         var sourceContentVersion: String
         var renderFileSHA256: String
+        var video: Video? = nil
+    }
+
+    struct Video: Codable, Sendable, Equatable {
+        var durationMs: Int64
+        var hasAudio: Bool
+    }
+
+    struct VideoClip: Codable, Sendable, Equatable {
+        var inFrame: Int64
+        var outFrame: Int64
+        var originalAudioGain: Double
     }
 
     struct Chapter: Codable, Sendable, Equatable {
@@ -571,6 +629,7 @@ struct StoryRenderPackageDocument: Codable, Sendable, Equatable {
         var assetID: String?
         var startFrame: Int
         var durationFrames: Int
+        var videoClip: VideoClip? = nil
         var title: String?
         var caption: Caption?
         var fit: Fit?

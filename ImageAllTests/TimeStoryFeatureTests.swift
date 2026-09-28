@@ -919,6 +919,58 @@ final class TimeStoryFeatureTests: XCTestCase {
         XCTAssertEqual(cancellableProject.shots.count, 2)
     }
 
+    func testMixedStoryPackageFreezesVideoAndPreservesIndependentClipRanges() async throws {
+        let root = try temporaryDirectory("mixed-story-package")
+        let photo = candidate(UUID().uuidString, time: timestamp(2024, 1, 1))
+        var video = candidate(UUID().uuidString, time: timestamp(2024, 1, 2))
+        video.mediaKind = .video; video.durationMs = 1000
+        let planner = TimeStoryPlanner()
+        var project = planner.makeFreeformProject(snapshot: makeSnapshot([photo, video]), nowMs: 1)
+        project.showsProjectTitle = false
+        project = try planner.manuallyInserting(photo, in: project, nowMs: 2)
+        project.shots[0].durationSeconds = 0.5
+        project = try planner.manuallyInserting(video, in: project, nowMs: 3,
+            videoClip: .init(inPointMs: 200, outPointMs: 800, sourceDurationMs: 1000, originalAudioGain: 0.25))
+        project = try planner.manuallyInserting(video, in: project, nowMs: 4,
+            videoClip: .init(inPointMs: 0, outPointMs: 500, sourceDurationMs: 1000, originalAudioGain: 0))
+        let source = root.appendingPathComponent("source.mp4")
+        try await FixtureMixedStoryMedia.makeMovingVideo(at: source)
+        let exporter = StoryRenderPackageExporter(media: FixtureMixedStoryMedia(
+            images: [photo.assetID: try edgeMarkedPNG(width: 300, height: 200)], video: source),
+            validator: PassingStoryValidator())
+        let destination = root.appendingPathComponent("mixed.storyrenderpackage")
+        _ = try await exporter.export(project: project, aspect: .landscape, destinationURL: destination) { _ in }
+        let document = try packageDocument(at: destination)
+        XCTAssertEqual(document.schemaVersion, "0.2")
+        XCTAssertEqual(document.assets.count, 2)
+        let resource = try XCTUnwrap(document.assets.first { $0.video != nil })
+        XCTAssertEqual(resource.mediaType, "video/mp4")
+        XCTAssertEqual(resource.video?.durationMs, 1000)
+        XCTAssertEqual(resource.video?.hasAudio, false)
+        XCTAssertEqual(try Data(contentsOf: destination.appendingPathComponent(resource.relativePath)),
+                       try Data(contentsOf: source))
+        let clips = document.chapters.flatMap(\.shots).filter { $0.kind == "video" }
+        XCTAssertEqual(clips.count, 2)
+        XCTAssertEqual(clips.map(\.assetID), [resource.assetID, resource.assetID])
+        XCTAssertEqual(clips.compactMap { $0.videoClip?.inFrame }, [6, 0])
+        XCTAssertEqual(clips.compactMap { $0.videoClip?.outFrame }, [24, 15])
+        XCTAssertEqual(clips.compactMap { $0.videoClip?.originalAudioGain }, [0.25, 0])
+        XCTAssertTrue(clips.allSatisfy { $0.motion == nil })
+        XCTAssertEqual(document.export.totalFrames,
+                       try TimeStoryTimeline.normalize(project: project, allowsVideoClips: true).totalFrames)
+        if let evidence = ProcessInfo.processInfo.environment["IMAGEALL_VIDEO_EVIDENCE_DIR"] {
+            let saved = URL(fileURLWithPath: evidence).appendingPathComponent("swift-mixed.storyrenderpackage")
+            try FileManager.default.copyItem(at: destination, to: saved)
+        }
+        let before = try Data(contentsOf: destination.appendingPathComponent("story.json"))
+        project.shots[1].videoClip?.sourceDurationMs = 999
+        do {
+            _ = try await exporter.export(project: project, aspect: .landscape, destinationURL: destination) { _ in }
+            XCTFail("A changed video duration must not replace the published package")
+        } catch {}
+        XCTAssertEqual(try Data(contentsOf: destination.appendingPathComponent("story.json")), before)
+    }
+
     func testStoryPackageExporterUsesCanonicalTimelineAndOnlyReferencedAssets() async throws {
         let root = try temporaryDirectory("story-package")
         let first = UUID()

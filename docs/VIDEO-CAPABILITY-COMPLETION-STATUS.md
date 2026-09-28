@@ -717,3 +717,12 @@
 - `verify_mixed_story_executor.py` 合成提交验收通过：旧0.1提交可验证，0.2搭配0.1摘要拒绝；真实0.2任务经running→succeeded约12.49秒，发布result.json。输出H264/AAC、320×240、30fps、60帧、视频2秒；成片与validation/consistency/mediaVerification/render四份报告SHA逐一复核一致，源包SHA一致。
 - 证据 `story-mixed-executor/executor-1e64a6ef/acceptance.json`，完整submission/state/runs均保留；日志 `story-mixed-executor-final.log`。成片SHA256=1b79de55c8247448355e5e05e82fa6c804eb3b44b61a58726f8925b71f1c6dfc。首轮负例测试忘记传错摘要开关，未实际产生负例，修复测试后正确拒绝；未因此放宽协议。
 - 下一步通过integration-contract.json统一登记这些身份、生成Swift契约，并接Mac混合包导出/真实任务调用；当前独立执行器成功不等于App端已完成。P6/整体 active，未访问真实媒体、未改Runtime种子、未push。
+
+## P6 Mac混合包导出与统一集成身份（2026-09-28）
+
+- integration-contract.json登记已验证0.2 story hash与双版本task hash，保留legacyStory/legacyTask身份；生成OpenMontageContract.swift。旧字体/任务schema补丁仍针对legacy，最终混合补丁后校验active身份；集成校验同时验证双版本schema/lock与封套配对。
+- Swift exporter启用片段时间轴：按资产冻结一次原始MP4/MOV，校验修订、冻结URL、真实视频轨时长、各片段边界和冻结摘要，读取音轨事实；照片继续原JPEG路径。video镜头写入独立入出帧/增益、禁止照片motion，同源多片段共用资源。失败仍不替换已发布包。
+- 当前Xcode项目 `story-mixed-swift-build.log` TEST BUILD SUCCEEDED，包含独立payload生成与契约验收。直接XCTest `story-mixed-swift-tests.log` 4/4 PASS：双视频片段包、照片包/纵横屏、取消/缺失/变更不发布、冻结1.1提交及重复拒绝。未运行生产Photos宿主。
+- Swift输出 `story-mixed-swift/swift-mixed.storyrenderpackage` 通过Python0.2文档/实际媒体验证，2个资产、2个视频镜头，入出帧6...24与0...15，增益0.25/0；`python-validation.json`保存资源事实。Python契约/锁回归6/6 PASS（`story-mixed-integration-tests.log`）。
+- 本轮将已有未提交的中央契约基础、生成Swift文件及其Xcode引用纳入视频集成依赖，保留其中既有无关字段；任务客户端只纳入统一常量绑定，重试/诊断等并行实现不混入。其余界面、发布器等并行改动保留。当前构建是共享工作区结果，完整工程交付仍须P7核对依赖和运行证据。
+- 下一步用Swift生成/提交的混合包穿过真实执行器并由Mac客户端取回验证成片，再完成P6/P7剩余验收。整体 active；本轮未做App安装替换或发布，未访问真实媒体、未push。

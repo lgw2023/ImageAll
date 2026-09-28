@@ -328,10 +328,10 @@ struct OpenMontageTaskDirectoryInspector: Sendable {
 }
 
 actor FileOpenMontageStoryTaskClient: OpenMontageStoryTasking {
-    static let protocolVersion = "1.1"
-    // Frozen by the OpenMontage task protocol publication. Update only with an
-    // explicit protocol-version change and its matching upstream commit.
-    static let protocolSchemaSHA256 = "da49966ac4b60c9a1b597768ff898eadf1c9c063bb91e95e4bb9754e5802e912"
+    static let protocolVersion = OpenMontageContract.taskProtocolVersion
+    // Pinned ImageAll typography envelope extension; synchronized with the bundled
+    // protocol schema and lock by scripts/openmontage/task_protocol_patch.py.
+    static let protocolSchemaSHA256 = OpenMontageContract.taskProtocolSHA256
     static let storySchemaSHA256 = StoryRenderPackageExporter.schemaSHA256
     static let heartbeatStaleSeconds: TimeInterval = 10
 
