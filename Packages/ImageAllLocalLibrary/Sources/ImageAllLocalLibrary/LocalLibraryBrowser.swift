@@ -8,6 +8,13 @@ public protocol LocalLibraryBrowsingSource: AnyObject {
     func visibleIdentifiers(in candidates: Set<String>) throws -> Set<String>
 }
 
+public struct LocalBulkSharePreview: Sendable, Equatable, Identifiable {
+    public let id: UUID
+    public let photoCount: Int
+    public let videoCount: Int
+    public var totalCount: Int { photoCount + videoCount }
+}
+
 /// Keeps a permission-filtered view over persistent local facts. Invalidating a
 /// view never deletes facts, selections, or pending shared operations.
 @MainActor
@@ -21,6 +28,8 @@ public final class LocalLibraryBrowser {
     private var loading = false
     private var offset = 0
     private var total = 0
+    private var sharePlan: (preview: LocalBulkSharePreview, generation: UUID,
+                            identifiers: Set<String>, version: LocalShareSelectionVersion)?
 
     public init(store: LocalLibraryStore, source: any LocalLibraryBrowsingSource, pageSize: Int = 100) {
         self.store = store
@@ -30,6 +39,7 @@ public final class LocalLibraryBrowser {
 
     public func invalidate() {
         generation = UUID()
+        sharePlan = nil
         assets = []
         hasMore = false
         loading = false
@@ -79,6 +89,63 @@ public final class LocalLibraryBrowser {
             invalidate()
             throw error
         }
+    }
+
+    /// Enumerates source metadata only. Preparing never selects assets or sends anything.
+    public func prepareBulkSharePreview() async throws -> LocalBulkSharePreview {
+        invalidate()
+        guard source.canRead else { throw LocalLibraryError.sharePlanExpired }
+        let current = generation
+        let version = try await store.shareSelectionVersion()
+        let count = try await source.refresh()
+        guard isCurrent(current), count >= 0 else { throw LocalLibraryError.sharePlanExpired }
+        var identifiers = Set<String>()
+        var photos = 0, videos = 0
+        for start in stride(from: 0, to: count, by: pageSize) {
+            try Task.checkCancellation()
+            let end = min(count, start + pageSize)
+            let page = try await source.observations(in: start..<end)
+            guard isCurrent(current), page.count == end - start else { throw LocalLibraryError.sharePlanExpired }
+            for item in page {
+                guard identifiers.insert(item.localIdentifier).inserted,
+                      item.kind == "image" || item.kind == "video" else { throw LocalLibraryError.sharePlanExpired }
+                if item.kind == "video" { videos += 1 } else { photos += 1 }
+            }
+            try await store.observe(page)
+            guard isCurrent(current) else { throw LocalLibraryError.sharePlanExpired }
+        }
+        try await validateVisible(identifiers, generation: current)
+        guard try await store.shareSelectionVersion() == version, isCurrent(current) else {
+            throw LocalLibraryError.sharePlanExpired
+        }
+        let preview = LocalBulkSharePreview(id: UUID(), photoCount: photos, videoCount: videos)
+        sharePlan = (preview, current, identifiers, version)
+        return preview
+    }
+
+    public func confirmBulkSharePreview(_ preview: LocalBulkSharePreview) async throws -> Int {
+        guard let plan = sharePlan, plan.preview == preview, isCurrent(plan.generation) else {
+            throw LocalLibraryError.sharePlanExpired
+        }
+        try await validateVisible(plan.identifiers, generation: plan.generation)
+        // Consume before yielding to the actor: a repeated tap cannot submit this plan twice.
+        sharePlan = nil
+        return try await store.addSharedSelection(localIdentifiers: plan.identifiers, expected: plan.version)
+    }
+
+    public func cancelBulkSharePreview() { sharePlan = nil }
+
+    private func validateVisible(_ identifiers: Set<String>, generation current: UUID) async throws {
+        let ordered = Array(identifiers)
+        for start in stride(from: 0, to: ordered.count, by: pageSize) {
+            try Task.checkCancellation()
+            let batch = Set(ordered[start..<min(ordered.count, start + pageSize)])
+            guard isCurrent(current), try source.visibleIdentifiers(in: batch) == batch else {
+                throw LocalLibraryError.sharePlanExpired
+            }
+            await Task.yield()
+        }
+        guard isCurrent(current) else { throw LocalLibraryError.sharePlanExpired }
     }
 
     private func isCurrent(_ current: UUID) -> Bool {

@@ -19,7 +19,13 @@ public enum LocalLibraryError: Error, Equatable {
     case syncConflictDetailsUnavailable
     case migrationScopeIncomplete
     case migrationSyncPending
+    case sharePlanExpired
     case undoUnavailable
+}
+
+public struct LocalShareSelectionVersion: Sendable, Equatable {
+    public let sourceEpoch: UUID
+    public let revision: Int64
 }
 
 public enum LocalDecision: String, Codable, Sendable {
@@ -640,6 +646,43 @@ public actor LocalLibraryStore {
                 ) WHERE operation_id NOT IN (SELECT operation_id FROM shared_delivery)
                 """)
         }
+    }
+
+    public func shareSelectionVersion() throws -> LocalShareSelectionVersion {
+        LocalShareSelectionVersion(sourceEpoch: try sourceEpoch(),
+                                   revision: Int64(try requiredIdentity("share_scope_revision")) ?? 0)
+    }
+
+    /// Adds exactly a confirmed set in one scope transition; existing selections are retained.
+    public func addSharedSelection(localIdentifiers: Set<String>, expected: LocalShareSelectionVersion) throws -> Int {
+        var added = 0
+        try transaction {
+            guard try shareSelectionVersion() == expected, expected.revision < Int64.max else {
+                throw LocalLibraryError.sharePlanExpired
+            }
+            let matched = try rows("SELECT id,local_identifier FROM assets WHERE source_epoch=?", [expected.sourceEpoch.uuidString])
+                .filter { localIdentifiers.contains($0[1] ?? "") }
+            guard matched.count == localIdentifiers.count else { throw LocalLibraryError.sharePlanExpired }
+            for row in matched {
+                let id = row[0] ?? ""
+                guard try scalar("SELECT asset_id FROM shared_assets WHERE asset_id=?", [id]) == nil else { continue }
+                try execute("INSERT INTO shared_assets(asset_id) VALUES(?)", [id])
+                try execute("""
+                    DELETE FROM private_collection_names WHERE collection_id IN
+                      (SELECT collection_id FROM memberships WHERE asset_id=?)
+                    """, [id])
+                added += 1
+            }
+            if added > 0 {
+                try execute("UPDATE identity SET value=? WHERE key='share_scope_revision'", [String(expected.revision + 1)])
+                try execute("DELETE FROM shared_snapshot_delivery")
+                try execute("""
+                    UPDATE shared_outbox SET scope_revision=? WHERE operation_id NOT IN
+                      (SELECT operation_id FROM shared_delivery)
+                    """, [String(expected.revision + 1)])
+            }
+        }
+        return added
     }
 
     public func isShared(assetID: UUID) throws -> Bool {

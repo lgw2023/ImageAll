@@ -178,6 +178,22 @@ final class LocalLibraryModel: ObservableObject {
         } catch { errorMessage = "撤销集合修改失败：\(error.localizedDescription)" }
     }
 
+    func prepareBulkSharePreview() async throws -> LocalBulkSharePreview {
+        guard let browser else { throw LocalFavoriteSourceError.storeUnavailable }
+        assets = []
+        hasMore = false
+        return try await browser.prepareBulkSharePreview()
+    }
+
+    func confirmBulkSharePreview(_ preview: LocalBulkSharePreview) async throws -> Int {
+        guard let browser else { throw LocalFavoriteSourceError.storeUnavailable }
+        let added = try await browser.confirmBulkSharePreview(preview)
+        await refresh()
+        return added
+    }
+
+    func cancelBulkSharePreview() { browser?.cancelBulkSharePreview() }
+
     func renamePrivateCollection(_ collection: LocalCollection, revision: Int64, name: String) async throws {
         guard let store else { throw LocalFavoriteSourceError.storeUnavailable }
         do {
@@ -839,6 +855,8 @@ private final class PhotoKitLocalBrowsingSource: LocalLibraryBrowsingSource {
     private func options() -> PHFetchOptions {
         let value = PHFetchOptions()
         value.includeHiddenAssets = false
+        value.predicate = NSPredicate(format: "mediaType == %d OR mediaType == %d",
+                                      PHAssetMediaType.image.rawValue, PHAssetMediaType.video.rawValue)
         value.includeAssetSourceTypes = .typeUserLibrary
         return value
     }
@@ -1107,6 +1125,59 @@ private struct LocalLibraryBackupView: View {
             if let failure { Text(failure).foregroundStyle(.red) }
         }
         .navigationTitle("备份本机整理库")
+    }
+}
+
+private struct LocalBulkShareView: View {
+    @ObservedObject var model: LocalLibraryModel
+    @State private var preview: LocalBulkSharePreview?
+    @State private var busy = false
+    @State private var message: String?
+    @State private var work: Task<Void, Never>?
+
+    var body: some View {
+        Form {
+            Section("范围") {
+                Text("读取当前系统允许访问的非隐藏照片和视频，预览数量后再决定是否加入待分享。有限照片权限只覆盖你已授权的项目，不代表整个 iPhone 图库。")
+                Text("本步骤不读取原件、不从 iCloud 下载、不发送目录。确认后，所选范围会用于之后你手动发起的同步与归档；新增照片不会自动加入。已有待分享项目保留。")
+            }
+            Section {
+                Button(busy ? "正在核对…" : "预览已授权范围") {
+                    preview = nil
+                    busy = true
+                    work = Task {
+                        defer { busy = false }
+                        do { preview = try await model.prepareBulkSharePreview(); message = nil }
+                        catch { message = "预览未完成或范围已变化，请刷新后重试。" }
+                    }
+                }
+                .disabled(busy)
+                if let preview {
+                    LabeledContent("照片", value: "\(preview.photoCount)")
+                    LabeledContent("视频", value: "\(preview.videoCount)")
+                    Button("确认将这 \(preview.totalCount) 项加入待分享") {
+                        busy = true
+                        work = Task {
+                            defer { busy = false; self.preview = nil }
+                            do {
+                                let added = try await model.confirmBulkSharePreview(preview)
+                                message = "已新增 \(added) 项到待分享，其余已在范围内。尚未同步目录或传输原件。"
+                            } catch {
+                                message = "未批量加入：授权、来源或分享范围已变化，请重新预览。原有选择保留。"
+                            }
+                        }
+                    }
+                    .disabled(busy || preview.totalCount == 0)
+                }
+                if let message { Text(message) }
+            }
+        }
+        .navigationTitle("批量准备分享范围")
+        .onDisappear {
+            work?.cancel()
+            model.cancelBulkSharePreview()
+            Task { await model.refresh() }
+        }
     }
 }
 
@@ -1515,6 +1586,11 @@ private struct LocalShareScopeView: View {
                 }
                 Text("连接 Mac 后可手动同步目录与整理信息；原件归档需单独点按下方按钮。")
                     .font(.footnote).foregroundStyle(.secondary)
+            }
+            Section("批量范围") {
+                NavigationLink("预览并批量加入已授权照片／视频") {
+                    LocalBulkShareView(model: model)
+                }
             }
             Section("共享集合") {
                 NavigationLink("重命名共享集合") {
