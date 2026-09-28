@@ -8,6 +8,42 @@ import XCTest
 @testable import ImageAll
 
 final class IdenticalDuplicateDetectionTests: XCTestCase {
+    func testContentCandidatesUseAnalyzedDurationScopeAndNeverCreateExactGroups() throws {
+        let env = try SimilarityTestSupport.Environment(label: #function)
+        defer { env.cleanup() }
+        let fixture = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+            .deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("docs/evidence/time-story-phase-1-20260918/synthetic-silent.mp4")
+        let bytes = try Data(contentsOf: fixture)
+        let baseItem = try env.seedAsset(relativePath: "base.mp4", contents: bytes,
+            mediaType: "public.mpeg-4", mediaKind: .video, durationMs: 1_000)
+        let copy = try env.seedAsset(relativePath: "candidate.mp4", contents: bytes,
+            mediaType: "public.mpeg-4", mediaKind: .video, durationMs: 1_000)
+        let missing = try env.seedAsset(relativePath: "missing.mp4", contents: bytes,
+            mediaType: "public.mpeg-4", mediaKind: .video, durationMs: 1_000)
+        let unseen = try env.seedAsset(relativePath: "unseen.mp4", contents: bytes,
+            mediaType: "public.mpeg-4", mediaKind: .video, durationMs: 1_000)
+        let base = env.makeCompletionService()
+        let service = FolderVideoAnalysisService(database: env.database, sourceAccess: base.sourceAccess, clock: base.clock)
+        for id in [baseItem.assetID, copy.assetID, missing.assetID] { _ = try service.analyzeWithFeatures(assetID: id) }
+        try FileManager.default.removeItem(at: env.sourceRoot.appendingPathComponent("missing.mp4"))
+        let result = try service.contentCandidates(assetID: baseItem.assetID, expectedRevision: 1)
+        XCTAssertEqual(result.items.map(\.id), [copy.assetID])
+        XCTAssertEqual(result.skippedCount, 1)
+        XCTAssertEqual(result.items.first?.score ?? 0, 1, accuracy: 0.0001)
+        XCTAssertFalse(result.items.contains(where: { $0.id == unseen.assetID }))
+        let clusters = try IdenticalDuplicateClusterService(database: env.database)
+            .clusterIdenticalDuplicates(assetIDs: [baseItem.assetID, copy.assetID], mediaKind: .video)
+        XCTAssertTrue(clusters.isEmpty, "Content evidence must not become byte-identical authority")
+        try env.database.pool.write { db in
+            try db.execute(sql: "UPDATE asset SET duration_ms = 9000 WHERE id = ?",
+                arguments: [copy.assetID.uuidString.lowercased()])
+        }
+        XCTAssertTrue(try service.contentCandidates(assetID: baseItem.assetID, expectedRevision: 1).items.isEmpty)
+        XCTAssertThrowsError(try service.contentCandidates(assetID: baseItem.assetID, expectedRevision: 1,
+            checkCancellation: { throw CancellationError() }))
+    }
+
     func testVideoFeatureEvidencePersistsAndRebuildsDamagedOrStaleResults() throws {
         let env = try SimilarityTestSupport.Environment(label: #function)
         defer { env.cleanup() }

@@ -197,6 +197,7 @@ struct LibraryVideoViewer: View {
     @ObservedObject private var session: LibraryVideoViewingSession
     @State private var analysisTask: Task<Void, Never>?
     @State private var analysisRequest: UUID?
+    @State private var contentCandidates: [FolderVideoAnalysisService.ContentCandidate] = []
     @State private var analysisFrames: [VideoAnalysisFrame] = []
     @State private var analysisMessage: String?
     @State private var reloadGeneration = 0
@@ -232,6 +233,7 @@ struct LibraryVideoViewer: View {
         guard let service = model.videoAnalysisService else { return }
         cancelAnalysis()
         analysisFrames = []
+        contentCandidates = []
         analysisMessage = nil
         let request = UUID()
         let selected = identity
@@ -257,12 +259,41 @@ struct LibraryVideoViewer: View {
         }
     }
 
+    private func findContentCandidates() {
+        guard let service = model.videoAnalysisService else { return }
+        cancelAnalysis()
+        contentCandidates = []
+        let request = UUID()
+        let selected = identity
+        analysisRequest = request
+        analysisTask = Task { @MainActor in
+            let worker = Task.detached(priority: .userInitiated) {
+                try service.contentCandidates(assetID: selected.assetID, expectedRevision: selected.revision,
+                    checkCancellation: { try Task.checkCancellation() })
+            }
+            do {
+                let result = try await withTaskCancellationHandler { try await worker.value }
+                    onCancel: { worker.cancel() }
+                guard !Task.isCancelled, analysisRequest == request, identity == selected else { return }
+                contentCandidates = result.items
+                analysisMessage = "内容候选 \(result.items.count) 项 · 跳过 \(result.skippedCount) 项。仅比较最近已分析且时长接近的最多 20 项；分数不是重复证明。"
+                    + (result.limited ? "还有已分析视频未纳入本次比较。" : "")
+            } catch {
+                guard !Task.isCancelled, analysisRequest == request else { return }
+                analysisMessage = "内容候选比较未完成，请检查当前视频来源后重试。"
+            }
+            if analysisRequest == request { analysisTask = nil; analysisRequest = nil }
+        }
+    }
+
     private var analysisEvidence: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack {
                 Menu {
                     Button("分析当前视频（复用有效帧）") { analyzeVideo() }
                     Button("强制重建当前视频分析帧") { analyzeVideo(forceRebuild: true) }
+                    Divider()
+                    Button("比较已分析视频的内容候选") { findContentCandidates() }
                 } label: { Label("多帧分析", systemImage: "film.stack") }
                     .disabled(model.videoAnalysisService == nil || analysisTask != nil || session.state != .ready
                         || model.inspectorDetail?.assetID != assetID || model.inspectorDetail?.relativePath == nil
@@ -275,6 +306,27 @@ struct LibraryVideoViewer: View {
                 Text("文件夹视频 · 最多 5 帧 · 仅主动分析").font(.caption).foregroundStyle(.secondary)
             }
             if let analysisMessage { Text(analysisMessage).font(.caption).foregroundStyle(.secondary) }
+            if !contentCandidates.isEmpty {
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 6) {
+                        ForEach(contentCandidates) { candidate in
+                            HStack {
+                                Text(candidate.fileName).lineLimit(1)
+                                Text(String(format: "%.3f", candidate.score)).monospacedDigit()
+                                Spacer()
+                                Button(String(format: "当前 %.2fs ↔ 候选 %.2fs", Double(candidate.currentTimeMs) / 1_000,
+                                              Double(candidate.candidateTimeMs) / 1_000)) {
+                                    Task { _ = await session.seekToAnalysisTime(candidate.currentTimeMs, expected: identity) }
+                                }
+                                Button("系统播放器查看") {
+                                    session.stop()
+                                    Task { await model.openOriginalAssetInSystemPlayer(assetID: candidate.id) }
+                                }
+                            }.font(.caption)
+                        }
+                    }
+                }.frame(maxHeight: 120)
+            }
             if !analysisFrames.isEmpty {
                 ScrollView(.horizontal) {
                     HStack(spacing: 8) {
@@ -407,7 +459,7 @@ struct LibraryVideoViewer: View {
             Text("将使用网络获取此视频原件，可能消耗流量与本机空间。最多处理一个当前视频，不会批量下载；空间不足时会停止并提示。你可以取消等待。Photos 已接收的本地缓存由系统管理。")
         }
         .onChange(of: identity) { _, _ in
-            cancelAnalysis(); analysisFrames = []; analysisMessage = nil
+            cancelAnalysis(); analysisFrames = []; contentCandidates = []; analysisMessage = nil
         }
         .onDisappear { cancelAnalysis(); session.stop(ifMatching: identity) }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didResignActiveNotification)) { _ in

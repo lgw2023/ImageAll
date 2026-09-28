@@ -622,9 +622,9 @@ final class FeaturePrintCacheService: FeatureVectorLoading, SyncFeatureVectorLoa
 
 /// A separate representation identity prevents a poster-trained model from
 /// silently consuming multi-frame vectors of the same numeric dimension.
-struct VideoMultiFrameFeatureSet: Sendable, Codable {
+struct VideoMultiFrameFeatureSet: Sendable, Codable, Equatable {
     static let identity = "videoFrames.uniform5.512.jpeg80.v1/vision-r2/mean-unit-v1"
-    struct Frame: Sendable, Codable {
+    struct Frame: Sendable, Codable, Equatable {
         let timeMs: Int64
         let values: [Float]
     }

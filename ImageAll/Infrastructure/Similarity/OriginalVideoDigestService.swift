@@ -563,3 +563,61 @@ struct VideoAnalysisFeatureCache {
         }
     }
 }
+
+extension FolderVideoAnalysisService {
+    struct ContentCandidate: Sendable, Identifiable {
+        let id: UUID
+        let contentRevision: Int
+        let fileName: String
+        let score: Float
+        let currentTimeMs: Int64
+        let candidateTimeMs: Int64
+    }
+    struct ContentCandidates: Sendable {
+        let items: [ContentCandidate]
+        let skippedCount: Int
+        let limited: Bool
+    }
+
+    /// Explicit bounded comparison of existing analyses. Does not enroll unseen
+    /// assets, create duplicate groups or authorize any media mutation.
+    func contentCandidates(assetID: UUID, expectedRevision: Int,
+                           checkCancellation: () throws -> Void = {}) throws -> ContentCandidates {
+        let base = try analyzeWithFeatures(assetID: assetID, expectedRevision: expectedRevision,
+            checkCancellation: checkCancellation)
+        let rows = try database.pool.read { db in
+            try Row.fetchAll(db, sql: """
+                SELECT a.id, a.content_revision, a.file_name FROM video_analysis_feature f
+                JOIN asset a ON a.id = f.asset_id JOIN source s ON s.id = a.source_id
+                JOIN asset current ON current.id = ?
+                WHERE a.id != current.id AND a.media_kind = 'video' AND a.locator_kind = 'file'
+                AND a.locator_state = 'current' AND a.availability = 'available' AND s.state = 'active'
+                AND f.content_revision = a.content_revision AND f.representation = ?
+                AND current.content_revision = ? AND current.duration_ms > 0
+                AND a.duration_ms BETWEEN current.duration_ms * 0.8 AND current.duration_ms * 1.2
+                ORDER BY f.created_at_ms DESC, a.id LIMIT 21
+                """, arguments: [assetID.uuidString.lowercased(), VideoMultiFrameFeatureSet.identity, expectedRevision])
+        }
+        var items: [ContentCandidate] = []
+        var skipped = 0
+        for row in rows.prefix(20) {
+            try checkCancellation()
+            guard let id = UUID(uuidString: row["id"]) else { skipped += 1; continue }
+            let revision: Int = row["content_revision"]
+            do {
+                let other = try analyzeWithFeatures(assetID: id, expectedRevision: revision,
+                    checkCancellation: checkCancellation)
+                let match = try base.features.contentMatch(to: other.features)
+                items.append(ContentCandidate(id: id, contentRevision: revision,
+                    fileName: row["file_name"] ?? "视频", score: match.score,
+                    currentTimeMs: match.leftTimeMs, candidateTimeMs: match.rightTimeMs))
+            } catch is CancellationError { throw CancellationError() }
+            catch { try checkCancellation(); skipped += 1 }
+        }
+        let current = try analyzeWithFeatures(assetID: assetID, expectedRevision: expectedRevision,
+            checkCancellation: checkCancellation)
+        guard current.features == base.features else { throw FeaturePrintError.sourceChanged }
+        items.sort { $0.score == $1.score ? $0.id.uuidString < $1.id.uuidString : $0.score > $1.score }
+        return ContentCandidates(items: items, skippedCount: skipped, limited: rows.count > 20)
+    }
+}
