@@ -692,3 +692,11 @@
 - 渲染参数保留章节/镜头顺序、转场、标题字幕、照片motion、视频入出帧/原声增益和配乐；同一视频不同片段共享冻结文件。照片既有缺少safeArea时禁止cover/pan的规则延续，视频cover同样遵守裁剪约束。源文件名不用于输出命名。
 - `story-mixed-adapter-tests.log` 11/11 PASS（新适配器3项+已有8项）：多片段参数/增益不丢失、冻结后源改变不影响副本、调用方文档不变、错误摘要/渲染异常只清理任务目录、复制期间同字节inode替换拒绝。
 - 生产executor与Remotion视频组件仍未接入，新适配器返回参数并不等于已生成成片。下一步将其接入独立可写引擎并验收真实混合输出，再统一协议广告/Swift导出。整体 active，未修改Runtime种子或并行工作，未访问真实媒体。
+
+## P6 独立Remotion视频组件与首份混合成片（2026-09-28）
+
+- `mixed_story_renderer_patch.py` 只允许可写composer副本，明确拒绝Runtime路径；以精确锚点扩展PhotoStory 0.2/video类型，视频组件使用冻结trimBefore/trimAfter和原声增益，保留适配/安全区域/字幕/既有转场。模糊背景视频显式静音，主视频gain=0显式静音，非法片段直接报错。
+- 将Runtime composer克隆到证据目录独立副本后应用，未修改依赖种子。隔离入口只加载PhotoStory；组件TypeScript检查通过。新 `verify_mixed_story_renderer.py` 使用合成JPEG/2秒有声MP4，经私有冻结适配器→public相对资源→真实Remotion/Chrome渲染→FFmpeg独立检查，可重复运行。
+- `story-mixed-render/acceptance.log` 实际成功：照片1秒+源视频0.5...1.5秒，H264视频轨60帧/2秒、AAC音轨；两视频帧像素平均差17.314，照片段RMS=0，视频0.5增益每声道RMS=0.044095。容器2.048秒来自AAC尾部填充，未把容器时长冒称严格2秒。首轮检查错误使用单声道混合测幅，改为保留声道后验证；错误日志保留。
+- 证据 `story-mixed-render/reproducible/` 保存mixed.mp4、props.json、facts.json、verification.json和video-frame.png；实际解码帧已目视检查。可重复成片SHA256=7049cc6a69b1d1d6605c5051d40428220cf9c1aac904f9cce67f4906fdf14d07。本轮为320×240合成主路径，不代表复杂转场/模糊背景/多音轨完整验收。
+- 尚未接生产executor、统一能力广告或Swift混合包导出；下一步完成这些接线并验证完整任务。P6/整体 active，未使用Photos测试宿主、真实媒体或付费模型，未push。
