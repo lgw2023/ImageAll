@@ -818,3 +818,12 @@
 - video-interactive-launched-tests.log 1/1 PASS，约99.53秒含人工式工具操作等待；video-interactive-launched/player-observations.json记录453个样本，速度1和1.5，maxRate1.5，maxTime2.5667秒，结束前rate0、time约0.6471秒；测试退出时currentItem=nil。结束标记只控制测试结束，不代替交互断言。
 - 提供scripts/verify_video_viewer_ui.py复跑包装器：显式products和全新evidence目录，系统XCTest/独立bundle身份/框架搜索路径/临时目录固定，保留日志，不删除旧证据。脚本参数解析检查通过，正式交互成功使用的是其相同包装步骤；未另行声称脚本整轮重跑过。
 - 仅覆盖正式视频控件与信息弹窗：无声素材没有验证音量/真实音频，未覆盖图库/审核/瘦身/地图整页、标签点击、故事片段完整UI链或系统播放器启动。目标active，真实媒体/付费模型/发布安装NOT_RUN；主工作区并行改动保留，未push。
+
+## P1/P7 有声控件与正式视图生命周期分层验收（2026-09-28）
+
+- 扩展独立UI测试包装器：每轮UUID Bundle ID避免历史临时应用定位歧义；`--with-audio`由FFmpeg生成30秒testsrc2+440Hz低增益合成音轨，要求实际音量/静音操作；`--require-focus`单独要求真实失焦释放与返回暂停，不再把后台AX操作误当系统焦点切换。
+- 首三轮video-audio-ui-1/2/3失败日志保留：第一轮应用标识歧义；第二轮五分钟到期且无失焦状态；第三轮主动收尾但未观测失焦。计算器菜单置前、快捷键等后台UI动作未产生可证明的失活通知，未将这些尝试称为通过。真实系统焦点切换仍NOT_VERIFIED，未删除这项要求。
+- video-audio-lifecycle-build.log TEST BUILD SUCCEEDED（测试专用ad-hoc签名参数）；video-audio-controls-ui/tests.log 1/1 PASS，32.252秒。CUA实际选择1.5×、音量0.25、播放、静音、暂停及展开信息：AX显示播放on→off、音量0.25→0，信息显示avc1/30.00fps/1943kb/s/1条音轨。实际AVPlayer观测volume0.25且isMuted=true；没有变更系统音量，不宣称扬声器听感或音频质量验收。
+- 新增testHostedViewerReleasesOnResignAndReloadsPausedOnBecomeActive，直接承载正式LibraryVideoViewer，播放后向正式订阅发送应用失活/激活通知，确认idle/rate0/currentItem=nil，重新载入为新item且不自动恢复声音。video-view-lifecycle-tests.log 1/1 PASS，0.281秒。此为通知集成测试，明确不是OS焦点切换UI证据。
+- video-audio-controls-ui/verification.json绑定本轮源文件、App dylib、测试bundle和合成媒体SHA及样本摘要。测试进程均已退出；未启动生产Photos宿主、未读真实资料、未付费调用、未发布安装。
+- 本轮没有生产行为修改，补充P1控件/资源证据与可复跑工具。完成矩阵已更新；完整Mac工作流、最终条款证据和人工路线仍待收口，目标active。并行改动保持不动、只作本地提交、不push。

@@ -19,12 +19,18 @@ final class LibraryVideoViewingTests: XCTestCase {
         }
         let evidence = URL(fileURLWithPath: path, isDirectory: true)
         try FileManager.default.createDirectory(at: evidence, withIntermediateDirectories: true)
+        let withAudio = ProcessInfo.processInfo.environment["IMAGEALL_INTERACTIVE_VIDEO_WITH_AUDIO"] == "1"
+        let source = withAudio ? evidence.appendingPathComponent("synthetic-audio.mp4") : syntheticVideo
+        if withAudio {
+            let tracks = try await AVURLAsset(url: source).loadTracks(withMediaType: .audio)
+            XCTAssertFalse(tracks.isEmpty)
+        }
         let sourceID = UUID(), assetID = UUID()
         let service = FakeLibraryWorkspaceService(
             connectedSource: LibrarySourceSummary(id: sourceID, displayName: "Synthetic only", state: .active),
             reconciledItems: [], startsConnected: true)
         let model = LibraryWorkspaceModel(service: service,
-            videoPlaybackProvider: InteractiveSyntheticVideoProvider(url: syntheticVideo),
+            videoPlaybackProvider: InteractiveSyntheticVideoProvider(url: source),
             idlePrewarmInstallEventMonitor: false)
         let host = NSHostingView(rootView: LibraryVideoViewer(assetID: assetID, contentRevision: 1, model: model)
             .frame(width: 960, height: 640).background(Color(nsColor: .windowBackgroundColor)))
@@ -46,6 +52,7 @@ final class LibraryVideoViewingTests: XCTestCase {
             samples.append(["elapsed": 300 - deadline.timeIntervalSinceNow,
                 "state": String(describing: session.state), "speed": session.speed,
                 "rate": session.player.rate, "volume": session.player.volume,
+                "muted": session.player.isMuted, "hasItem": session.player.currentItem != nil,
                 "time": session.player.currentTime().seconds.isFinite ? session.player.currentTime().seconds : -1])
             try JSONSerialization.data(withJSONObject: samples, options: [.prettyPrinted, .sortedKeys])
                 .write(to: evidence.appendingPathComponent("player-observations.json"), options: .atomic)
@@ -55,9 +62,59 @@ final class LibraryVideoViewingTests: XCTestCase {
         XCTAssertTrue(samples.contains { ($0["rate"] as? Float ?? 0) > 0 })
         XCTAssertTrue(samples.contains { ($0["speed"] as? Float) == 1.5 })
         XCTAssertTrue(samples.contains { ($0["time"] as? Double ?? 0) > 0.4 })
+        if withAudio {
+            XCTAssertTrue(samples.contains { ($0["volume"] as? Float ?? 1) > 0 && ($0["volume"] as? Float ?? 1) < 0.8 })
+            XCTAssertTrue(samples.contains { ($0["muted"] as? Bool) == true || ($0["volume"] as? Float) == 0 })
+        }
+        if ProcessInfo.processInfo.environment["IMAGEALL_INTERACTIVE_VIDEO_REQUIRE_FOCUS"] == "1" {
+            let firstReady = try XCTUnwrap(samples.firstIndex { ($0["state"] as? String) == "ready" })
+            let stopped = try XCTUnwrap(samples.indices.first { $0 > firstReady && (samples[$0]["state"] as? String) == "idle" })
+            XCTAssertEqual(samples[stopped]["rate"] as? Float, 0)
+            XCTAssertEqual(samples[stopped]["hasItem"] as? Bool, false)
+            XCTAssertTrue(samples.indices.contains { $0 > stopped && (samples[$0]["state"] as? String) == "ready"
+                && (samples[$0]["rate"] as? Float) == 0 })
+        }
         model.videoViewingSession.stop()
         XCTAssertNil(model.videoViewingSession.player.currentItem)
         XCTAssertEqual(model.videoViewingSession.player.rate, 0)
+    }
+
+    func testHostedViewerReleasesOnResignAndReloadsPausedOnBecomeActive() async throws {
+        let sourceID = UUID(), assetID = UUID()
+        let service = FakeLibraryWorkspaceService(
+            connectedSource: LibrarySourceSummary(id: sourceID, displayName: "Synthetic only", state: .active),
+            reconciledItems: [], startsConnected: true)
+        let model = LibraryWorkspaceModel(service: service,
+            videoPlaybackProvider: InteractiveSyntheticVideoProvider(url: syntheticVideo),
+            idlePrewarmInstallEventMonitor: false)
+        let host = NSHostingView(rootView: LibraryVideoViewer(assetID: assetID, contentRevision: 1, model: model)
+            .frame(width: 960, height: 640))
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 960, height: 640),
+            styleMask: [.titled], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.contentView = host
+        defer { model.videoViewingSession.stop(); window.close() }
+        host.layoutSubtreeIfNeeded()
+        let session = model.videoViewingSession
+        for _ in 0..<100 where session.state != .ready { try await Task.sleep(for: .milliseconds(50)) }
+        XCTAssertEqual(session.state, .ready)
+        let originalItem = try XCTUnwrap(session.player.currentItem)
+        session.player.play()
+        for _ in 0..<100 where session.player.rate == 0 { try await Task.sleep(for: .milliseconds(50)) }
+        XCTAssertGreaterThan(session.player.rate, 0)
+
+        // Exercise the production view's subscriptions without claiming an OS focus switch.
+        NotificationCenter.default.post(name: NSApplication.didResignActiveNotification, object: NSApplication.shared)
+        for _ in 0..<100 where session.state != .idle { try await Task.sleep(for: .milliseconds(50)) }
+        XCTAssertEqual(session.state, .idle)
+        XCTAssertEqual(session.player.rate, 0)
+        XCTAssertNil(session.player.currentItem)
+        NotificationCenter.default.post(name: NSApplication.didBecomeActiveNotification, object: NSApplication.shared)
+        for _ in 0..<100 where session.state != .ready { try await Task.sleep(for: .milliseconds(50)) }
+        XCTAssertEqual(session.state, .ready)
+        XCTAssertNotNil(session.player.currentItem)
+        XCTAssertFalse(session.player.currentItem === originalItem)
+        XCTAssertEqual(session.player.rate, 0, "Returning to the app must not automatically resume audio")
     }
 
     func testFrozenPredictionEvidenceStripRendersPresentAndMissingFrames() async throws {

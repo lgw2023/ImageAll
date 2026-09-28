@@ -11,12 +11,15 @@ from pathlib import Path
 import plistlib
 import shutil
 import subprocess
+import uuid
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--products', type=Path, required=True)
     parser.add_argument('--evidence', type=Path, required=True, help='New, empty output directory')
+    parser.add_argument('--with-audio', action='store_true', help='Generate a quiet synthetic tone and require volume/mute checks')
+    parser.add_argument('--require-focus', action='store_true', help='Also require an actual app focus loss and return; background AX operations do not prove this')
     args = parser.parse_args()
     products, evidence = args.products.resolve(), args.evidence.resolve()
     host = products / 'ImageAll.app/Contents'
@@ -27,6 +30,14 @@ def main():
     if evidence.exists() and any(evidence.iterdir()):
         parser.error('Use a new empty evidence directory; previous evidence is preserved')
     evidence.mkdir(parents=True, exist_ok=True)
+    if args.with_audio:
+        ffmpeg = shutil.which('ffmpeg')
+        if not ffmpeg:
+            parser.error('FFmpeg is required for the synthetic audio fixture')
+        subprocess.run([ffmpeg, '-v', 'error', '-f', 'lavfi', '-i', 'testsrc2=size=640x360:rate=30:duration=30',
+            '-f', 'lavfi', '-i', 'sine=frequency=440:sample_rate=48000:duration=30',
+            '-af', 'volume=0.03', '-c:v', 'libx264', '-preset', 'ultrafast', '-pix_fmt', 'yuv420p',
+            '-c:a', 'aac', '-shortest', str(evidence / 'synthetic-audio.mp4')], check=True)
     developer = Path(subprocess.check_output(['xcode-select', '-p'], text=True).strip())
     platform = developer / 'Platforms/MacOSX.platform/Developer'
     app = evidence / 'VideoUITestRunner.app'
@@ -34,7 +45,7 @@ def main():
     executable.parent.mkdir(parents=True)
     shutil.copy2(developer / 'usr/bin/xctest', executable)
     (app / 'Contents/Info.plist').write_bytes(plistlib.dumps({
-        'CFBundleIdentifier': 'com.gwlee.ImageAll.synthetic-video-test',
+        'CFBundleIdentifier': 'com.gwlee.ImageAll.synthetic-video-test.' + uuid.uuid4().hex,
         'CFBundleExecutable': executable.name, 'CFBundleName': 'VideoUITestRunner',
         'CFBundlePackageType': 'APPL', 'CFBundleVersion': '1', 'NSHighResolutionCapable': True,
     }))
@@ -48,6 +59,10 @@ def main():
         'DYLD_LIBRARY_PATH': str(platform / 'usr/lib'),
         'DYLD_INSERT_LIBRARIES': str(dylib), 'LLVM_PROFILE_FILE': str(temporary / '%p.profraw'),
     })
+    if args.with_audio:
+        environment['IMAGEALL_INTERACTIVE_VIDEO_WITH_AUDIO'] = '1'
+    if args.require_focus:
+        environment['IMAGEALL_INTERACTIVE_VIDEO_REQUIRE_FOCUS'] = '1'
     print(f'Synthetic viewer: {app}\nFinish marker: {evidence / "finish"}', flush=True)
     with (evidence / 'tests.log').open('w') as log:
         result = subprocess.run([str(executable), '-XCTest',
