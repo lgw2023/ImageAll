@@ -1827,7 +1827,7 @@ private enum LocalPhotoArchiveExporter {
             guard let selected = assetsByID[item.mediaID],
                   selected.localIdentifier == item.sourceLocalIdentifier,
                   let asset = byLocator[item.sourceLocalIdentifier],
-                  item.appleAlbums == (albums[item.sourceLocalIdentifier] ?? []),
+                  (item.appleAlbums ?? []) == (albums[item.sourceLocalIdentifier] ?? []),
                   item.mediaKind == (asset.mediaType == .video ? .video : .image),
                   item.createdAtMs == asset.creationDate.map({
                       Int64($0.timeIntervalSince1970 * 1_000)

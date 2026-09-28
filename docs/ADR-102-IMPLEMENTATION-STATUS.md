@@ -4,6 +4,9 @@
 
 ## 当前切片
 
+- 2026-09-28 所有者在 iPhone 完成开发者信任后，CoreDevice 已成功启动 `com.gwlee.ImageAllMobile`，PID 7785；约 50 秒后的独立进程查询仍确认运行。至此有线检测、目标设备签名构建、安装和启动均有成功证据，页面实际显示仍待所有者确认，不能据此判定 Photos 权限、双端同步或完整迁移通过。启动日志为 `/Volumes/SSD1/.codex-builds/ADR102-iPhone-trusted-launch.log`。
+- 归档来源复验修正“无相册成员”误判：归档记录会把空成员数组编码为缺省字段，复验现按空集合比较；仍首先要求归档头声明 `selectedAssetsOnly`，旧版未声明覆盖不会因本修正获得验收资格。SSD1 iOS Simulator 构建通过；本修正尚未重新安装到手机，不作真实来源复验声明。
+
 - 2026-09-28 所有者重新插接 USB 后，iPhone 16 Pro Max 已变为 `connected`（不再是 `no DDI`），锁状态为无需密码。SSD1 上按该设备 UDID 自动签名构建通过，描述文件已包含目标设备，App 身份／团队与 profile 匹配，严格 codesign 校验通过；CoreDevice 明确返回 `App installed`（`com.gwlee.ImageAllMobile`）。启动仍被 iOS Security 拒绝，提示签名／权限／开发者信任，尚无启动成功证据；已请求所有者在手机设置中检查并信任本次开发者 App。日志为 `/Volumes/SSD1/.codex-builds/ADR102-iPhone-reconnected-{build,install,launch}.log`，构建结果包同盘保存。安装成功仅关闭部署的一部分门，不计为 Photos、双端网络或完整迁移验收。
 
 - 手机本地照片详情的标签行新增单步撤销。撤销令牌随编辑事务持久保存，重启后恢复仍有效的入口；执行时复核字段最新操作、共享版本、来源／配对／分享范围及标签别名，并拒绝在途提交和冲突。通过后恢复先前决定（未设置按清除处理），以新操作 ID 入本地审计及共享队列，原历史保留，令牌仅可消费一次。LocalLibrary 全套 34/34（新增主路径及五种失效场景）与 SSD1 iOS Simulator 构建通过，覆盖离线补偿、重启、重复撤销、本机同值往返、范围变化、在途请求、ACK 前进及远端冲突；拒绝时事实和审计数不变。同步 ACK 本身也会使旧令牌失效；尚未扩展到集合、收藏来源写回或多步撤销，真机交互与真实网络仍待验收。
