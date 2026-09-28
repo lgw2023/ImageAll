@@ -32,6 +32,7 @@ final class LocalLibraryModel: ObservableObject {
     @Published private(set) var collections: [LocalCollection] = []
     @Published private(set) var sharedSelections: [LocalShareSelection] = []
     @Published private(set) var sharedConflicts: [LocalSharedPendingOperation] = []
+    @Published private(set) var pendingCollectionRename: LocalCollectionRenameCommand?
     @Published private(set) var pendingCount = 0
     @Published private(set) var hasMore = false
     @Published private(set) var favoriteWritesInFlight: Set<UUID> = []
@@ -174,6 +175,51 @@ final class LocalLibraryModel: ObservableObject {
         } catch LocalLibraryError.undoUnavailable {
             errorMessage = "这次集合修改已不能撤销：本机或 Mac 状态已有变化，或同步尚待完成。请核对当前成员状态后重新编辑。"
         } catch { errorMessage = "撤销集合修改失败：\(error.localizedDescription)" }
+    }
+
+    func prepareCollectionRename(collectionID: UUID, name: String) async throws -> LocalCollectionRenameCommand {
+        guard let store else { throw LocalFavoriteSourceError.storeUnavailable }
+        let visible = try await observedSharedVisibleIdentifiers()
+        let command = try await store.prepareCollectionRename(collectionID: collectionID, newName: name,
+                                                              visibleIdentifiers: visible)
+        await reloadFacts()
+        return command
+    }
+
+    func sendCollectionRename(_ command: LocalCollectionRenameCommand, remote: RemoteCompanionModel) async throws {
+        guard let store else { throw LocalFavoriteSourceError.storeUnavailable }
+        do {
+            let visible = try await observedSharedVisibleIdentifiers()
+            try await store.validateCollectionRename(command, visibleIdentifiers: visible)
+            let receipt = try await remote.renameLocalLibraryCollection(command)
+            for _ in 0..<20 {
+                let cursor = try await store.sharedCollectionChangeCursor()
+                if cursor >= receipt.resultingChangeCursor { break }
+                let page = try await remote.fetchLocalLibraryCollectionChanges(sourceEpoch: command.sourceEpoch,
+                    scopeRevision: command.scopeRevision, afterCursor: cursor)
+                _ = try await store.applySharedCollectionChanges(hostID: page.hostID, deviceID: page.deviceID,
+                    sourceEpoch: page.sourceEpoch, scopeRevision: page.scopeRevision, afterCursor: cursor,
+                    changes: page.changes.map {
+                        LocalSharedCollectionChange(sequence: $0.sequence, assetID: $0.assetID,
+                            collectionID: $0.collectionID, collectionName: $0.collectionName,
+                            included: $0.included, fieldRevision: $0.fieldRevision,
+                            renamedFrom: $0.renamedFrom, createdCollectionID: $0.createdCollectionID)
+                    }, nextCursor: page.nextCursor)
+                if !page.hasMore { break }
+            }
+            try await store.completeCollectionRename(command, resultingCursor: receipt.resultingChangeCursor)
+            await reloadFacts()
+        } catch {
+            await reloadFacts()
+            throw error
+        }
+    }
+
+    func abandonCollectionRename(_ command: LocalCollectionRenameCommand) async {
+        do {
+            try await store?.abandonCollectionRename(commandID: command.commandID)
+            await reloadFacts()
+        } catch { errorMessage = "停止改名重试失败：\(error.localizedDescription)" }
     }
 
     func setShared(_ shared: Bool, assetID: UUID, localIdentifier: String) async {
@@ -586,8 +632,8 @@ final class LocalLibraryModel: ObservableObject {
                     if !page.hasMore { break }
                 }
             }
-            let remaining = try await store.pendingSharedOperations().count
             await reloadFacts()
+            let remaining = pendingCount
             return LocalSharedSyncSummary(
                 applied: applied, unchanged: unchanged,
                 conflicts: conflicts, deferred: deferred,
@@ -758,11 +804,12 @@ final class LocalLibraryModel: ObservableObject {
     private func reloadFacts() async {
         guard let store else { return }
         do {
+            pendingCollectionRename = try await store.pendingCollectionRename()
             tags = try await store.tags()
             collections = try await store.collections()
             sharedSelections = try await store.sharedSelections()
             let pending = try await store.pendingSharedOperations()
-            pendingCount = pending.count
+            pendingCount = pending.count + (pendingCollectionRename == nil ? 0 : 1)
             sharedConflicts = pending.filter(\.isConflicted)
         } catch { errorMessage = "读取本机资料失败：\(error.localizedDescription)" }
     }
@@ -1034,6 +1081,81 @@ private struct LocalLibraryBackupView: View {
             if let failure { Text(failure).foregroundStyle(.red) }
         }
         .navigationTitle("备份本机整理库")
+    }
+}
+
+private struct LocalCollectionRenameView: View {
+    @ObservedObject var model: LocalLibraryModel
+    @ObservedObject var remote: RemoteCompanionModel
+    @State private var collectionID: UUID?
+    @State private var name = ""
+    @State private var busy = false
+    @State private var message: String?
+    @State private var confirmsAbandon = false
+
+    var body: some View {
+        Form {
+            if let command = model.pendingCollectionRename {
+                Section("待完成改名") {
+                    LabeledContent("原名称", value: command.expectedName)
+                    LabeledContent("希望改为", value: command.newName)
+                    Button("重试同一改名并拉取结果") { send(command) }
+                        .disabled(busy)
+                    Button("停止重试…", role: .destructive) { confirmsAbandon = true }
+                        .disabled(busy)
+                    Text("Mac 可能已收到命令。重试会复用原请求；停止重试不会撤回 Mac 已完成的改名。")
+                        .font(.footnote)
+                }
+            } else {
+                Section("改名") {
+                    Picker("集合", selection: $collectionID) {
+                        Text("请选择").tag(UUID?.none)
+                        ForEach(model.collections) { collection in
+                            Text(collection.name).tag(Optional(collection.id))
+                        }
+                    }
+                    TextField("新名称", text: $name)
+                    Button(busy ? "正在提交…" : "保存并提交改名") {
+                        guard let collectionID else { return }
+                        busy = true
+                        Task {
+                            defer { busy = false }
+                            do {
+                                let command = try await model.prepareCollectionRename(collectionID: collectionID, name: name)
+                                try await model.sendCollectionRename(command, remote: remote)
+                                message = "改名回执和对应变化已处理，请核对当前集合名称。"
+                            } catch { message = "改名未完成：\(error.localizedDescription)。请先同步并核对集合；已保存的请求可在此重试。" }
+                        }
+                    }
+                    .disabled(busy || collectionID == nil || name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                }
+            }
+            Section {
+                Text("请先同步目录和整理信息。集合须包含当前可见且已分享的项目。此处只改 ImageAll 集合名称；本机名称在 Mac 确认并拉取变化后更新。")
+                if let message { Text(message) }
+            }
+        }
+        .navigationTitle("共享集合改名")
+        .alert("停止重试这次改名？", isPresented: $confirmsAbandon) {
+            Button("停止重试", role: .destructive) {
+                guard let command = model.pendingCollectionRename else { return }
+                Task { await model.abandonCollectionRename(command) }
+            }
+            Button("取消", role: .cancel) {}
+        } message: {
+            Text("保留历史记录，不撤回 Mac 上可能已完成的改名。之后请先同步，核对当前名称，再决定是否发起新的改名。")
+        }
+    }
+
+    private func send(_ command: LocalCollectionRenameCommand) {
+        busy = true
+        Task {
+            defer { busy = false }
+            do {
+                try await model.sendCollectionRename(command, remote: remote)
+                message = "改名回执和对应变化已处理，请核对当前集合名称。"
+            } catch { message = "改名仍待处理：\(error.localizedDescription)。如 Mac 已有更新，请先同步核对，再停止旧重试并重新提交。" }
+        }
     }
 }
 
@@ -1326,6 +1448,11 @@ private struct LocalShareScopeView: View {
                 }
                 Text("连接 Mac 后可手动同步目录与整理信息；原件归档需单独点按下方按钮。")
                     .font(.footnote).foregroundStyle(.secondary)
+            }
+            Section("共享集合") {
+                NavigationLink("重命名共享集合") {
+                    LocalCollectionRenameView(model: model, remote: remoteModel)
+                }
             }
             archiveSection
         }

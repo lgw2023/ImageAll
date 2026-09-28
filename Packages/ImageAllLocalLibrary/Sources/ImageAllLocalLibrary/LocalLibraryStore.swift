@@ -317,6 +317,22 @@ public struct LocalSharedFavoritePullResult: Sendable {
     public let nextCursor: Int64
 }
 
+public struct LocalCollectionRenameCommand: Codable, Sendable, Equatable, Identifiable {
+    public var id: UUID { commandID }
+    public let commandID: UUID
+    public let hostID: UUID
+    public let deviceID: UUID
+    public let installID: UUID
+    public let sourceEpoch: UUID
+    public let scopeRevision: Int64
+    public let snapshotSequence: Int64
+    public let expectedChangeCursor: Int64
+    public let localCollectionID: UUID
+    public let collectionID: UUID
+    public let expectedName: String
+    public let newName: String
+}
+
 public enum LocalAuditOrigin: String, Codable, Sendable {
     case localEdit, remoteSync, conflictResolution
 }
@@ -484,6 +500,13 @@ public actor LocalLibraryStore {
                   original_operation_id TEXT PRIMARY KEY REFERENCES outbox(operation_id),
                   compensation_operation_id TEXT NOT NULL UNIQUE REFERENCES outbox(operation_id)
                 );
+                CREATE TABLE IF NOT EXISTS collection_rename_commands (
+                  command_id TEXT PRIMARY KEY, payload TEXT NOT NULL,
+                  state TEXT NOT NULL CHECK(state IN ('pending','completed','abandoned')),
+                  resulting_cursor INTEGER
+                );
+                CREATE UNIQUE INDEX IF NOT EXISTS one_pending_collection_rename
+                  ON collection_rename_commands(state) WHERE state='pending';
                 CREATE TABLE IF NOT EXISTS favorite_writebacks (
                   asset_id TEXT PRIMARY KEY REFERENCES assets(id),
                   target INTEGER NOT NULL, state TEXT NOT NULL
@@ -716,7 +739,7 @@ public actor LocalLibraryStore {
             let frozenSnapshot = try scalar(
                 "SELECT payload FROM shared_snapshot_delivery WHERE id=1"
             )
-            guard pending == 0, frozenSnapshot == nil else {
+            guard pending == 0, frozenSnapshot == nil, try pendingCollectionRename() == nil else {
                 throw LocalLibraryError.migrationSyncPending
             }
             try execute("""
@@ -974,6 +997,85 @@ public actor LocalLibraryStore {
             try enqueue(id, field: "tag.create", value: trimmed, origin: .localEdit)
         }
         return id
+    }
+
+    public func pendingCollectionRename() throws -> LocalCollectionRenameCommand? {
+        guard let payload = try scalar("SELECT payload FROM collection_rename_commands WHERE state='pending'") else { return nil }
+        return try JSONDecoder().decode(LocalCollectionRenameCommand.self, from: Data(payload.utf8))
+    }
+
+    public func prepareCollectionRename(collectionID: UUID, newName: String,
+                                        visibleIdentifiers: Set<String>) throws -> LocalCollectionRenameCommand {
+        let name = newName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty, name.count <= 160, name.utf8.count <= 640 else { throw LocalLibraryError.invalidName }
+        if let pending = try pendingCollectionRename() {
+            guard pending.localCollectionID == collectionID, pending.newName == name else {
+                throw LocalLibraryError.migrationSyncPending
+            }
+            try validateCollectionRename(pending, visibleIdentifiers: visibleIdentifiers)
+            return pending
+        }
+        var result: LocalCollectionRenameCommand?
+        try transaction {
+            let snapshot = try sharedSnapshot(visibleIdentifiers: visibleIdentifiers)
+            guard let localName = try scalar("SELECT name FROM collections WHERE id=?", [collectionID.uuidString]),
+                  localName != name,
+                  !(try collections()).contains(where: { $0.id != collectionID && Self.syncTagNameKey($0.name) == Self.syncTagNameKey(name) }) else {
+                throw LocalLibraryError.invalidName
+            }
+            let wire = try wireCollectionIdentity(for: collectionID, localName: localName)
+            guard let host = UUID(uuidString: try requiredIdentity("sync_host_id")),
+                  let device = UUID(uuidString: try requiredIdentity("sync_device_id")),
+                  Int64(try requiredIdentity("sync_ack_scope_revision")) == snapshot.scopeRevision,
+                  let sequence = Int64(try requiredIdentity("sync_ack_snapshot_sequence")), sequence > 0,
+                  try pendingSharedSnapshot() == nil, try pendingSharedOperations().isEmpty else {
+                throw LocalLibraryError.syncScopeNotAcknowledged
+            }
+            let command = LocalCollectionRenameCommand(commandID: UUID(), hostID: host, deviceID: device,
+                installID: snapshot.installID, sourceEpoch: snapshot.sourceEpoch, scopeRevision: snapshot.scopeRevision,
+                snapshotSequence: sequence, expectedChangeCursor: try sharedCollectionChangeCursor(),
+                localCollectionID: collectionID, collectionID: wire.id, expectedName: wire.name, newName: name)
+            try validateCollectionRename(command, visibleIdentifiers: visibleIdentifiers)
+            let payload = String(decoding: try JSONEncoder().encode(command), as: UTF8.self)
+            try execute("INSERT INTO collection_rename_commands(command_id,payload,state) VALUES(?,?,'pending')",
+                        [command.commandID.uuidString, payload])
+            result = command
+        }
+        return result!
+    }
+
+    public func validateCollectionRename(_ command: LocalCollectionRenameCommand,
+                                         visibleIdentifiers: Set<String>) throws {
+        let snapshot = try sharedSnapshot(visibleIdentifiers: visibleIdentifiers)
+        guard command.hostID.uuidString == (try requiredIdentity("sync_host_id")),
+              command.deviceID.uuidString == (try requiredIdentity("sync_device_id")),
+              command.installID == snapshot.installID, command.sourceEpoch == snapshot.sourceEpoch,
+              command.scopeRevision == snapshot.scopeRevision,
+              snapshot.assets.contains(where: { asset in
+                  asset.collections.contains { $0.collectionID == command.collectionID }
+              }) else { throw LocalLibraryError.syncIdentityChanged }
+    }
+
+    public func completeCollectionRename(_ command: LocalCollectionRenameCommand, resultingCursor: Int64) throws {
+        try transaction {
+            guard try pendingCollectionRename() == command,
+                  command.hostID.uuidString == (try requiredIdentity("sync_host_id")),
+                  command.deviceID.uuidString == (try requiredIdentity("sync_device_id")),
+                  command.sourceEpoch == (try sourceEpoch()),
+                  command.scopeRevision == Int64(try requiredIdentity("share_scope_revision")),
+                  resultingCursor > command.expectedChangeCursor,
+                  try sharedCollectionChangeCursor() >= resultingCursor else {
+                throw LocalLibraryError.syncIdentityChanged
+            }
+            try execute("UPDATE collection_rename_commands SET state='completed',resulting_cursor=? WHERE command_id=?",
+                        [String(resultingCursor), command.commandID.uuidString])
+        }
+    }
+
+    /// Stops local retry only; an already delivered Mac command is not undone.
+    public func abandonCollectionRename(commandID: UUID) throws {
+        try execute("UPDATE collection_rename_commands SET state='abandoned' WHERE command_id=? AND state='pending'",
+                    [commandID.uuidString])
     }
 
     @discardableResult public func createCollection(name: String) throws -> UUID {

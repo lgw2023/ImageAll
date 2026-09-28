@@ -4318,6 +4318,7 @@ private func remoteCapabilityTitle(_ capability: RemoteCapability) -> String {
     case .localLibrarySnapshot: "本机图库目录同步"
     case .localLibraryTagOperations: "本机图库标签提交"
     case .localLibraryTagChanges: "共享标签变化回传"
+    case .localLibraryCollectionRename: "共享集合改名"
     case .localLibraryCollectionMembership: "本机图库集合成员提交"
     case .localLibraryCollectionChanges: "共享集合成员变化回传"
     case .localLibraryFavoriteTarget: "本机图库收藏目标提交"

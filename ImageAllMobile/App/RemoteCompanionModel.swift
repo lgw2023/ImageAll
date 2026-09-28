@@ -742,6 +742,25 @@ final class RemoteCompanionModel: ObservableObject {
         return receipt
     }
 
+    func renameLocalLibraryCollection(_ command: LocalCollectionRenameCommand) async throws -> RemoteLocalCollectionRenameReceipt {
+        guard isConnected, let client, let sessionTokens, let capabilities,
+              capabilities.capabilities.contains(.localLibraryCollectionRename),
+              capabilities.hostID == sessionTokens.hostID,
+              command.hostID == sessionTokens.hostID, command.deviceID == sessionTokens.deviceID else {
+            throw RemoteAPIError(code: .unauthorized, message: "请连接支持集合改名的原配对 Mac 后重试")
+        }
+        let request = RemoteLocalCollectionRenameRequest(commandID: command.commandID, hostID: command.hostID,
+            installID: command.installID, sourceEpoch: command.sourceEpoch, scopeRevision: command.scopeRevision,
+            snapshotSequence: command.snapshotSequence, expectedChangeCursor: command.expectedChangeCursor,
+            collectionID: command.collectionID, expectedName: command.expectedName, newName: command.newName)
+        let receipt = try await client.renameLocalLibraryCollection(request)
+        guard receipt.request == request, receipt.deviceID == command.deviceID,
+              receipt.resultingChangeCursor > command.expectedChangeCursor else {
+            throw RemoteAPIError(code: .conflict, message: "Mac 集合改名回执不匹配")
+        }
+        return receipt
+    }
+
     func submitLocalLibraryFavoriteTarget(
         _ prepared: LocalPreparedSharedFavoriteOperation
     ) async throws -> RemoteLocalLibraryFavoriteTargetReceipt {
