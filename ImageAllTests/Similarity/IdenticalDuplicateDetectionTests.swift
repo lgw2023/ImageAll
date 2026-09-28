@@ -89,6 +89,55 @@ final class IdenticalDuplicateDetectionTests: XCTestCase {
             checkCancellation: { throw CancellationError() }))
     }
 
+    func testRealVideoFeaturesTrainPredictAndResolveFrozenReviewEvidence() async throws {
+        let env = try SimilarityTestSupport.Environment(label: #function)
+        defer { env.cleanup() }
+        let positiveURL = env.root.appendingPathComponent("positive.mov")
+        let negativeURL = env.root.appendingPathComponent("negative.mov")
+        try await Self.writeVideoControl(positiveURL, variant: 3)
+        try await Self.writeVideoControl(negativeURL, variant: 2)
+        let positive = try Data(contentsOf: positiveURL)
+        let negative = try Data(contentsOf: negativeURL)
+        var assets: [UUID] = []
+        for index in 0..<5 {
+            assets.append(try env.seedAsset(relativePath: "training-\(index).mov",
+                contents: index == 2 || index == 3 ? negative : positive,
+                mediaType: "com.apple.quicktime-movie", mediaKind: .video, durationMs: 4000).assetID)
+        }
+        let tagID = UUID()
+        try await env.database.pool.write { db in
+            try db.execute(sql: "INSERT INTO tag (id, name, normalized_name, state, created_at_ms, updated_at_ms) VALUES (?, 'Circle', 'circle', 'active', 1, 1)",
+                arguments: [tagID.uuidString.lowercased()])
+        }
+        let tags = GRDBTagCatalogRepository(database: env.database)
+        _ = try tags.batchAccept(tagID: tagID, assetIDs: Array(assets[0...1]), timestampMs: 2)
+        _ = try tags.batchReject(tagID: tagID, assetIDs: Array(assets[2...3]), timestampMs: 2)
+        let base = env.makeCompletionService()
+        let analysis = FolderVideoAnalysisService(database: env.database, sourceAccess: base.sourceAccess, clock: base.clock)
+        let loader = VideoMultiFrameFeatureLoader(analysis: analysis, cachesDirectory: env.root.appendingPathComponent("features"))
+        let service = PersonalizedSuggestionService(database: env.database, featureLoader: loader)
+        let result = try await service.generateSuggestions(tagID: tagID, candidateAssetIDs: [assets[4]],
+            mediaKind: .video, representation: .videoMultiFrame)
+        XCTAssertEqual(result.predictedCandidateCount, 1)
+        let reader = VideoPredictionEvidenceReader(database: env.database)
+        let snapshot = try XCTUnwrap(reader.read(assetID: assets[4], revision: 1, tagID: tagID))
+        XCTAssertEqual(snapshot.frames.count, 5)
+        XCTAssertTrue(snapshot.frames.allSatisfy { $0.jpegBytes != nil })
+        let actual = try analysis.analyzeWithFeatures(assetID: assets[4], expectedRevision: 1)
+        XCTAssertTrue(actual.reusedFeatures)
+        XCTAssertEqual(actual.sampling.attemptedFrameCount, 0)
+        XCTAssertEqual(snapshot.frames.map(\.actualTimeMs), actual.sampling.frames.map(\.actualTimeMs))
+        XCTAssertEqual(snapshot.frames.compactMap(\.jpegBytes), actual.sampling.frames.map(\.jpegBytes))
+        let counts = try await env.database.pool.read { db in
+            (try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM tag_model_sample WHERE preprocessing_revision = 2"),
+             try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM tag_model WHERE media_kind = 'image'"))
+        }
+        XCTAssertEqual(counts.0, 4)
+        XCTAssertEqual(counts.1, 0)
+        _ = try tags.batchAccept(tagID: tagID, assetIDs: [assets[4]], timestampMs: 3)
+        XCTAssertNil(try reader.read(assetID: assets[4], revision: 1, tagID: tagID))
+    }
+
     func testVideoFeatureEvidencePersistsAndRebuildsDamagedOrStaleResults() throws {
         let env = try SimilarityTestSupport.Environment(label: #function)
         defer { env.cleanup() }

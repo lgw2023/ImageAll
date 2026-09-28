@@ -31,7 +31,7 @@
 | P2 | IN_PROGRESS | 首切片 PASS | 文件夹元数据、查询／地图／回填、原生云端获取及 PhotoKit 播放后技术信息持久化已分切片验；Mac 智能推流与完整 UI 待验 |
 | P3 | IN_PROGRESS | 共享服务到真实质心模型和持久审核链 PASS；Mac 运行待验 | 继续全库建议、训练命令与审核持久事实闭环 |
 | P4 | VERIFIED（合成） | 完整原件／分组／安全清理与恢复、原生比较渲染通过 | 实现及最小合成验收已覆盖；真实 Photos／iCloud、日常配置点击和最终版本总回归仍未验证，见 P7 |
-| P5 | IN_PROGRESS | 采样及文件夹缓存定向 PASS | 有界采样和取消续跑已验；模型聚合、审核时间点和候选接线待完成 |
+| P5 | IN_PROGRESS | 实际合成视频解码→Vision→直接建议→审核证据 PASS | 文件夹/Photos 本地资源接线、版本化聚合、候选及原生证据条已交付；后台真实视频训练及完整 UI 路线待验 |
 | P6 | NOT_STARTED | NOT_RUN | 显式片段与原声规则，合成混合故事可解码验证 |
 | P7 | NOT_STARTED | NOT_RUN | 必需集成、最终构建与人工路线 |
 
@@ -604,3 +604,10 @@
 - 历史帧以策略、实际时间和冻结 JPEG SHA 匹配，并重新计算缓存字节摘要。缺失、损坏或已淘汰帧保留原时间点并明确提示，不调用解码/重建。Mac 标签队列的 Feature KNN 视频查看器显示模型版本和输入帧，时间按钮连接受资产/修订保护的播放器定位。
 - `video-review-evidence-build-final.log` TEST BUILD SUCCEEDED；`video-review-evidence-tests-final.log` 3/3 PASS，覆盖实际预测读取、缺失/损坏/匹配缓存、错误标签/修订拒绝、播放器定位回归、原生证据条渲染。
 - 已目视检查 `mac-review-evidence/video-frozen-review-evidence.png`，有效帧及缺失提示同时正常显示。该图为独立 NSHostingView 合成渲染，不等同完整审核页面人工点击；模型预测测试仍使用合成向量。完整真实解码视频训练→建议→审核端到端、P6/P7 及前阶段未决项继续推进，整体 active。
+
+## P5 实际视频特征到审核决定的连通验证（2026-09-28）
+
+- 新测试在独立临时目录生成圆形目标/不同内容视频，建立2正、2负、1候选，共5个合成视频资产。使用实际 AVFoundation 解码、Vision 特征和 VideoMultiFrameFeatureLoader，不注入假向量。
+- 直接建议服务训练/发布版本2模型，4个样本注册为 preprocessing=2，产生1条视频建议且照片模型槽保持空。审核读取的5帧时间/字节与实际采样完全一致，再分析复用缓存且解码数为0。人工接受候选后历史输入不再作为待审核证据返回。
+- `video-real-training-build.log` TEST BUILD SUCCEEDED；`video-real-training-tests.log` 1/1 PASS（1.274s 为整个测试耗时，含视频生成，不是生产性能基准）。仅说明几何合成控制组工程连通，不推断真实图库分类准确率。
+- 后台正式队列此前使用合成向量验证，其实际视频端到端尚需补充；完整审核页点击也未验证。P6 静态检查确认当前 package 将镜头统一准备成 JPEG，需显式视频片段/原声契约，不能把候选扩容当作运动导出完成。故事/OpenMontage 并行工作保持原样，整体 active。
