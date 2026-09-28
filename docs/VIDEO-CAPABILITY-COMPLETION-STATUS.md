@@ -866,3 +866,12 @@
 - 将自建成片复制到证据目录ui-export.mp4，SHA一致后仅移除该Documents合成原件；无其他文件变更。随后创建finish结束验收，story-workspace-ui-export/tests.log 1/1 PASS，143.354秒，进程exit0。测试独立重开保存项目并产生workspace-result.mp4。
 - 两个MP4均为1920×1080/30fps/3.633333秒，文件各486180字节，有音轨，FFmpeg完整解码退出0。进一步分别对完整解码视频帧与音频计算SHA：实际UI导出与独立重开后API渲染两条流完全一致；不要求容器字节相同（容器SHA不同已记录）。ui-export-verification.json保存probe、文件/流摘要、构建dylib与测试bundle SHA。UI成片SHA=84c81d8eef0128d2757250d76a489b117995c4cb9bcc5d04a92f9f4a0b53f1bb。
 - P6故事主UI闭环现已覆盖选片、范围、调序、保存重开、系统面板导出与外部播放器重开；与前两轮证据组合，不把本轮直接按顺序加入说成再次执行调序。剩余Mac图库/审核/地图/多帧完整入口和最终集成审计继续；目标active，未真实媒体/Photos宿主/付费调用/发布安装/push。
+
+## P1/P3 完整图库视频整理实际验收与可访问性修复（2026-09-28）
+
+- 上轮ee393455为progress。本轮完整LibraryWorkspaceView通过--gallery进入独立XCTest窗口，两个仓库合成视频、fake目录/标签服务，不启动生产Photos宿主。新增loadsSharedPhoneProjections注入开关默认true，仅本合成窗口false，避免读取无关手机配对/分享持久目录。
+- 主工作区并行手机迁移变更在构建中引用尚未同步的新请求/方法，gallery-ui-build.log失败；保留，不修改并行实现。复用附加验证工作树固定ee393455，仅叠加本轮增量。首次补丁因主工作区并行默认页面上下文不同未应用，随后的误启动构建已对本轮PID1196发送TERM并确认exit143；之后按语义加入相同改动。新ad-hoc输出又因helper要求embedded.provisionprofile失败；改用项目原开发签名构建成功，未改签名设置或共享种子。
+- 首轮gallery-actual-ui实际打开视频、播放、收藏及切下一条，但标签chip仅暴露文本、没有AX确认/清除动作，标签断言失败。修复chip为明确按钮并提供确认/取消标签动作，保留isEnabled门禁；大图增加contain语义，避免文件名覆盖子控件名称。gallery-accessibility-build.log TEST BUILD SUCCEEDED。
+- gallery-ui-final实际操作：01视频打开→标签确认→清除→撤销恢复→收藏→重新载入并播放→02→返回01→返回网格。AX逐步确认已打上/未打上/已打上、01收藏保留、02无标签/无收藏污染，大图控件恢复“返回网格”“下一个视频”“视频信息”等独立名称。gallery-ui-final/tests.log 1/1 PASS，82.950秒；395个播放器观测，结束single=false/rate0/stateidle。
+- gallery-focused-regression.log同构建2/2 PASS，覆盖照片大图选择/返回与视频标签/来源导航释放。verification.json绑定ee393455、完整补丁gallery-verified-isolated.patch、源/产物SHA和证据层级；工作树保留该已验增量，未将并行迁移代码混入。
+- 本轮fake服务可证明实际UI调用与状态，不声称磁盘重启持久性；既有数据库重开链独立保留。仍发现部分空态/标签完成提示沿用照片文案，列为后续P1.8修正；审核/瘦身/地图/多帧整页及最终集成审计继续，目标active。只暂存本轮7行生产增量、测试/脚本和记录，不push、不真实媒体、不真实模型。

@@ -12484,6 +12484,55 @@ final class LibraryWorkspaceModelTests: XCTestCase {
 
     }
 
+    func testInteractiveVideoGalleryWhenRequested() async throws {
+        guard let path = ProcessInfo.processInfo.environment["IMAGEALL_INTERACTIVE_GALLERY_EVIDENCE"] else {
+            throw XCTSkip("Explicit synthetic gallery verification only")
+        }
+        let evidence = URL(fileURLWithPath: path, isDirectory: true)
+        let sourceID = UUID()
+        let first = Self.makeAsset(sourceID: sourceID, fileName: "01-synthetic.mp4",
+            mediaType: "public.mpeg-4", mediaKind: .video, durationMs: 3000)
+        let second = Self.makeAsset(sourceID: sourceID, fileName: "02-synthetic.mp4",
+            mediaType: "public.mpeg-4", mediaKind: .video, durationMs: 3000)
+        let tag = TagListItem(id: UUID(), displayName: "视频验收标签", state: .active)
+        let service = FakeLibraryWorkspaceService(
+            connectedSource: LibrarySourceSummary(id: sourceID, displayName: "Synthetic video only", state: .active),
+            reconciledItems: [first, second], tags: [tag], startsConnected: true)
+        let source = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("docs/evidence/time-story-phase-1-20260918/synthetic-silent.mp4")
+        let model = LibraryWorkspaceModel(service: service,
+            videoPlaybackProvider: GallerySyntheticVideoProvider(url: source), idlePrewarmInstallEventMonitor: false)
+        await model.start()
+        await waitForCatalogScanToFinish(model)
+        await model.setMediaKind(.video)
+        let host = NSHostingView(rootView: LibraryWorkspaceView(model: model, loadsSharedPhoneProjections: false)
+            .environmentObject(ToolbarDisplayModeSettingsModel()).frame(width: 1400, height: 900))
+        let window = NSWindow(contentRect: NSRect(x: 50, y: 50, width: 1400, height: 900),
+            styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.title = "ImageAll Synthetic Video Gallery"
+        window.contentView = host
+        NSApplication.shared.setActivationPolicy(.regular)
+        NSApplication.shared.finishLaunching()
+        window.makeKeyAndOrderFront(nil)
+        NSApplication.shared.activate(ignoringOtherApps: true)
+        defer { model.videoViewingSession.stop(); window.close() }
+        var samples: [[String: Any]] = []
+        let finish = evidence.appendingPathComponent("finish"), deadline = Date().addingTimeInterval(300)
+        while Date() < deadline, !FileManager.default.fileExists(atPath: finish.path) {
+            samples.append(["selected": model.primarySelectedAssetID?.uuidString ?? "", "single": model.isSinglePhotoPresented,
+                "rate": model.videoViewingSession.player.rate, "state": String(describing: model.videoViewingSession.state)])
+            try JSONSerialization.data(withJSONObject: samples).write(to: evidence.appendingPathComponent("gallery-observations.json"), options: .atomic)
+            try await Task.sleep(for: .milliseconds(200))
+        }
+        XCTAssertTrue(FileManager.default.fileExists(atPath: finish.path))
+        XCTAssertTrue(samples.contains { ($0["rate"] as? Float ?? 0) > 0 })
+        XCTAssertTrue(samples.contains { ($0["selected"] as? String) == first.assetID.uuidString && ($0["single"] as? Bool) == true })
+        XCTAssertTrue(samples.contains { ($0["selected"] as? String) == second.assetID.uuidString && ($0["single"] as? Bool) == true })
+        XCTAssertEqual(try service.fetchInspectorDetail(assetID: first.assetID).tags.first { $0.tagID == tag.id }?.decision, .accepted)
+        XCTAssertGreaterThan(service.mutateTagCallCount, 0)
+    }
+
     func testVideoViewingResolvesOffGridRevisionAndRejectsPhotoIdentity() async throws {
         let sourceID = UUID()
         let video = Self.makeAsset(sourceID: sourceID, fileName: "revision.mov",
@@ -20013,5 +20062,12 @@ private final class FakePersonalizationReviewPort: PersonalizationReviewPort, @u
 
     func releaseBlockedPendingJobs() {
         pendingJobsBlocker.signal()
+    }
+}
+
+private struct GallerySyntheticVideoProvider: LibraryVideoPlaybackProviding {
+    let url: URL
+    func prepareVideoPlayback(assetID: UUID) async throws -> LibraryVideoPlaybackResource {
+        LibraryVideoPlaybackResource(url: url)
     }
 }

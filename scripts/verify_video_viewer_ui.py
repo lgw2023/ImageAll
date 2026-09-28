@@ -22,9 +22,12 @@ def main():
     parser.add_argument('--require-focus', action='store_true', help='Also require an actual app focus loss and return; background AX operations do not prove this')
     parser.add_argument('--story-clip', action='store_true', help='Operate the real story clip editor: 0.2 to 0.8 seconds, gain 30%%, then Use Clip')
     parser.add_argument('--story-workspace', action='store_true', help='Operate mixed story add/edit/order/save controls, then create finish')
+    parser.add_argument('--gallery', action='store_true', help='Operate the synthetic full video gallery and tag the first video, then create finish')
     args = parser.parse_args()
     if (args.story_clip or args.story_workspace) and (args.with_audio or args.require_focus) or (args.story_clip and args.story_workspace):
         parser.error('Story clip mode cannot be combined with viewer options')
+    if args.gallery and (args.story_clip or args.story_workspace or args.with_audio or args.require_focus):
+        parser.error('Gallery mode cannot be combined with other modes')
     products, evidence = args.products.resolve(), args.evidence.resolve()
     host = products / 'ImageAll.app/Contents'
     bundle = host / 'PlugIns/ImageAllTests.xctest'
@@ -78,6 +81,10 @@ def main():
         if args.story_clip else 'ImageAllTests.LibraryVideoViewingTests/testInteractiveNativeVideoViewerWhenRequested')
     if args.story_workspace:
         selector = 'ImageAllTests.TimeStoryFeatureTests/testWorkspaceMixedStoryEditSaveReopenAndRender'
+    if args.gallery:
+        environment.pop('IMAGEALL_INTERACTIVE_VIDEO_EVIDENCE', None)
+        environment['IMAGEALL_INTERACTIVE_GALLERY_EVIDENCE'] = str(evidence)
+        selector = 'ImageAllTests.LibraryWorkspaceModelTests/testInteractiveVideoGalleryWhenRequested'
     completion = 'Click Use Clip after entering the requested range and gain' if args.story_clip else f'Finish marker: {evidence / "finish"}'
     print(f'Synthetic viewer: {app}\n{completion}', flush=True)
     with (evidence / 'tests.log').open('w') as log:

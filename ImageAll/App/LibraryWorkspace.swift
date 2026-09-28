@@ -13079,6 +13079,10 @@ struct LibraryInspectorTagDecisionChip: View {
             LibraryRightClickCatcher(enabled: isEnabled, action: onClear)
         }
         .persistentHelp(helpTextOverride ?? helpText)
+        .accessibilityElement(children: .ignore)
+        .accessibilityAddTraits(.isButton)
+        .accessibilityAction { if isEnabled { onAccept() } }
+        .accessibilityAction(named: "取消标签") { if isEnabled { onClear() } }
         .accessibilityLabel(tag.displayName)
         .accessibilityValue(accessibilityValueOverride ?? accessibilityValue)
         .accessibilityHint(
@@ -13432,6 +13436,7 @@ struct LibraryWorkspaceView: View {
     ]
 
     @ObservedObject var model: LibraryWorkspaceModel
+    var loadsSharedPhoneProjections = true
     @State private var selection: LibrarySidebarSelection? = .all
     @State private var sharedPhoneProjections: [RemoteLocalLibrarySyncStore.Projection] = []
     @State private var sharedPhoneDeviceNames: [UUID: String] = [:]
@@ -15696,6 +15701,7 @@ struct LibraryWorkspaceView: View {
     }
 
     private func refreshSharedPhoneProjections() async {
+        guard loadsSharedPhoneProjections else { return }
         do {
             let projections = try await RemoteHostProcessHolder.sharedPhoneProjections()
             let devices = await RemoteHostProcessHolder.pairedDevices()
@@ -17977,6 +17983,7 @@ private struct SinglePhotoView: View {
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
+        .accessibilityElement(children: .contain)
         .accessibilityIdentifier("singlePhotoView")
         .accessibilityLabel(item.fileName ?? item.mediaKind.displayName)
         .task(id: item.assetID) {
