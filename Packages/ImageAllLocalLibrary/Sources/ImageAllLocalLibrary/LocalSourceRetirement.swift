@@ -29,7 +29,7 @@ public struct LocalSourceRetirementPlan: Codable, Sendable, Equatable, Identifia
 }
 
 public enum LocalSourceRetirementState: String, Codable, Sendable {
-    case prepared, submitted, completed, cancelled, failed, outcomeUnknown
+    case prepared, submitted, completed, cancelled, failed, outcomeUnknown, closedUnknown
 }
 
 public enum LocalSourceRetirementOutcome: Sendable {
@@ -42,6 +42,7 @@ public struct LocalSourceRetirementRecord: Codable, Sendable, Equatable, Identif
     public let state: LocalSourceRetirementState
     public let updatedAtMs: Int64
     public var acknowledgedByMac = false
+    public var canManuallyClose = false
 }
 
 public enum LocalRetiredReplicaPresence: String, Sendable {

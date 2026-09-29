@@ -552,6 +552,7 @@ final class LocalLibraryModel: ObservableObject {
         case .completed: outcome = .completed
         case .failed: outcome = .failed
         case .submitted, .outcomeUnknown: outcome = .outcomeUnknown
+        case .closedUnknown: outcome = .closedUnknown
         case .prepared, .cancelled: throw LocalLibraryError.sourceRetirementConflict
         }
         let p = record.plan
@@ -563,6 +564,12 @@ final class LocalLibraryModel: ObservableObject {
             factSnapshotSHA256: p.factSnapshotSHA256, candidateAssetIDs: p.candidateAssetIDs)
         try await remote.submitSourceRetirement(.init(binding: binding, outcome: outcome, updatedAtMs: record.updatedAtMs))
         try await store.acknowledgeSourceRetirement(id: id, state: record.state, updatedAtMs: record.updatedAtMs)
+    }
+
+    func closeUnknownSourceRetirement(_ id: UUID, remote: RemoteCompanionModel) async throws {
+        guard let store else { throw LocalFavoriteSourceError.storeUnavailable }
+        try await store.manuallyCloseUnknownSourceRetirement(id: id)
+        try? await sendSourceRetirement(id, remote: remote)
     }
 
     func cancelPreparedSourceRetirement(_ id: UUID) async throws {
@@ -1649,6 +1656,7 @@ private struct LocalShareScopeView: View {
     @State private var cleanupSourceReport: RemotePhoneCleanupSourceReport?
     @State private var confirmsSourceRetirement = false
     @State private var retirementHistory: [LocalSourceRetirementRecord] = []
+    @State private var closesUnknownRetirement: LocalSourceRetirementRecord?
     @State private var tagAliasCandidate: LocalSharedTagAliasCandidate?
     @State private var collectionAliasCandidate: LocalSharedCollectionAliasCandidate?
 
@@ -2071,11 +2079,18 @@ private struct LocalShareScopeView: View {
                         }.disabled(isStreamingArchive)
                     case .submitted, .outcomeUnknown:
                         Text("提交结果待核实，不会自动重试。请先在系统照片检查；暂时不可见不代表已删除。")
+                        if record.canManuallyClose {
+                            Button("核实后结束待核实记录…") { closesUnknownRetirement = record }
+                                .disabled(isStreamingArchive)
+                        } else {
+                            Text("本次启动内可能仍有系统回调；请先重启 App，再核实和结束记录。")
+                        }
+                    case .closedUnknown: Text("用户已结束待核实记录，结果仍未知。未据此认定成功或失败，旧操作不会重试。")
                     case .completed: Text("系统曾确认删除，来源退役已记录。恢复请前往系统照片。")
                     case .cancelled: Text("已取消准备，未提交系统。")
                     case .failed: Text("系统未确认删除或提交前检查未通过。")
                     }
-                    if [.completed, .failed, .submitted, .outcomeUnknown].contains(record.state) {
+                    if [.completed, .failed, .submitted, .outcomeUnknown, .closedUnknown].contains(record.state) {
                         Text(record.acknowledgedByMac ? "Mac 已确认收到本条结果。" : "本条结果待回传 Mac。")
                         if !record.acknowledgedByMac {
                             Button("回传本条记录（不重复删除）") {
@@ -2090,6 +2105,26 @@ private struct LocalShareScopeView: View {
                     }
                 }.font(.footnote).foregroundStyle(.secondary)
             }
+
+            Color.clear.frame(height: 0)
+                .confirmationDialog("结束这条待核实记录？", isPresented: Binding(
+                    get: { closesUnknownRetirement != nil },
+                    set: { if !$0 { closesUnknownRetirement = nil } }), titleVisibility: .visible,
+                    presenting: closesUnknownRetirement) { record in
+                    Button("已核实，结束记录") {
+                        Task {
+                            do {
+                                try await model.closeUnknownSourceRetirement(record.id, remote: remoteModel)
+                                retirementHistory = try await model.sourceRetirementHistory()
+                                archiveStatusMessage = "已结束待核实记录，结果仍未知。未执行照片操作；后续清理必须重新核验并明确确认。"
+                            } catch { archiveStatusMessage = "无法结束记录：\(error.localizedDescription)" }
+                            closesUnknownRetirement = nil
+                        }
+                    }
+                    Button("保留待核实", role: .cancel) { closesUnknownRetirement = nil }
+                } message: { record in
+                    Text("请先在系统照片核实这批 \(record.plan.candidateAssetIDs.count) 项，并确认 Mac 归档和备份保留。结束记录只停止等待旧回调，不判定删除成功或失败，也不再次删除。若以后再清理，必须重新核验和确认。")
+                }
 
             Toggle("保存可访问用户相册目录（含空相册）", isOn: $includeAlbumCatalog)
                 .disabled(isStreamingArchive || isExporting || isUploadingArchive)

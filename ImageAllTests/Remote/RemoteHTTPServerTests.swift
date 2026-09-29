@@ -1117,9 +1117,18 @@ final class RemoteHTTPServerTests: XCTestCase {
         let finalRetirement = try await store.submitSourceRetirement(completedRetirement, authenticatedDeviceID: deviceID)
         do { _ = try await store.submitSourceRetirement(retirement, authenticatedDeviceID: deviceID); XCTFail("terminal result must not downgrade") }
         catch { XCTAssertNotNil(error as? RemoteAPIError) }
+        let uncertain = sourceRetirementFixture(report, candidateIDs: [assetID])
+        _ = try await store.submitSourceRetirement(uncertain, authenticatedDeviceID: deviceID)
+        let manualClosure = RemotePhoneSourceRetirement(binding: uncertain.binding, outcome: .closedUnknown, updatedAtMs: 5000)
+        let closureReceipt = try await store.submitSourceRetirement(manualClosure, authenticatedDeviceID: deviceID)
+        let fabricatedSuccess = RemotePhoneSourceRetirement(binding: uncertain.binding, outcome: .completed, updatedAtMs: 6000)
+        do { _ = try await store.submitSourceRetirement(fabricatedSuccess, authenticatedDeviceID: deviceID); XCTFail("manual closure is not source success") }
+        catch { XCTAssertNotNil(error as? RemoteAPIError) }
         let restarted = try RemoteLocalLibrarySyncStore(hostID: hostID, storageURL: root.appendingPathComponent("sync.json"))
         let retirementHistory = await restarted.sourceRetirementReceipts(migrationID: published.migrationID)
-        XCTAssertEqual(retirementHistory, [finalRetirement])
+        XCTAssertEqual(retirementHistory.count, 2)
+        XCTAssertTrue(retirementHistory.contains(finalRetirement))
+        XCTAssertTrue(retirementHistory.contains(closureReceipt))
         let retainedProjection = await restarted.projection(deviceID: deviceID)
         XCTAssertTrue(retainedProjection?.assets.contains(where: { $0.id == assetID }) == true)
         let restartedInbox = await restarted.cleanupRecheck(authenticatedDeviceID: deviceID)

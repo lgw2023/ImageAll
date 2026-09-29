@@ -121,3 +121,49 @@ func sourceRetirementExecutorPersistsActualCallbackAndNeverReplays(mode: Int) as
     #expect(await source.calls == 1)
     #expect(try await store.pendingSharedOperations().isEmpty)
 }
+
+@Test func unknownRetirementCanOnlyBeClosedAfterProcessRestartWithoutClaimingDeletion() async throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let url = root.appendingPathComponent("local.sqlite")
+    let session = UUID()
+    let store = try LocalLibraryStore(url: url, retirementSessionID: session)
+    try await store.observe([.init(localIdentifier: "synthetic", kind: "image", creationDate: nil, isFavorite: false)])
+    let asset = try #require(await store.assets(visibleIdentifiers: ["synthetic"]).first)
+    try await store.setShared(assetID: asset.id, shared: true)
+    let snapshot = try await store.prepareSharedSnapshot(visibleIdentifiers: ["synthetic"])
+    try await store.acknowledgeSharedSnapshot(snapshot, hostID: UUID(), deviceID: UUID(), importedAssetIDs: [asset.id])
+    let checked = try await store.migrationCompletionCheckpoint(visibleIdentifiers: ["synthetic"])
+    let plan = LocalSourceRetirementPlan(id: UUID(), migrationID: UUID(), requestID: UUID(), sourceReportID: UUID(),
+        completionReceiptID: UUID(), backupReceiptID: UUID(), manifestSHA256: String(repeating: "a", count: 64),
+        factSnapshotSHA256: String(repeating: "b", count: 64), candidateAssetIDs: [asset.id],
+        snapshot: checked.snapshot, checkpoint: checked.checkpoint)
+    _ = try await store.prepareSourceRetirement(plan, visibleIdentifiers: ["synthetic"])
+    try await store.markSourceRetirementSubmitted(id: plan.id, visibleIdentifiers: ["synthetic"])
+    let pending = try #require(await store.sourceRetirementRecords().first)
+    try await store.acknowledgeSourceRetirement(id: plan.id, state: pending.state, updatedAtMs: pending.updatedAtMs)
+    await #expect(throws: (any Error).self) { try await store.manuallyCloseUnknownSourceRetirement(id: plan.id) }
+    let sameProcess = try LocalLibraryStore(url: url, retirementSessionID: session)
+    #expect(try await sameProcess.sourceRetirementRecords().first?.canManuallyClose == false)
+    let restarted = try LocalLibraryStore(url: url, retirementSessionID: UUID())
+    #expect(try await restarted.sourceRetirementRecords().first?.canManuallyClose == true)
+    try await restarted.manuallyCloseUnknownSourceRetirement(id: plan.id)
+    try await restarted.manuallyCloseUnknownSourceRetirement(id: plan.id)
+    let closed = try #require(await restarted.sourceRetirementRecords().first)
+    #expect(closed.state == .closedUnknown)
+    #expect(!closed.acknowledgedByMac && !closed.canManuallyClose)
+    #expect(try await restarted.retiredSourcePresence(assetID: asset.id) == nil)
+    await #expect(throws: (any Error).self) { try await restarted.finishSourceRetirement(id: plan.id, outcome: .succeeded) }
+    let source = SyntheticRetirementSource(store: restarted, mode: 0)
+    await #expect(throws: (any Error).self) {
+        _ = try await LocalSourceRetirementExecutor.perform(plan, store: restarted, visibleIdentifiers: ["synthetic"], source: source)
+    }
+    #expect(await source.calls == 0)
+    #expect(try await restarted.sharedSnapshot(visibleIdentifiers: ["synthetic"]).assets == checked.snapshot.assets)
+    #expect(try await restarted.pendingSharedOperations().isEmpty)
+    let backup = root.appendingPathComponent("backup.sqlite")
+    _ = try await restarted.exportBackup(to: backup)
+    let restored = try LocalLibraryStore(url: backup)
+    #expect(try await restored.sourceRetirementRecords().first?.state == .closedUnknown)
+    #expect(try await restored.retiredSourcePresence(assetID: asset.id) == nil)
+}

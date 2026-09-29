@@ -2174,6 +2174,7 @@ final class PhoneArchiveImportModel: ObservableObject {
                 case .completed: state = "手机报告系统已确认删除"
                 case .failed: state = "手机报告未确认删除"
                 case .outcomeUnknown: state = "手机报告结果待核实，不视为已删除"
+                case .closedUnknown: state = "手机用户已结束待核实，结果仍未知，不视为已删除"
                 }
                 return "\(receipt.report.binding.candidateCount) 项：\(state)。Mac 独立归档保留。"
             }.joined(separator: "\n")

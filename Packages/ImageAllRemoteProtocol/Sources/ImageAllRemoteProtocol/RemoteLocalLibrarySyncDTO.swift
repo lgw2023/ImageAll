@@ -669,7 +669,7 @@ extension RemoteHTTPPaths {
 }
 
 public enum RemotePhoneSourceRetirementOutcome: String, Codable, Sendable {
-    case completed, failed, outcomeUnknown
+    case completed, failed, outcomeUnknown, closedUnknown
 }
 
 public struct RemotePhoneSourceRetirementBinding: Codable, Sendable, Equatable {

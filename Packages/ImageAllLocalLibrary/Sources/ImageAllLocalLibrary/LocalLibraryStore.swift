@@ -427,12 +427,20 @@ public struct LocalSharedCollectionMembership: Codable, Sendable, Equatable {
 /// Every fact change and its future sync operation are committed in the same SQLite transaction.
 public actor LocalLibraryStore {
     nonisolated(unsafe) private let db: OpaquePointer
+    private static let processRetirementSession = UUID()
+    private let retirementSessionID: UUID
 
     public func exportBackup(to destination: URL) throws -> LocalLibraryBackupReport {
         try LocalLibraryBackup.write(source: db, to: destination)
     }
 
     public init(url: URL) throws {
+        try self.init(url: url, retirementSessionID: Self.processRetirementSession)
+    }
+
+    // Internal injection simulates a terminated process in synthetic tests.
+    init(url: URL, retirementSessionID: UUID) throws {
+        self.retirementSessionID = retirementSessionID
         try FileManager.default.createDirectory(
             at: url.deletingLastPathComponent(), withIntermediateDirectories: true
         )
@@ -453,6 +461,10 @@ public actor LocalLibraryStore {
                 PRAGMA foreign_keys=ON;
                 CREATE TABLE IF NOT EXISTS source_retirement_operations (
                   id TEXT PRIMARY KEY, plan_json TEXT NOT NULL, state TEXT NOT NULL, updated_at_ms INTEGER NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS source_retirement_submission_sessions (
+                  operation_id TEXT PRIMARY KEY REFERENCES source_retirement_operations(id),
+                  process_session_id TEXT NOT NULL
                 );
                 CREATE TABLE IF NOT EXISTS source_retirement_receipts (
                   operation_id TEXT PRIMARY KEY REFERENCES source_retirement_operations(id),
@@ -598,6 +610,9 @@ public actor LocalLibraryStore {
                 );
                 """
             let setup = schema + """
+                INSERT OR IGNORE INTO source_retirement_submission_sessions(operation_id,process_session_id)
+                SELECT id,'\(retirementSessionID.uuidString)' FROM source_retirement_operations
+                WHERE state IN ('submitted','outcomeUnknown');
                 INSERT OR IGNORE INTO identity(key,value) VALUES('install_id','\(UUID().uuidString)');
                 INSERT OR IGNORE INTO identity(key,value) VALUES('source_epoch','\(UUID().uuidString)');
                 INSERT OR IGNORE INTO identity(key,value) VALUES('share_scope_revision','0');
@@ -623,8 +638,9 @@ public actor LocalLibraryStore {
 
     public func sourceRetirementRecords() throws -> [LocalSourceRetirementRecord] {
         try rows("""
-            SELECT o.plan_json,o.state,o.updated_at_ms,r.state,r.record_updated_at_ms
+            SELECT o.plan_json,o.state,o.updated_at_ms,r.state,r.record_updated_at_ms,s.process_session_id
             FROM source_retirement_operations o LEFT JOIN source_retirement_receipts r ON r.operation_id=o.id
+            LEFT JOIN source_retirement_submission_sessions s ON s.operation_id=o.id
             ORDER BY o.updated_at_ms,o.id
             """).map { row in
             guard let json = row[0], let rawState = row[1], let state = LocalSourceRetirementState(rawValue: rawState),
@@ -632,6 +648,8 @@ public actor LocalLibraryStore {
             var record = LocalSourceRetirementRecord(plan: try JSONDecoder().decode(LocalSourceRetirementPlan.self, from: Data(json.utf8)),
                 state: state, updatedAtMs: time)
             record.acknowledgedByMac = row[3] == rawState && row[4] == String(time)
+            record.canManuallyClose = [.submitted, .outcomeUnknown].contains(state)
+                && row[5] != nil && row[5] != retirementSessionID.uuidString
             return record
         }
     }
@@ -640,7 +658,7 @@ public actor LocalLibraryStore {
         try transaction {
             let record = try sourceRetirementRecord(id)
             guard record.state == state, record.updatedAtMs == updatedAtMs,
-                  [.submitted, .outcomeUnknown, .completed, .failed].contains(state) else {
+                  [.submitted, .outcomeUnknown, .completed, .failed, .closedUnknown].contains(state) else {
                 throw LocalLibraryError.sourceRetirementConflict
             }
             try execute("""
@@ -686,7 +704,22 @@ public actor LocalLibraryStore {
         let record = try sourceRetirementRecord(id)
         guard record.state == .prepared else { throw LocalLibraryError.sourceRetirementConflict }
         try validateSourceRetirementPlan(record.plan, visibleIdentifiers: visibleIdentifiers)
-        try setSourceRetirementState(id, .submitted)
+        try transaction {
+            try execute("INSERT INTO source_retirement_submission_sessions(operation_id,process_session_id) VALUES(?,?)",
+                [id.uuidString, retirementSessionID.uuidString])
+            try setSourceRetirementState(id, .submitted)
+        }
+    }
+
+    /// Explicit owner closure after a process restart. It does not prove success
+    /// or failure, retire any replica, or authorize replay of the original plan.
+    public func manuallyCloseUnknownSourceRetirement(id: UUID) throws {
+        try transaction {
+            let record = try sourceRetirementRecord(id)
+            if record.state == .closedUnknown { return }
+            guard record.canManuallyClose else { throw LocalLibraryError.sourceRetirementConflict }
+            try setSourceRetirementState(id, .closedUnknown)
+        }
     }
 
     public func cancelSourceRetirement(id: UUID) throws {
