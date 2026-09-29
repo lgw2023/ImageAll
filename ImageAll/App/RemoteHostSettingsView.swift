@@ -274,6 +274,7 @@ struct RemotePhoneLibraryView: View {
     @State private var collectionCreateAssetID: UUID?
     @State private var newCollectionName = ""
     @State private var collectionRenameChoice: CollectionChoice?
+    @State private var collectionRenameProjection: RemoteLocalLibrarySyncStore.Projection?
     @State private var renamedCollectionName = ""
     @State private var sourceLinks: [UUID: PhoneArchiveSourceLink] = [:]
     @State private var archiveLinkError: String?
@@ -295,7 +296,13 @@ struct RemotePhoneLibraryView: View {
     }
 
     private var renamableCollections: [CollectionChoice] {
-        knownCollections.filter { currentProjection.macCreatedCollectionIDs.contains($0.id) }
+        knownCollections.filter { collection in
+            currentProjection.sharedCollectionFacts.contains { fact in
+                fact.collectionID == collection.id && currentProjection.selectedAssetIDs.contains(fact.assetID)
+                    && currentProjection.assets.contains { $0.asset.id == fact.assetID
+                        && $0.lastVisibleSnapshotSequence == currentProjection.snapshotSequence }
+            }
+        }
     }
 
     private var visibleAssets: [RemoteLocalLibrarySyncStore.ProjectedAsset] {
@@ -336,9 +343,10 @@ struct RemotePhoneLibraryView: View {
                 }
                 .disabled(archiveModel.isBusy)
                 if !renamableCollections.isEmpty {
-                    Menu("重命名 Mac 新建的集合") {
+                    Menu("重命名共享集合") {
                         ForEach(renamableCollections) { collection in
                             Button(collection.name) {
+                                collectionRenameProjection = currentProjection
                                 collectionRenameChoice = collection
                                 renamedCollectionName = collection.name
                             }
@@ -649,17 +657,18 @@ struct RemotePhoneLibraryView: View {
     }
 
     private func renameCollection(_ collection: CollectionChoice, to name: String) {
-        let expected = currentProjection
+        guard let expected = collectionRenameProjection else { return }
         Task {
             do {
-                editedProjection = try await RemoteHostProcessHolder.renameMacCreatedPhoneCollection(
+                editedProjection = try await RemoteHostProcessHolder.renameSharedPhoneCollection(
                     deviceID: expected.deviceID,
                     collectionID: collection.id,
                     expectedName: collection.name,
                     newName: name.trimmingCharacters(in: .whitespacesAndNewlines),
                     expectedSourceEpoch: expected.sourceEpoch,
                     expectedScopeRevision: expected.scopeRevision,
-                    expectedSnapshotSequence: expected.snapshotSequence
+                    expectedSnapshotSequence: expected.snapshotSequence,
+                    expectedChangeCursor: expected.collectionChangeCursor
                 )
                 syncEditError = nil
             } catch {

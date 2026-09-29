@@ -869,6 +869,48 @@ final class RemoteHTTPServerTests: XCTestCase {
         XCTAssertNil(unaccepted.receipt)
     }
 
+    func testMacRenamesPhoneOriginCollectionWithCurrentCursor() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let url = root.appendingPathComponent("rename.json")
+        let host = UUID(), device = UUID(), install = UUID(), epoch = UUID(), assetID = UUID(), collection = UUID()
+        let store = try RemoteLocalLibrarySyncStore(hostID: host, storageURL: url)
+        let asset = RemoteLocalLibraryAsset(id: assetID, localIdentifier: "synthetic", mediaKind: .image,
+            createdAtMs: nil, observedFavorite: false, favoriteTarget: nil, tagDecisions: [],
+            collections: [.init(collectionID: collection, collectionName: "Phone original")])
+        _ = try await store.submit(.init(hostID: host, installID: install, sourceEpoch: epoch,
+            scopeRevision: 1, snapshotSequence: 1, selectedAssetIDs: [assetID], assets: [asset]), authenticatedDeviceID: device)
+        let renamed = try await store.renameCollectionFromMac(deviceID: device, collectionID: collection,
+            expectedName: "Phone original", newName: "Mac edited", expectedSourceEpoch: epoch,
+            expectedScopeRevision: 1, expectedSnapshotSequence: 1, expectedChangeCursor: 0)
+        XCTAssertEqual(renamed.sharedCollectionFacts.first?.collectionName, "Mac edited")
+        XCTAssertFalse(renamed.macCreatedCollectionIDs.contains(collection))
+        XCTAssertEqual(renamed.collectionChangeCursor, 1)
+        let reopened = try RemoteLocalLibrarySyncStore(hostID: host, storageURL: url)
+        do {
+            _ = try await reopened.renameCollectionFromMac(deviceID: device, collectionID: collection,
+                expectedName: "Mac edited", newName: "stale", expectedSourceEpoch: epoch,
+                expectedScopeRevision: 1, expectedSnapshotSequence: 1, expectedChangeCursor: 0)
+            XCTFail("stale window must not rename")
+        } catch { XCTAssertNotNil(error as? RemoteAPIError) }
+        let page = try await reopened.collectionChanges(deviceID: device, sourceEpoch: epoch, scopeRevision: 1, afterCursor: 0)
+        XCTAssertEqual(page.changes.first?.renamedFrom, "Phone original")
+        let offline = try await reopened.submitCollectionMembership(.init(hostID: host, installID: install,
+            sourceEpoch: epoch, scopeRevision: 1, operationID: UUID(), deviceSequence: 1,
+            assetID: assetID, collectionID: collection, collectionName: "Phone original", included: false,
+            baseRevision: renamed.sharedCollectionFacts.first!.revision), authenticatedDeviceID: device)
+        XCTAssertEqual(offline.disposition, .applied)
+        _ = try await reopened.submit(.init(hostID: host, installID: install, sourceEpoch: epoch,
+            scopeRevision: 1, snapshotSequence: 2, selectedAssetIDs: [assetID], assets: []), authenticatedDeviceID: device)
+        let hidden = await reopened.projection(deviceID: device)
+        do {
+            _ = try await reopened.renameCollectionFromMac(deviceID: device, collectionID: collection,
+                expectedName: "Mac edited", newName: "hidden", expectedSourceEpoch: epoch,
+                expectedScopeRevision: 1, expectedSnapshotSequence: 2, expectedChangeCursor: hidden!.collectionChangeCursor)
+            XCTFail("hidden source must not admit new rename")
+        } catch { XCTAssertNotNil(error as? RemoteAPIError) }
+    }
+
     func testMacCreatesSharedPhoneCollectionWithStableIdentityAndChange() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }
@@ -922,11 +964,11 @@ final class RemoteHTTPServerTests: XCTestCase {
         } catch let error as RemoteAPIError {
             XCTAssertEqual(error.code, .conflict)
         }
-        let renamed = try await reopened.renameMacCreatedCollection(
+        let renamed = try await reopened.renameCollectionFromMac(
             deviceID: deviceID, collectionID: collectionID,
             expectedName: "Journey", newName: "Trip",
             expectedSourceEpoch: epoch, expectedScopeRevision: 1,
-            expectedSnapshotSequence: 1
+            expectedSnapshotSequence: 1, expectedChangeCursor: 1
         )
         XCTAssertEqual(renamed.sharedCollectionFacts.first?.collectionName, "Trip")
         XCTAssertEqual(renamed.sharedCollectionFacts.first?.revision, 1)
@@ -937,11 +979,11 @@ final class RemoteHTTPServerTests: XCTestCase {
         XCTAssertEqual(renamePage.changes.first?.renamedFrom, "Journey")
         XCTAssertEqual(renamePage.changes.first?.collectionName, "Trip")
         let rereopened = try RemoteLocalLibrarySyncStore(hostID: hostID, storageURL: url)
-        let renameReplay = try await rereopened.renameMacCreatedCollection(
+        let renameReplay = try await rereopened.renameCollectionFromMac(
             deviceID: deviceID, collectionID: collectionID,
             expectedName: "Journey", newName: "Trip",
             expectedSourceEpoch: epoch, expectedScopeRevision: 1,
-            expectedSnapshotSequence: 1
+            expectedSnapshotSequence: 1, expectedChangeCursor: 2
         )
         XCTAssertEqual(renameReplay.sharedCollectionFacts.first?.collectionName, "Trip")
         _ = try await reopened.submit(.init(

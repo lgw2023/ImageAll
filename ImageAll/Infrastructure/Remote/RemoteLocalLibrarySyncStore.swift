@@ -46,6 +46,7 @@ actor RemoteLocalLibrarySyncStore {
         let sharedTagFacts: [SharedTagFact]
         let sharedCollectionFacts: [SharedCollectionFact]
         let macCreatedCollectionIDs: Set<UUID>
+        let collectionChangeCursor: Int64
         let sharedFavoriteFacts: [SharedFavoriteFact]
     }
 
@@ -630,6 +631,7 @@ actor RemoteLocalLibrarySyncStore {
                 ?? Self.seedCollectionFacts(from: record.projectedAssets),
             macCreatedCollectionIDs: Set((record.collectionChanges ?? [])
                 .compactMap(\.createdCollectionID)),
+            collectionChangeCursor: record.collectionChanges?.last?.sequence ?? 0,
             sharedFavoriteFacts: record.sharedFavoriteFacts
                 ?? Self.seedFavoriteFacts(from: record.projectedAssets)
         )
@@ -975,12 +977,7 @@ actor RemoteLocalLibrarySyncStore {
         // Only this stable ID's explicit Mac rename history can explain it.
         let hasKnownHistoricalName = currentName != nil
             && currentName != request.collectionName
-            && ((previous.collectionChanges ?? []).contains {
-                $0.createdCollectionID == request.collectionID
-            } || collectionRenames.contains {
-                $0.deviceID == authenticatedDeviceID && $0.request.sourceEpoch == request.sourceEpoch
-                    && $0.request.collectionID == request.collectionID
-            }) && (previous.collectionChanges ?? []).contains {
+            && (previous.collectionChanges ?? []).contains {
             $0.collectionID == request.collectionID
                 && $0.renamedFrom == request.collectionName
         }
@@ -1460,17 +1457,22 @@ actor RemoteLocalLibrarySyncStore {
         return result
     }
 
-    /// Existing Mac UI entry remains restricted to explicitly Mac-created collections.
-    func renameMacCreatedCollection(
+    /// A current UI projection is required, including the collection change cursor.
+    func renameCollectionFromMac(
         deviceID: UUID, collectionID: UUID, expectedName: String, newName: String,
-        expectedSourceEpoch: UUID, expectedScopeRevision: Int64, expectedSnapshotSequence: Int64
+        expectedSourceEpoch: UUID, expectedScopeRevision: Int64, expectedSnapshotSequence: Int64,
+        expectedChangeCursor: Int64
     ) throws -> Projection {
-        try renameSharedCollection(deviceID: deviceID, collectionID: collectionID,
+        guard let record = records[deviceID], expectedChangeCursor >= 0,
+              expectedChangeCursor == (record.collectionChanges?.last?.sequence ?? 0) else {
+            throw RemoteAPIError(code: .conflict, message: "collection changes advanced; refresh before renaming")
+        }
+        return try renameSharedCollection(deviceID: deviceID, collectionID: collectionID,
             expectedName: expectedName, newName: newName, expectedSourceEpoch: expectedSourceEpoch,
             expectedScopeRevision: expectedScopeRevision, expectedSnapshotSequence: expectedSnapshotSequence)
     }
 
-    /// Admission is checked by the phone command entry point or the Mac creation marker.
+    /// Both entry points require an identity in the currently visible shared scope.
     /// The name transition preserves member revisions.
     private func renameSharedCollection(
         deviceID: UUID, collectionID: UUID,
@@ -1483,9 +1485,12 @@ actor RemoteLocalLibrarySyncStore {
               previous.request.sourceEpoch == expectedSourceEpoch,
               previous.request.scopeRevision == expectedScopeRevision,
               previous.request.snapshotSequence == expectedSnapshotSequence,
-              (phoneCommand != nil || (previous.collectionChanges ?? []).contains(where: {
-                  $0.createdCollectionID == collectionID
-              })) else {
+              previous.projectedAssets.contains(where: { item in
+                  previous.request.selectedAssetIDs.contains(item.asset.id)
+                      && item.lastVisibleSnapshotSequence == previous.request.snapshotSequence
+                      && (previous.sharedCollectionFacts ?? Self.seedCollectionFacts(from: previous.projectedAssets))
+                          .contains { $0.assetID == item.asset.id && $0.collectionID == collectionID }
+              }) else {
             throw RemoteAPIError(code: .conflict, message: "shared collection identity changed")
         }
         guard newName == newName.trimmingCharacters(in: .whitespacesAndNewlines),
