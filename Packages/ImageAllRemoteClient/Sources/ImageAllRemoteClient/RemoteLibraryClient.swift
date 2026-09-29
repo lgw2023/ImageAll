@@ -484,10 +484,19 @@ public struct RemoteLibraryClient: Sendable {
 
     public func fetchPhoneCleanupRecheck() async throws -> RemotePhoneCleanupInbox {
         let inbox: RemotePhoneCleanupInbox = try await getJSON(path: RemoteHTTPPaths.phoneCleanupRecheck)
-        guard inbox.request.map({ $0.isValid && $0.hostID == inbox.hostID && $0.deviceID == inbox.deviceID }) ?? true else {
+        guard inbox.request.map({ $0.isValid && $0.hostID == inbox.hostID && $0.deviceID == inbox.deviceID }) ?? true,
+              inbox.sourceReport.map({ $0.isValid && $0.request == inbox.request }) ?? true else {
             throw RemoteAPIError(code: .badRequest, message: "invalid cleanup recheck response")
         }
         return inbox
+    }
+
+    public func submitPhoneCleanupSourceReport(_ report: RemotePhoneCleanupSourceReport) async throws -> RemotePhoneCleanupSourceReport {
+        guard report.isValid else { throw RemoteAPIError(code: .badRequest, message: "invalid source report") }
+        let receipt: RemotePhoneCleanupSourceReport = try await postJSON(
+            path: RemoteHTTPPaths.phoneCleanupSourceReport, body: encoder.encode(report))
+        guard receipt == report else { throw RemoteAPIError(code: .conflict, message: "source report receipt mismatch") }
+        return receipt
     }
 
     public func submitLocalLibrarySnapshot(

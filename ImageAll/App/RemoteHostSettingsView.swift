@@ -2138,6 +2138,25 @@ final class PhoneArchiveImportModel: ObservableObject {
         }
     }
 
+    func refreshPhoneSourceReport() async {
+        guard !isBusy, let preview = sourceCleanupPreflight else { return }
+        isBusy = true
+        defer { isBusy = false }
+        do {
+            let report = try await RemoteHostProcessHolder.phoneCleanupSourceReport(for: preview)
+            guard sourceCleanupPreflight?.completionReceiptID == preview.completionReceiptID,
+                  sourceCleanupPreflight?.backupReceiptID == preview.backupReceiptID,
+                  selectedBatchID == preview.integrity.migrationID else { throw PhoneArchiveImportError.validationStale }
+            if let report {
+                let time = Date(timeIntervalSince1970: Double(report.checkedAtMs) / 1_000)
+                    .formatted(date: .abbreviated, time: .standard)
+                message = "手机报告在 \(time) 复查了 \(report.verifiedItemCount) 项，\(report.request.favoriteProtectedCount) 项收藏保护。此时间来自手机；这是历史检查记录，执行前仍须复核当前副本并由手机前台确认。未执行删除。"
+            } else {
+                message = "尚未收到手机来源复查结果。请在原手机主动核对并回传。"
+            }
+        } catch { message = "读取手机复查结果失败：\(error.localizedDescription)" }
+    }
+
     private func recoveryParent(for record: PhoneArchiveValidationRecord) throws -> URL {
         let expected = URL(fileURLWithPath: record.recoveryCatalogPath)
             .deletingLastPathComponent().standardizedFileURL.path
@@ -2365,6 +2384,8 @@ private struct PhoneArchiveImportCard: View {
                 if let preview = model.sourceCleanupPreflight {
                     VStack(alignment: .leading, spacing: 4) {
                         Text("手机清理预检记录").font(.headline)
+                        Button("查看手机复查结果") { Task { await model.refreshPhoneSourceReport() } }
+                            .disabled(model.isBusy)
                         Text("Mac 归档与独立备份已核验：\(preview.integrity.itemCount) 项。")
                         Text("按归档事实：\(preview.favoriteProtectedMediaIDs.count) 项收藏受保护，\(preview.candidateMediaIDs.count) 项可供手机进一步核对。")
                         Text("核验时间：\(Date(timeIntervalSince1970: Double(preview.checkedAtMs) / 1_000).formatted(date: .abbreviated, time: .standard))")

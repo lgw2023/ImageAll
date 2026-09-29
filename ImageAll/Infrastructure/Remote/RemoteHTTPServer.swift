@@ -1093,6 +1093,17 @@ actor RemoteHTTPServer {
                 }
                 let payload = await localLibrarySyncStore.cleanupRecheck(authenticatedDeviceID: deviceID)
                 await respondJSON(connection, status: 200, value: payload, timeoutTask: timeoutTask)
+            case ("POST", RemoteHTTPPaths.phoneCleanupSourceReport):
+                guard let deviceID = requestAuthentication.deviceID else {
+                    throw RemoteAPIError(code: .unauthorized, message: "paired device required")
+                }
+                guard let localLibrarySyncStore else {
+                    throw RemoteAPIError(code: .notFound, message: "local library sync unavailable")
+                }
+                let report = try jsonDecoder.decode(RemotePhoneCleanupSourceReport.self, from: body)
+                let payload = try await localLibrarySyncStore.submitCleanupSourceReport(report,
+                    authenticatedDeviceID: deviceID)
+                await respondJSON(connection, status: 200, value: payload, timeoutTask: timeoutTask)
             case ("POST", RemoteHTTPPaths.localLibrarySnapshot):
                 guard let deviceID = requestAuthentication.deviceID else {
                     throw RemoteAPIError(code: .unauthorized, message: "paired device required")

@@ -1834,7 +1834,16 @@ private struct LocalShareScopeView: View {
                         defer { isStreamingArchive = false; streamTask = nil }
                         do {
                             let count = try await model.recheckCleanupSources(request, remote: remoteModel)
-                            cleanupSourceCheckMessage = "本次已复查 \(count) 项原件与整理信息，\(request.favoriteProtectedCount) 项收藏继续保护。未执行删除；仍需 Mac 当前副本复核和手机前台确认。"
+                            let report = RemotePhoneCleanupSourceReport(id: UUID(), request: request,
+                                checkedAtMs: Int64(Date().timeIntervalSince1970 * 1_000), verifiedItemCount: count)
+                            try Task.checkCancellation()
+                            do { try await remoteModel.submitPhoneCleanupSourceReport(report) }
+                            catch {
+                                cleanupSourceCheckMessage = "本机来源复查通过，但回传 Mac 未确认：\(error.localizedDescription)。请重新复查后回传；本次未执行删除。"
+                                return
+                            }
+                            try Task.checkCancellation()
+                            cleanupSourceCheckMessage = "Mac 已接收本次来源检查记录。已复查 \(count) 项原件与整理信息，\(request.favoriteProtectedCount) 项收藏继续保护。未执行删除；仍需 Mac 当前副本复核和手机前台确认。"
                         } catch is CancellationError {
                             cleanupSourceCheckMessage = "来源复查已取消，未形成通过结果。"
                         } catch {

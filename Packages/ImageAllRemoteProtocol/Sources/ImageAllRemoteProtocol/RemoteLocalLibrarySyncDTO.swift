@@ -516,6 +516,7 @@ public struct RemoteLocalLibraryFavoriteTargetReceipt: Codable, Sendable, Equata
 
 
 extension RemoteHTTPPaths {
+    public static let phoneCleanupSourceReport = "/v1/sync/local-library/cleanup-source-report"
     public static let phoneCleanupRecheck = "/v1/sync/local-library/cleanup-recheck"
 }
 
@@ -560,8 +561,29 @@ public struct RemotePhoneCleanupInbox: Codable, Sendable, Equatable {
     public let hostID: UUID
     public let deviceID: UUID
     public let request: RemotePhoneCleanupRecheck?
-    public init(hostID: UUID, deviceID: UUID, request: RemotePhoneCleanupRecheck?) {
+    public let sourceReport: RemotePhoneCleanupSourceReport?
+    public init(hostID: UUID, deviceID: UUID, request: RemotePhoneCleanupRecheck?,
+        sourceReport: RemotePhoneCleanupSourceReport? = nil) {
         self.hostID = hostID; self.deviceID = deviceID; self.request = request
+        self.sourceReport = sourceReport
+    }
+}
+
+/// A phone's historical observation, never a deletion capability or proof of current backups.
+public struct RemotePhoneCleanupSourceReport: Codable, Sendable, Equatable, Identifiable {
+    public let id: UUID
+    public let request: RemotePhoneCleanupRecheck
+    public let checkedAtMs: Int64
+    public let verifiedItemCount: Int
+
+    public init(id: UUID, request: RemotePhoneCleanupRecheck, checkedAtMs: Int64, verifiedItemCount: Int) {
+        self.id = id; self.request = request; self.checkedAtMs = checkedAtMs
+        self.verifiedItemCount = verifiedItemCount
+    }
+
+    public var isValid: Bool {
+        request.isValid && request.factSnapshotSHA256 != nil && checkedAtMs >= 0
+            && verifiedItemCount == request.candidateCount + request.favoriteProtectedCount
     }
 }
 

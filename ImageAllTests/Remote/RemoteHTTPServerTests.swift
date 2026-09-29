@@ -1042,9 +1042,19 @@ final class RemoteHTTPServerTests: XCTestCase {
         let published = try await store.publishCleanupRecheck(preview)
         let replayed = try await store.publishCleanupRecheck(preview)
         XCTAssertEqual(published, replayed)
+        let report = RemotePhoneCleanupSourceReport(id: UUID(), request: published, checkedAtMs: 2000, verifiedItemCount: 1)
+        let accepted = try await store.submitCleanupSourceReport(report, authenticatedDeviceID: deviceID)
+        let repeated = try await store.submitCleanupSourceReport(report, authenticatedDeviceID: deviceID)
+        XCTAssertEqual(accepted, repeated)
+        do { _ = try await store.submitCleanupSourceReport(report, authenticatedDeviceID: UUID()); XCTFail("wrong device") }
+        catch { XCTAssertNotNil(error as? RemoteAPIError) }
+        let changedReport = RemotePhoneCleanupSourceReport(id: report.id, request: published, checkedAtMs: 2001, verifiedItemCount: 1)
+        do { _ = try await store.submitCleanupSourceReport(changedReport, authenticatedDeviceID: deviceID); XCTFail("changed replay") }
+        catch { XCTAssertNotNil(error as? RemoteAPIError) }
         let reopened = try RemoteLocalLibrarySyncStore(hostID: hostID, storageURL: root.appendingPathComponent("sync.json"))
         let inbox = await reopened.cleanupRecheck(authenticatedDeviceID: deviceID)
         XCTAssertEqual(inbox.request, published)
+        XCTAssertEqual(inbox.sourceReport, report)
         let otherInbox = await reopened.cleanupRecheck(authenticatedDeviceID: UUID())
         XCTAssertNil(otherInbox.request)
 
@@ -1062,6 +1072,9 @@ final class RemoteHTTPServerTests: XCTestCase {
         XCTAssertFalse(afterMacEditMatches)
         let staleInbox = await store.cleanupRecheck(authenticatedDeviceID: deviceID)
         XCTAssertNil(staleInbox.request)
+        XCTAssertNil(staleInbox.sourceReport)
+        do { _ = try await store.submitCleanupSourceReport(report, authenticatedDeviceID: deviceID); XCTFail("stale report") }
+        catch { XCTAssertNotNil(error as? RemoteAPIError) }
         do { _ = try await store.publishCleanupRecheck(preview); XCTFail("stale preview must be rejected") }
         catch { XCTAssertNotNil(error as? RemoteAPIError) }
         let restarted = try RemoteLocalLibrarySyncStore(hostID: hostID, storageURL: root.appendingPathComponent("sync.json"))
@@ -1598,6 +1611,17 @@ final class RemoteHTTPServerTests: XCTestCase {
                 factWatermark: 0, phoneSyncCheckpoint: checkpoint, factSnapshot: facts)))
         let deliveredInbox = try await nativeClient.fetchPhoneCleanupRecheck()
         XCTAssertEqual(deliveredInbox.request, recheck)
+        let sourceReport = RemotePhoneCleanupSourceReport(id: UUID(), request: recheck,
+            checkedAtMs: 2000, verifiedItemCount: 1)
+        let reportReceipt = try await nativeClient.submitPhoneCleanupSourceReport(sourceReport)
+        XCTAssertEqual(reportReceipt, sourceReport)
+        let reportedInbox = try await nativeClient.fetchPhoneCleanupRecheck()
+        XCTAssertEqual(reportedInbox.sourceReport, sourceReport)
+        var noReportBearer = URLRequest(url: URL(string: "http://127.0.0.1:\(port)\(RemoteHTTPPaths.phoneCleanupSourceReport)")!)
+        noReportBearer.httpMethod = "POST"
+        noReportBearer.httpBody = try JSONEncoder().encode(sourceReport)
+        let (_, deniedReport) = try await URLSession.shared.data(for: noReportBearer)
+        XCTAssertEqual((deniedReport as? HTTPURLResponse)?.statusCode, 401)
 
         var noBearer = URLRequest(url: URL(string: "http://127.0.0.1:\(port)\(RemoteHTTPPaths.phoneCleanupRecheck)")!)
         noBearer.httpMethod = "GET"

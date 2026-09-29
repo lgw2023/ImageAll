@@ -689,6 +689,18 @@ final class RemoteCompanionModel: ObservableObject {
         return inbox.request
     }
 
+    func submitPhoneCleanupSourceReport(_ report: RemotePhoneCleanupSourceReport) async throws {
+        guard isConnected, let client, let sessionTokens,
+              sessionTokens.hostID == report.request.hostID, sessionTokens.deviceID == report.request.deviceID else {
+            throw RemoteAPIError(code: .unauthorized, message: "请先连接原配对 Mac")
+        }
+        _ = try await client.submitPhoneCleanupSourceReport(report)
+        guard isConnected, self.sessionTokens?.hostID == sessionTokens.hostID,
+              self.sessionTokens?.deviceID == sessionTokens.deviceID else {
+            throw RemoteAPIError(code: .conflict, message: "来源复查回传期间配对身份已变化")
+        }
+    }
+
     func migrationStreamingConnection() throws -> (client: RemoteLibraryClient, hostID: UUID, deviceID: UUID) {
         try validateMigrationNetwork()
         guard isConnected, let client, let sessionTokens, let capabilities,

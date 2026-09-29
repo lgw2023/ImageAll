@@ -108,6 +108,7 @@ actor RemoteLocalLibrarySyncStore {
     private struct CleanupRecheckRecord: Codable {
         let request: RemotePhoneCleanupRecheck
         let snapshot: ImageAllMigrationFactSnapshot
+        var sourceReport: RemotePhoneCleanupSourceReport? = nil
     }
 
     private struct PersistedState: Codable {
@@ -139,7 +140,9 @@ actor RemoteLocalLibrarySyncStore {
             collectionRenames = renames
             let pending = decoded.cleanupRechecks ?? []
             guard Set(pending.map { $0.request.deviceID }).count == pending.count,
-                  pending.allSatisfy({ $0.request.isValid && $0.request.hostID == hostID
+                  pending.allSatisfy({ ($0.sourceReport.map { $0.isValid } ?? true)
+                    && ($0.sourceReport == nil || $0.sourceReport?.request == $0.request)
+                    && $0.request.isValid && $0.request.hostID == hostID
                     && $0.request.deviceID == $0.snapshot.syncCheckpoint?.deviceID
                     && $0.request.sourceInstallID == $0.snapshot.sourceDeviceID
                     && $0.request.sourceEpoch == $0.snapshot.sourceEpoch
@@ -293,7 +296,32 @@ actor RemoteLocalLibrarySyncStore {
             matchesMigrationCheckpoint(entry.snapshot, manifestSHA256: entry.request.manifestSHA256)
                 ? entry.request : nil
         }
-        return .init(hostID: hostID, deviceID: authenticatedDeviceID, request: current)
+        return .init(hostID: hostID, deviceID: authenticatedDeviceID, request: current,
+            sourceReport: current == nil ? nil : pending?.sourceReport)
+    }
+
+    func submitCleanupSourceReport(_ report: RemotePhoneCleanupSourceReport,
+        authenticatedDeviceID: UUID
+    ) throws -> RemotePhoneCleanupSourceReport {
+        guard report.isValid, report.request.hostID == hostID,
+              report.request.deviceID == authenticatedDeviceID else {
+            throw RemoteAPIError(code: .badRequest, message: "invalid source recheck report")
+        }
+        guard let index = cleanupRechecks.firstIndex(where: { $0.request == report.request }),
+              matchesMigrationCheckpoint(cleanupRechecks[index].snapshot,
+                manifestSHA256: report.request.manifestSHA256) else {
+            throw RemoteAPIError(code: .conflict, message: "source recheck request is no longer current")
+        }
+        if let old = cleanupRechecks[index].sourceReport, old.id == report.id {
+            guard old == report else {
+                throw RemoteAPIError(code: .conflict, message: "source report identity reused with different content")
+            }
+            return old
+        }
+        var updated = cleanupRechecks
+        updated[index].sourceReport = report
+        try persist(records, replacingCleanupRechecks: updated)
+        return report
     }
 
     func submitChunk(
