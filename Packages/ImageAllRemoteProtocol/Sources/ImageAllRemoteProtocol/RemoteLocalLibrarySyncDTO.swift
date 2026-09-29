@@ -663,3 +663,73 @@ public struct RemotePhoneCopyAudit: Codable, Sendable, Equatable {
         request.sourceReport.isValid && (state == .passed ? (checkedAtMs.map { $0 >= 0 } ?? false) : checkedAtMs == nil)
     }
 }
+
+extension RemoteHTTPPaths {
+    public static let phoneSourceRetirement = "/v1/sync/local-library/source-retirement"
+}
+
+public enum RemotePhoneSourceRetirementOutcome: String, Codable, Sendable {
+    case completed, failed, outcomeUnknown
+}
+
+public struct RemotePhoneSourceRetirementBinding: Codable, Sendable, Equatable {
+    public let operationID: UUID
+    public let hostID: UUID
+    public let deviceID: UUID
+    public let requestID: UUID
+    public let sourceReportID: UUID
+    public let migrationID: UUID
+    public let sourceInstallID: UUID
+    public let sourceEpoch: UUID
+    public let scopeRevision: Int64
+    public let completionReceiptID: UUID
+    public let backupReceiptID: UUID
+    public let manifestSHA256: String
+    public let factSnapshotSHA256: String
+    public let candidateCount: Int
+    public let candidateSHA256: String
+
+    public init(operationID: UUID, hostID: UUID, deviceID: UUID, requestID: UUID, sourceReportID: UUID,
+        migrationID: UUID, sourceInstallID: UUID, sourceEpoch: UUID, scopeRevision: Int64,
+        completionReceiptID: UUID, backupReceiptID: UUID, manifestSHA256: String,
+        factSnapshotSHA256: String, candidateAssetIDs: [UUID]) {
+        self.operationID = operationID; self.hostID = hostID; self.deviceID = deviceID
+        self.requestID = requestID; self.sourceReportID = sourceReportID; self.migrationID = migrationID
+        self.sourceInstallID = sourceInstallID; self.sourceEpoch = sourceEpoch; self.scopeRevision = scopeRevision
+        self.completionReceiptID = completionReceiptID; self.backupReceiptID = backupReceiptID
+        self.manifestSHA256 = manifestSHA256; self.factSnapshotSHA256 = factSnapshotSHA256
+        self.candidateCount = candidateAssetIDs.count
+        self.candidateSHA256 = Self.candidateDigest(candidateAssetIDs)
+    }
+
+    public static func candidateDigest(_ ids: [UUID]) -> String {
+        let canonical = ids.map { $0.uuidString.lowercased() }.sorted().joined(separator: "\n")
+        return SHA256.hash(data: Data(canonical.utf8)).map { String(format: "%02x", $0) }.joined()
+    }
+}
+
+/// A historical source outcome only. Receiving it must never mutate archive files
+/// or shared human facts, and unknown must never be interpreted as deletion.
+public struct RemotePhoneSourceRetirement: Codable, Sendable, Equatable {
+    public let binding: RemotePhoneSourceRetirementBinding
+    public let outcome: RemotePhoneSourceRetirementOutcome
+    public let updatedAtMs: Int64
+    public init(binding: RemotePhoneSourceRetirementBinding, outcome: RemotePhoneSourceRetirementOutcome, updatedAtMs: Int64) {
+        self.binding = binding; self.outcome = outcome; self.updatedAtMs = updatedAtMs
+    }
+    public var isValid: Bool {
+        updatedAtMs >= 0 && binding.scopeRevision >= 0 && binding.candidateCount > 0
+            && binding.candidateCount <= 1_000_000
+            && [binding.manifestSHA256, binding.factSnapshotSHA256, binding.candidateSHA256].allSatisfy {
+                $0.count == 64 && $0.allSatisfy { "0123456789abcdef".contains($0) }
+            }
+    }
+}
+
+public struct RemotePhoneSourceRetirementReceipt: Codable, Sendable, Equatable {
+    public let report: RemotePhoneSourceRetirement
+    public let receivedAtMs: Int64
+    public init(report: RemotePhoneSourceRetirement, receivedAtMs: Int64) {
+        self.report = report; self.receivedAtMs = receivedAtMs
+    }
+}

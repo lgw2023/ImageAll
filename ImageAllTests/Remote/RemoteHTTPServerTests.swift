@@ -1055,6 +1055,15 @@ final class RemoteHTTPServerTests: XCTestCase {
         let inbox = await reopened.cleanupRecheck(authenticatedDeviceID: deviceID)
         XCTAssertEqual(inbox.request, published)
         XCTAssertEqual(inbox.sourceReport, report)
+        let retirement = sourceRetirementFixture(report, candidateIDs: [assetID])
+        let initialRetirement = try await store.submitSourceRetirement(retirement, authenticatedDeviceID: deviceID)
+        let replayRetirement = try await store.submitSourceRetirement(retirement, authenticatedDeviceID: deviceID)
+        XCTAssertEqual(initialRetirement, replayRetirement)
+        do { _ = try await store.submitSourceRetirement(retirement, authenticatedDeviceID: UUID()); XCTFail("wrong retirement device") }
+        catch { XCTAssertNotNil(error as? RemoteAPIError) }
+        let forged = sourceRetirementFixture(report, candidateIDs: [UUID()])
+        do { _ = try await store.submitSourceRetirement(forged, authenticatedDeviceID: deviceID); XCTFail("wrong retired assets") }
+        catch { XCTAssertNotNil(error as? RemoteAPIError) }
         let auditRequest = RemotePhoneCopyAuditRequest(id: UUID(), sourceReport: report)
         var audit = try await store.startCopyAudit(auditRequest, authenticatedDeviceID: deviceID) { _ in
             throw RemoteAPIError(code: .conflict, message: "synthetic damaged backup")
@@ -1078,6 +1087,13 @@ final class RemoteHTTPServerTests: XCTestCase {
             facts, manifestSHA256: String(repeating: "b", count: 64)
         )
         XCTAssertFalse(wrongArchiveMatches)
+        let replacement = try await store.publishCleanupRecheck(.init(
+            completionReceiptID: preview.completionReceiptID, backupReceiptID: UUID(), checkedAtMs: 2500,
+            candidateMediaIDs: preview.candidateMediaIDs, favoriteProtectedMediaIDs: preview.favoriteProtectedMediaIDs,
+            integrity: preview.integrity))
+        XCTAssertNotEqual(replacement.id, published.id)
+        let replacedInbox = await store.cleanupRecheck(authenticatedDeviceID: deviceID)
+        XCTAssertNil(replacedInbox.sourceReport)
         _ = try await store.setTagDecisionFromMac(
             deviceID: deviceID, assetID: assetID, tagID: tagID,
             decision: .rejected, expectedRevision: 1
@@ -1095,7 +1111,17 @@ final class RemoteHTTPServerTests: XCTestCase {
         catch { XCTAssertNotNil(error as? RemoteAPIError) }
         do { _ = try await store.publishCleanupRecheck(preview); XCTFail("stale preview must be rejected") }
         catch { XCTAssertNotNil(error as? RemoteAPIError) }
+        // Source results may arrive after newer facts: they are historical receipts,
+        // never authorization to perform another source or archive mutation.
+        let completedRetirement = RemotePhoneSourceRetirement(binding: retirement.binding, outcome: .completed, updatedAtMs: 4000)
+        let finalRetirement = try await store.submitSourceRetirement(completedRetirement, authenticatedDeviceID: deviceID)
+        do { _ = try await store.submitSourceRetirement(retirement, authenticatedDeviceID: deviceID); XCTFail("terminal result must not downgrade") }
+        catch { XCTAssertNotNil(error as? RemoteAPIError) }
         let restarted = try RemoteLocalLibrarySyncStore(hostID: hostID, storageURL: root.appendingPathComponent("sync.json"))
+        let retirementHistory = await restarted.sourceRetirementReceipts(migrationID: published.migrationID)
+        XCTAssertEqual(retirementHistory, [finalRetirement])
+        let retainedProjection = await restarted.projection(deviceID: deviceID)
+        XCTAssertTrue(retainedProjection?.assets.contains(where: { $0.id == assetID }) == true)
         let restartedInbox = await restarted.cleanupRecheck(authenticatedDeviceID: deviceID)
         XCTAssertNil(restartedInbox.request)
 
@@ -1638,6 +1664,17 @@ final class RemoteHTTPServerTests: XCTestCase {
         XCTAssertEqual(reportReceipt, sourceReport)
         let reportedInbox = try await nativeClient.fetchPhoneCleanupRecheck()
         XCTAssertEqual(reportedInbox.sourceReport, sourceReport)
+        let retirement = sourceRetirementFixture(sourceReport, candidateIDs: [assetID])
+        XCTAssertLessThan(try JSONEncoder().encode(retirement).count, 2048)
+        let retirementReceipt = try await nativeClient.submitPhoneSourceRetirement(retirement)
+        XCTAssertEqual(retirementReceipt.report, retirement)
+        let retirementReplay = try await nativeClient.submitPhoneSourceRetirement(retirement)
+        XCTAssertEqual(retirementReplay, retirementReceipt)
+        var noRetirementBearer = URLRequest(url: URL(string: "http://127.0.0.1:\(port)\(RemoteHTTPPaths.phoneSourceRetirement)")!)
+        noRetirementBearer.httpMethod = "POST"
+        noRetirementBearer.httpBody = try JSONEncoder().encode(retirement)
+        let (_, deniedRetirement) = try await URLSession.shared.data(for: noRetirementBearer)
+        XCTAssertEqual((deniedRetirement as? HTTPURLResponse)?.statusCode, 401)
         let auditRequest = RemotePhoneCopyAuditRequest(id: UUID(), sourceReport: sourceReport)
         var audit = try await nativeClient.startPhoneCopyAudit(auditRequest)
         for _ in 0..<50 where audit.state == .running {
@@ -2729,6 +2766,16 @@ final class RemoteHTTPServerTests: XCTestCase {
             storageURL: tempStorageURL(name: "access-accounts.json"),
             passwordHashIterations: 100
         )
+    }
+
+    private func sourceRetirementFixture(_ source: RemotePhoneCleanupSourceReport, candidateIDs: [UUID]) -> RemotePhoneSourceRetirement {
+        let r = source.request
+        let binding = RemotePhoneSourceRetirementBinding(operationID: UUID(), hostID: r.hostID, deviceID: r.deviceID,
+            requestID: r.id, sourceReportID: source.id, migrationID: r.migrationID,
+            sourceInstallID: r.sourceInstallID, sourceEpoch: r.sourceEpoch, scopeRevision: r.scopeRevision,
+            completionReceiptID: r.completionReceiptID, backupReceiptID: r.backupReceiptID,
+            manifestSHA256: r.manifestSHA256, factSnapshotSHA256: r.factSnapshotSHA256!, candidateAssetIDs: candidateIDs)
+        return .init(binding: binding, outcome: .outcomeUnknown, updatedAtMs: 3000)
     }
 
     private func makeServer(

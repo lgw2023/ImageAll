@@ -45,12 +45,21 @@ import Testing
     #expect(hidden.selectedAssetIDs == [asset.id])
     #expect(try await store.retiredSourcePresence(assetID: asset.id) == nil)
     try await store.finishSourceRetirement(id: plan.id, outcome: .unknown)
+    let unknownRecord = try #require(await store.sourceRetirementRecords().first)
+    try await store.acknowledgeSourceRetirement(id: plan.id, state: unknownRecord.state, updatedAtMs: unknownRecord.updatedAtMs)
+    #expect(try await store.sourceRetirementRecords().first?.acknowledgedByMac == true)
     await #expect(throws: (any Error).self) { try await store.cancelSourceRetirement(id: plan.id) }
     #expect(try await store.retiredSourcePresence(assetID: asset.id) == nil)
     // Simulate an explicit successful source callback, never PhotoKit I/O.
     try await store.finishSourceRetirement(id: plan.id, outcome: .succeeded)
     try await store.finishSourceRetirement(id: plan.id, outcome: .succeeded)
     #expect(try await store.retiredSourcePresence(assetID: asset.id) == .retired)
+    #expect(try await store.sourceRetirementRecords().first?.acknowledgedByMac == false)
+    await #expect(throws: (any Error).self) {
+        try await store.acknowledgeSourceRetirement(id: plan.id, state: unknownRecord.state, updatedAtMs: unknownRecord.updatedAtMs)
+    }
+    let completedRecord = try #require(await store.sourceRetirementRecords().first)
+    try await store.acknowledgeSourceRetirement(id: plan.id, state: completedRecord.state, updatedAtMs: completedRecord.updatedAtMs)
     #expect(try await store.pendingSharedOperations().isEmpty)
     let retained = try await store.sharedSnapshot(visibleIdentifiers: ["synthetic"])
     #expect(retained.selectedAssetIDs == checked.snapshot.selectedAssetIDs)
@@ -60,6 +69,7 @@ import Testing
     _ = try await store.exportBackup(to: backup)
     let restored = try LocalLibraryStore(url: backup)
     #expect(try await restored.sourceRetirementRecords().first?.state == .completed)
+    #expect(try await restored.sourceRetirementRecords().first?.acknowledgedByMac == true)
     #expect(try await restored.retiredSourcePresence(assetID: asset.id) == .retired)
     try await store.observe([.init(localIdentifier: "synthetic", kind: "image", creationDate: nil, isFavorite: false)])
     #expect(try await store.retiredSourcePresence(assetID: asset.id) == .observedAgain)

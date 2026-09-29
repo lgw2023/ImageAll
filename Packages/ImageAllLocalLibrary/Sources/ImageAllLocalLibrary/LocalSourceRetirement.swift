@@ -41,6 +41,7 @@ public struct LocalSourceRetirementRecord: Codable, Sendable, Equatable, Identif
     public let plan: LocalSourceRetirementPlan
     public let state: LocalSourceRetirementState
     public let updatedAtMs: Int64
+    public var acknowledgedByMac = false
 }
 
 public enum LocalRetiredReplicaPresence: String, Sendable {

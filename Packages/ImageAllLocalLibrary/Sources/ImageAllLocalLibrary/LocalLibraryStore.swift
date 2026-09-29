@@ -454,6 +454,10 @@ public actor LocalLibraryStore {
                 CREATE TABLE IF NOT EXISTS source_retirement_operations (
                   id TEXT PRIMARY KEY, plan_json TEXT NOT NULL, state TEXT NOT NULL, updated_at_ms INTEGER NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS source_retirement_receipts (
+                  operation_id TEXT PRIMARY KEY REFERENCES source_retirement_operations(id),
+                  state TEXT NOT NULL, record_updated_at_ms INTEGER NOT NULL
+                );
                 CREATE TABLE IF NOT EXISTS retired_source_replicas (
                   asset_id TEXT PRIMARY KEY REFERENCES assets(id), operation_id TEXT NOT NULL
                     REFERENCES source_retirement_operations(id), presence TEXT NOT NULL
@@ -618,11 +622,31 @@ public actor LocalLibraryStore {
     deinit { sqlite3_close(db) }
 
     public func sourceRetirementRecords() throws -> [LocalSourceRetirementRecord] {
-        try rows("SELECT plan_json,state,updated_at_ms FROM source_retirement_operations ORDER BY updated_at_ms,id").map { row in
+        try rows("""
+            SELECT o.plan_json,o.state,o.updated_at_ms,r.state,r.record_updated_at_ms
+            FROM source_retirement_operations o LEFT JOIN source_retirement_receipts r ON r.operation_id=o.id
+            ORDER BY o.updated_at_ms,o.id
+            """).map { row in
             guard let json = row[0], let rawState = row[1], let state = LocalSourceRetirementState(rawValue: rawState),
                   let time = Int64(row[2] ?? "") else { throw LocalLibraryError.sourceRetirementConflict }
-            return .init(plan: try JSONDecoder().decode(LocalSourceRetirementPlan.self, from: Data(json.utf8)),
+            var record = LocalSourceRetirementRecord(plan: try JSONDecoder().decode(LocalSourceRetirementPlan.self, from: Data(json.utf8)),
                 state: state, updatedAtMs: time)
+            record.acknowledgedByMac = row[3] == rawState && row[4] == String(time)
+            return record
+        }
+    }
+
+    public func acknowledgeSourceRetirement(id: UUID, state: LocalSourceRetirementState, updatedAtMs: Int64) throws {
+        try transaction {
+            let record = try sourceRetirementRecord(id)
+            guard record.state == state, record.updatedAtMs == updatedAtMs,
+                  [.submitted, .outcomeUnknown, .completed, .failed].contains(state) else {
+                throw LocalLibraryError.sourceRetirementConflict
+            }
+            try execute("""
+                INSERT INTO source_retirement_receipts(operation_id,state,record_updated_at_ms) VALUES(?,?,?)
+                ON CONFLICT(operation_id) DO UPDATE SET state=excluded.state,record_updated_at_ms=excluded.record_updated_at_ms
+                """, [id.uuidString, state.rawValue, String(updatedAtMs)])
         }
     }
 

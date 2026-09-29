@@ -491,6 +491,16 @@ public struct RemoteLibraryClient: Sendable {
         return inbox
     }
 
+    public func submitPhoneSourceRetirement(_ report: RemotePhoneSourceRetirement) async throws -> RemotePhoneSourceRetirementReceipt {
+        guard report.isValid else { throw RemoteAPIError(code: .badRequest, message: "invalid source retirement") }
+        let receipt: RemotePhoneSourceRetirementReceipt = try await postJSON(path: RemoteHTTPPaths.phoneSourceRetirement,
+            body: encoder.encode(report))
+        guard receipt.report == report, receipt.receivedAtMs >= 0 else {
+            throw RemoteAPIError(code: .conflict, message: "source retirement receipt mismatch")
+        }
+        return receipt
+    }
+
     public func startPhoneCopyAudit(_ request: RemotePhoneCopyAuditRequest) async throws -> RemotePhoneCopyAudit {
         guard request.sourceReport.isValid else { throw RemoteAPIError(code: .badRequest, message: "invalid copy audit request") }
         let result: RemotePhoneCopyAudit = try await postJSON(path: RemoteHTTPPaths.phoneCleanupCopyAudit,

@@ -543,6 +543,28 @@ final class LocalLibraryModel: ObservableObject {
         return try await store.sourceRetirementRecords().reversed()
     }
 
+    func sendSourceRetirement(_ id: UUID, remote: RemoteCompanionModel) async throws {
+        guard let store, let record = try await store.sourceRetirementRecords().first(where: { $0.id == id }) else {
+            throw LocalFavoriteSourceError.storeUnavailable
+        }
+        let outcome: RemotePhoneSourceRetirementOutcome
+        switch record.state {
+        case .completed: outcome = .completed
+        case .failed: outcome = .failed
+        case .submitted, .outcomeUnknown: outcome = .outcomeUnknown
+        case .prepared, .cancelled: throw LocalLibraryError.sourceRetirementConflict
+        }
+        let p = record.plan
+        let binding = RemotePhoneSourceRetirementBinding(operationID: p.id, hostID: p.checkpoint.hostID,
+            deviceID: p.checkpoint.deviceID, requestID: p.requestID, sourceReportID: p.sourceReportID,
+            migrationID: p.migrationID, sourceInstallID: p.snapshot.installID, sourceEpoch: p.snapshot.sourceEpoch,
+            scopeRevision: p.snapshot.scopeRevision, completionReceiptID: p.completionReceiptID,
+            backupReceiptID: p.backupReceiptID, manifestSHA256: p.manifestSHA256,
+            factSnapshotSHA256: p.factSnapshotSHA256, candidateAssetIDs: p.candidateAssetIDs)
+        try await remote.submitSourceRetirement(.init(binding: binding, outcome: outcome, updatedAtMs: record.updatedAtMs))
+        try await store.acknowledgeSourceRetirement(id: id, state: record.state, updatedAtMs: record.updatedAtMs)
+    }
+
     func cancelPreparedSourceRetirement(_ id: UUID) async throws {
         guard let store else { throw LocalFavoriteSourceError.storeUnavailable }
         try await store.cancelSourceRetirement(id: id)
@@ -572,8 +594,11 @@ final class LocalLibraryModel: ObservableObject {
         let visible = try await observedSharedVisibleIdentifiers()
         let source = PhotoKitLocalRetirementSource(plan: checked.plan, versions: checked.sourceVersions,
             auditDeadline: auditDeadline)
-        return try await LocalSourceRetirementExecutor.perform(checked.plan, store: store,
+        let result = try await LocalSourceRetirementExecutor.perform(checked.plan, store: store,
             visibleIdentifiers: visible, source: source)
+        // Outcome is already durable. A lost network receipt cannot undo it or retry PhotoKit.
+        try? await sendSourceRetirement(result.id, remote: remote)
+        return (try? await store.sourceRetirementRecords())?.first(where: { $0.id == result.id }) ?? result
     }
 
     func exportCompletionCheckpointFacts(
@@ -2006,6 +2031,9 @@ private struct LocalShareScopeView: View {
                                     case .failed: cleanupSourceCheckMessage = "系统未确认删除，或提交前条件已变化；未记为退役。"
                                     default: cleanupSourceCheckMessage = "来源操作结果未确定，已保留记录，不会自动重试。"
                                     }
+                                    if !result.acknowledgedByMac {
+                                        cleanupSourceCheckMessage = (cleanupSourceCheckMessage ?? "") + " Mac 尚未确认收到，可在清理记录中回传。"
+                                    }
                                 } catch { cleanupSourceCheckMessage = "来源清理未完成：\(error.localizedDescription)。若已提交系统，记录会保留，不会自动重试。" }
                             }
                         }
@@ -2046,6 +2074,19 @@ private struct LocalShareScopeView: View {
                     case .completed: Text("系统曾确认删除，来源退役已记录。恢复请前往系统照片。")
                     case .cancelled: Text("已取消准备，未提交系统。")
                     case .failed: Text("系统未确认删除或提交前检查未通过。")
+                    }
+                    if [.completed, .failed, .submitted, .outcomeUnknown].contains(record.state) {
+                        Text(record.acknowledgedByMac ? "Mac 已确认收到本条结果。" : "本条结果待回传 Mac。")
+                        if !record.acknowledgedByMac {
+                            Button("回传本条记录（不重复删除）") {
+                                Task {
+                                    do {
+                                        try await model.sendSourceRetirement(record.id, remote: remoteModel)
+                                        retirementHistory = try await model.sourceRetirementHistory()
+                                    } catch { archiveStatusMessage = "回传未确认：\(error.localizedDescription)" }
+                                }
+                            }.disabled(isStreamingArchive)
+                        }
                     }
                 }.font(.footnote).foregroundStyle(.secondary)
             }

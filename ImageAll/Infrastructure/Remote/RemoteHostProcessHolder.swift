@@ -619,6 +619,11 @@ enum RemoteHostProcessHolder {
         return try await store.publishCleanupRecheck(preview)
     }
 
+    static func phoneSourceRetirementReceipts(migrationID: UUID) async throws -> [RemotePhoneSourceRetirementReceipt] {
+        guard let store = try await state.syncStoreForUI() else { return [] }
+        return await store.sourceRetirementReceipts(migrationID: migrationID)
+    }
+
     static func phoneCleanupSourceReport(for preview: PhoneArchiveSourceCleanupPreflight) async throws -> RemotePhoneCleanupSourceReport? {
         guard let checkpoint = preview.integrity.phoneSyncCheckpoint,
               (await pairedDevices()).contains(where: { $0.deviceID == checkpoint.deviceID }),

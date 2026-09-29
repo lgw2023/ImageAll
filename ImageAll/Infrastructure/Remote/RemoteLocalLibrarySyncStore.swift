@@ -111,8 +111,15 @@ actor RemoteLocalLibrarySyncStore {
         var sourceReport: RemotePhoneCleanupSourceReport? = nil
     }
 
+    private struct SourceReportHistory: Codable {
+        let report: RemotePhoneCleanupSourceReport
+        let candidateAssetIDs: [UUID]
+    }
+
     private struct PersistedState: Codable {
         var cleanupRechecks: [CleanupRecheckRecord]? = nil
+        var sourceReportHistory: [SourceReportHistory]? = nil
+        var retirementReceipts: [RemotePhoneSourceRetirementReceipt]? = nil
         var records: [Record]
         var collectionRenames: [RemoteLocalCollectionRenameReceipt]?
     }
@@ -122,6 +129,8 @@ actor RemoteLocalLibrarySyncStore {
     private var records: [UUID: Record]
     private var collectionRenames: [RemoteLocalCollectionRenameReceipt] = []
     private var cleanupRechecks: [CleanupRecheckRecord] = []
+    private var sourceReportHistory: [SourceReportHistory] = []
+    private var retirementReceipts: [RemotePhoneSourceRetirementReceipt] = []
 
     init(hostID: UUID, storageURL: URL) throws {
         self.hostID = hostID
@@ -151,6 +160,25 @@ actor RemoteLocalLibrarySyncStore {
                 throw RemoteAPIError(code: .internalError, message: "invalid cleanup recheck ledger")
             }
             cleanupRechecks = pending
+            let history = decoded.sourceReportHistory ?? pending.compactMap { entry in
+                entry.sourceReport.map { SourceReportHistory(report: $0, candidateAssetIDs:
+                    entry.snapshot.items.filter { !$0.observedFavorite && $0.favoriteTarget != true }.map(\.mediaID)
+                        .sorted { $0.uuidString < $1.uuidString }) }
+            }
+            guard Set(history.map { "\($0.report.request.deviceID)|\($0.report.id)" }).count == history.count,
+                  history.allSatisfy({ $0.report.isValid && $0.report.request.hostID == hostID
+                    && Set($0.candidateAssetIDs).count == $0.candidateAssetIDs.count
+                    && $0.candidateAssetIDs.count == $0.report.request.candidateCount }) else {
+                throw RemoteAPIError(code: .internalError, message: "invalid source report history")
+            }
+            let retirements = decoded.retirementReceipts ?? []
+            guard Set(retirements.map { "\($0.report.binding.deviceID)|\($0.report.binding.operationID)" }).count == retirements.count,
+                  retirements.allSatisfy({ receipt in receipt.receivedAtMs >= 0 && receipt.report.isValid
+                    && history.contains { Self.retirementMatches(receipt.report, history: $0) } }) else {
+                throw RemoteAPIError(code: .internalError, message: "invalid source retirement receipts")
+            }
+            sourceReportHistory = history
+            retirementReceipts = retirements
             guard Set(decoded.records.map(\.deviceID)).count == decoded.records.count,
                   decoded.records.allSatisfy({ record in
                       let projectedIDs = record.projectedAssets.map(\.asset.id)
@@ -375,10 +403,59 @@ actor RemoteLocalLibrarySyncStore {
             }
             return old
         }
+        var history = sourceReportHistory
+        if let old = history.first(where: { $0.report.request.deviceID == authenticatedDeviceID && $0.report.id == report.id }) {
+            guard old.report == report else { throw RemoteAPIError(code: .conflict, message: "source report ID reused") }
+        } else {
+            history.append(.init(report: report, candidateAssetIDs: cleanupRechecks[index].snapshot.items
+                .filter { !$0.observedFavorite && $0.favoriteTarget != true }.map(\.mediaID)
+                .sorted { $0.uuidString < $1.uuidString }))
+        }
         var updated = cleanupRechecks
         updated[index].sourceReport = report
-        try persist(records, replacingCleanupRechecks: updated)
+        try persist(records, replacingCleanupRechecks: updated, replacingSourceHistory: history)
         return report
+    }
+
+    private static func retirementMatches(_ report: RemotePhoneSourceRetirement, history: SourceReportHistory) -> Bool {
+        let b = report.binding, request = history.report.request
+        return b.hostID == request.hostID && b.deviceID == request.deviceID
+            && b.requestID == request.id && b.sourceReportID == history.report.id
+            && b.migrationID == request.migrationID && b.sourceInstallID == request.sourceInstallID
+            && b.sourceEpoch == request.sourceEpoch && b.scopeRevision == request.scopeRevision
+            && b.completionReceiptID == request.completionReceiptID && b.backupReceiptID == request.backupReceiptID
+            && b.manifestSHA256 == request.manifestSHA256 && b.factSnapshotSHA256 == request.factSnapshotSHA256
+            && b.candidateCount == history.candidateAssetIDs.count
+            && b.candidateSHA256 == RemotePhoneSourceRetirementBinding.candidateDigest(history.candidateAssetIDs)
+    }
+
+    func submitSourceRetirement(_ report: RemotePhoneSourceRetirement,
+        authenticatedDeviceID: UUID
+    ) throws -> RemotePhoneSourceRetirementReceipt {
+        guard report.isValid, report.binding.hostID == hostID, report.binding.deviceID == authenticatedDeviceID,
+              sourceReportHistory.contains(where: { Self.retirementMatches(report, history: $0) }) else {
+            throw RemoteAPIError(code: .conflict, message: "source retirement does not match a saved source report")
+        }
+        let index = retirementReceipts.firstIndex { $0.report.binding.deviceID == authenticatedDeviceID
+            && $0.report.binding.operationID == report.binding.operationID }
+        if let index {
+            let old = retirementReceipts[index]
+            if old.report == report { return old }
+            guard old.report.binding == report.binding, old.report.outcome == .outcomeUnknown else {
+                throw RemoteAPIError(code: .conflict, message: "source retirement identity or terminal result changed")
+            }
+        }
+        let receipt = RemotePhoneSourceRetirementReceipt(report: report,
+            receivedAtMs: Int64(Date().timeIntervalSince1970 * 1_000))
+        var updated = retirementReceipts
+        if let index { updated[index] = receipt } else { updated.append(receipt) }
+        try persist(records, replacingRetirementReceipts: updated)
+        return receipt
+    }
+
+    func sourceRetirementReceipts(migrationID: UUID) -> [RemotePhoneSourceRetirementReceipt] {
+        retirementReceipts.filter { $0.report.binding.migrationID == migrationID }
+            .sorted { $0.receivedAtMs > $1.receivedAtMs }
     }
 
     func submitChunk(
@@ -1783,10 +1860,16 @@ actor RemoteLocalLibrarySyncStore {
         }.sorted { $0.assetID.uuidString < $1.assetID.uuidString }
     }
 
-    private func persist(_ updated: [UUID: Record], appendingRename: RemoteLocalCollectionRenameReceipt? = nil, replacingCleanupRechecks: [CleanupRecheckRecord]? = nil) throws {
+    private func persist(_ updated: [UUID: Record], appendingRename: RemoteLocalCollectionRenameReceipt? = nil, replacingCleanupRechecks: [CleanupRecheckRecord]? = nil,
+        replacingSourceHistory: [SourceReportHistory]? = nil,
+        replacingRetirementReceipts: [RemotePhoneSourceRetirementReceipt]? = nil) throws {
         let renames = collectionRenames + (appendingRename.map { [$0] } ?? [])
         let pending = replacingCleanupRechecks ?? cleanupRechecks
-        let persisted = PersistedState(cleanupRechecks: pending.isEmpty ? nil : pending, records: updated.values.sorted {
+        let history = replacingSourceHistory ?? sourceReportHistory
+        let retirements = replacingRetirementReceipts ?? retirementReceipts
+        let persisted = PersistedState(cleanupRechecks: pending.isEmpty ? nil : pending,
+            sourceReportHistory: history.isEmpty ? nil : history,
+            retirementReceipts: retirements.isEmpty ? nil : retirements, records: updated.values.sorted {
             $0.deviceID.uuidString < $1.deviceID.uuidString
         }, collectionRenames: renames.isEmpty ? nil : renames)
         let encoder = JSONEncoder()
@@ -1799,6 +1882,8 @@ actor RemoteLocalLibrarySyncStore {
         records = updated
         collectionRenames = renames
         cleanupRechecks = pending
+        sourceReportHistory = history
+        retirementReceipts = retirements
     }
 
     private func receipt(

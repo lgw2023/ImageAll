@@ -2161,6 +2161,25 @@ final class PhoneArchiveImportModel: ObservableObject {
         }
     }
 
+    func refreshPhoneRetirements() async {
+        guard !isBusy, let batch = selectedBatch else { return }
+        isBusy = true
+        defer { isBusy = false }
+        do {
+            let receipts = try await RemoteHostProcessHolder.phoneSourceRetirementReceipts(migrationID: batch.id)
+            guard selectedBatchID == batch.id else { return }
+            message = receipts.isEmpty ? "尚未收到该批次的手机清理结果。" : receipts.prefix(5).map { receipt in
+                let state: String
+                switch receipt.report.outcome {
+                case .completed: state = "手机报告系统已确认删除"
+                case .failed: state = "手机报告未确认删除"
+                case .outcomeUnknown: state = "手机报告结果待核实，不视为已删除"
+                }
+                return "\(receipt.report.binding.candidateCount) 项：\(state)。Mac 独立归档保留。"
+            }.joined(separator: "\n")
+        } catch { message = "读取手机清理结果失败：\(error.localizedDescription)" }
+    }
+
     func refreshPhoneSourceReport() async {
         guard !isBusy, let preview = sourceCleanupPreflight else { return }
         isBusy = true
@@ -2377,6 +2396,8 @@ private struct PhoneArchiveImportCard: View {
                         Text("所选范围回执 · \(receipt.itemCount) 项 · \(model.completionReceiptIsCurrent ? "当前复核通过" : "需复核")")
                             .font(.caption).foregroundStyle(.secondary)
                         Spacer()
+                        Button("查看手机清理结果") { Task { await model.refreshPhoneRetirements() } }
+                            .disabled(model.isBusy)
                         Button("复核回执") {
                             Task { await model.auditLatestCompletionReceipt() }
                         }
