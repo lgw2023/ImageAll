@@ -266,9 +266,11 @@ actor RemoteLocalLibrarySyncStore {
               preview.candidateMediaIDs.count + preview.favoriteProtectedMediaIDs.count == snapshot.items.count else {
             throw RemoteAPIError(code: .conflict, message: "migration checkpoint changed")
         }
+        let factDigest = try RemotePhoneCleanupRecheck.factDigest(snapshot)
         if let old = cleanupRechecks.first(where: { $0.request.deviceID == checkpoint.deviceID }),
            old.request.completionReceiptID == preview.completionReceiptID,
-           old.request.backupReceiptID == preview.backupReceiptID, old.snapshot == snapshot {
+           old.request.backupReceiptID == preview.backupReceiptID, old.snapshot == snapshot,
+           old.request.factSnapshotSHA256 == factDigest {
             return old.request
         }
         let request = RemotePhoneCleanupRecheck(id: UUID(), hostID: hostID, deviceID: checkpoint.deviceID,
@@ -276,7 +278,8 @@ actor RemoteLocalLibrarySyncStore {
             sourceEpoch: snapshot.sourceEpoch, scopeRevision: snapshot.scopeRevision,
             manifestSHA256: preview.integrity.manifestSHA256, completionReceiptID: preview.completionReceiptID,
             backupReceiptID: preview.backupReceiptID, candidateCount: preview.candidateMediaIDs.count,
-            favoriteProtectedCount: preview.favoriteProtectedMediaIDs.count, createdAtMs: preview.checkedAtMs)
+            favoriteProtectedCount: preview.favoriteProtectedMediaIDs.count, createdAtMs: preview.checkedAtMs,
+            factSnapshotSHA256: factDigest)
         guard request.isValid else { throw RemoteAPIError(code: .badRequest, message: "invalid cleanup recheck") }
         let updated = cleanupRechecks.filter { $0.request.deviceID != request.deviceID }
             + [CleanupRecheckRecord(request: request, snapshot: snapshot)]

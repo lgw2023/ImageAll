@@ -453,6 +453,77 @@ final class LocalLibraryModel: ObservableObject {
         }.value
     }
 
+    func recheckCleanupSources(_ request: RemotePhoneCleanupRecheck,
+        remote: RemoteCompanionModel
+    ) async throws -> Int {
+        guard UIApplication.shared.applicationState == .active else { throw CancellationError() }
+        try await validateCleanupRecheckIdentity(request)
+        guard try await remote.fetchPhoneCleanupRecheck() == request else {
+            throw LocalArchiveExportError.selectionChanged
+        }
+        let stream = try LocalPhotoArchiveExporter.existingStreamingArchives().first { $0.migrationID == request.migrationID }
+        let lease: ImageAllMigrationExportCheckpoint?
+        let root: URL
+        let record: ImageAllMigrationStreamRecord?
+        let header: ImageAllMigrationHeader
+        let items: [ImageAllMigrationItem]
+        if let stream {
+            let opened = try ImageAllMigrationExportCheckpoint(streamingRoot: stream.root)
+            lease = opened
+            root = opened.root
+            do {
+                let saved = try ImageAllMigrationStreamRecord.read(in: root)
+                guard saved.hostID == request.hostID, saved.deviceID == request.deviceID else {
+                    throw LocalArchiveExportError.archiveScopeChanged
+                }
+                record = saved; header = saved.header; items = saved.items
+            } catch { opened.close(); throw error }
+        } else {
+            lease = nil; record = nil
+            guard let saved = try LocalPhotoArchiveExporter.existingArchives().first(where: {
+                UUID(uuidString: $0.deletingPathExtension().lastPathComponent) == request.migrationID
+            }) else {
+                throw RemoteAPIError(code: .notFound, message: "本机没有该迁移批次的归档或逐资源记录，不能核对来源")
+            }
+            root = saved
+            var foundHeader: ImageAllMigrationHeader?
+            var foundItems: [ImageAllMigrationItem] = []
+            _ = try ImageAllMigrationArchive.visitVerifiedRecords(at: root,
+                onHeader: { foundHeader = $0 }, onItem: { foundItems.append($0) })
+            guard let foundHeader else { throw LocalArchiveExportError.incompleteArchive }
+            header = foundHeader; items = foundItems
+        }
+        defer { lease?.close() }
+        guard let factsURL = try ImageAllMigrationFacts.latestPublishedURL(in: root) else {
+            throw LocalArchiveExportError.syncNotAcknowledged
+        }
+        let archivedFacts = try ImageAllMigrationFacts.read(at: factsURL)
+        try request.validateSourceEvidence(header: header, items: items, archivedFacts: archivedFacts)
+        try Task.checkCancellation()
+        let currentURL = try await exportCompletionCheckpointFacts(for: root, streamRecord: record)
+        defer { try? FileManager.default.removeItem(at: currentURL) }
+        let current = try ImageAllMigrationFacts.read(at: currentURL)
+        try request.validateSourceEvidence(header: header, items: items, archivedFacts: archivedFacts, currentFacts: current)
+        try Task.checkCancellation()
+        guard UIApplication.shared.applicationState == .active,
+              try await remote.fetchPhoneCleanupRecheck() == request else {
+            throw LocalArchiveExportError.selectionChanged
+        }
+        try await validateCleanupRecheckIdentity(request)
+        guard let store else { throw LocalFavoriteSourceError.storeUnavailable }
+        let visible = try await observedSharedVisibleIdentifiers()
+        let final = try await store.migrationCompletionCheckpoint(visibleIdentifiers: visible)
+        let finalURL = try LocalMigrationFactExporter.export(snapshot: final.snapshot,
+            checkpoint: final.checkpoint, archiveManifestSHA256: request.manifestSHA256,
+            sourceVerifiedAtMs: current.syncCheckpoint?.sourceVerifiedAtMs)
+        defer { try? FileManager.default.removeItem(at: finalURL) }
+        try request.validateSourceEvidence(header: header, items: items, archivedFacts: archivedFacts,
+            currentFacts: ImageAllMigrationFacts.read(at: finalURL))
+        try Task.checkCancellation()
+        guard UIApplication.shared.applicationState == .active else { throw CancellationError() }
+        return current.items.count
+    }
+
     func exportCompletionCheckpointFacts(
         for archiveRoot: URL, streamRecord: ImageAllMigrationStreamRecord? = nil
     ) async throws -> URL {
@@ -1415,6 +1486,7 @@ private struct LocalCollectionRenameView: View {
 }
 
 private struct LocalShareScopeView: View {
+    @Environment(\.scenePhase) private var scenePhase
     @ObservedObject var model: LocalLibraryModel
     @ObservedObject var remoteModel: RemoteCompanionModel
     @State private var isSending = false
@@ -1435,6 +1507,7 @@ private struct LocalShareScopeView: View {
     @State private var archiveStatusMessage: String?
     @State private var cleanupRecheck: RemotePhoneCleanupRecheck?
     @State private var isFetchingCleanupRecheck = false
+    @State private var cleanupSourceCheckMessage: String?
     @State private var tagAliasCandidate: LocalSharedTagAliasCandidate?
     @State private var collectionAliasCandidate: LocalSharedCollectionAliasCandidate?
 
@@ -1723,7 +1796,10 @@ private struct LocalShareScopeView: View {
             archiveSection
         }
         .navigationTitle("待分享范围")
-        .onDisappear { streamTask?.cancel() }
+        .onDisappear { streamTask?.cancel(); cleanupSourceCheckMessage = nil }
+        .onChange(of: scenePhase) { _, phase in
+            if phase != .active { streamTask?.cancel(); cleanupSourceCheckMessage = nil }
+        }
     }
 
     private var archiveSection: some View {
@@ -1733,6 +1809,7 @@ private struct LocalShareScopeView: View {
                     guard !isFetchingCleanupRecheck else { return }
                     isFetchingCleanupRecheck = true
                     cleanupRecheck = nil
+                    cleanupSourceCheckMessage = nil
                     defer { isFetchingCleanupRecheck = false }
                     do {
                         if let request = try await remoteModel.fetchPhoneCleanupRecheck() {
@@ -1749,6 +1826,25 @@ private struct LocalShareScopeView: View {
                 Text("Mac 预检记录：\(request.candidateCount) 项待来源核对，\(request.favoriteProtectedCount) 项收藏保护。")
                 Text("收到请求不代表允许删除。后续仍需逐项复查当前原件版本和收藏，再由您在手机前台确认。")
                     .font(.footnote).foregroundStyle(.secondary)
+                Button(isStreamingArchive ? "正在核对来源原件…" : "核对当前手机来源（只读）") {
+                    guard !isStreamingArchive else { return }
+                    cleanupSourceCheckMessage = nil
+                    isStreamingArchive = true
+                    streamTask = Task {
+                        defer { isStreamingArchive = false; streamTask = nil }
+                        do {
+                            let count = try await model.recheckCleanupSources(request, remote: remoteModel)
+                            cleanupSourceCheckMessage = "本次已复查 \(count) 项原件与整理信息，\(request.favoriteProtectedCount) 项收藏继续保护。未执行删除；仍需 Mac 当前副本复核和手机前台确认。"
+                        } catch is CancellationError {
+                            cleanupSourceCheckMessage = "来源复查已取消，未形成通过结果。"
+                        } catch {
+                            cleanupSourceCheckMessage = "来源复查未通过：\(error.localizedDescription)"
+                        }
+                    }
+                }.disabled(isStreamingArchive || isExporting || isUploadingArchive || isSending || isFetchingCleanupRecheck)
+                if let cleanupSourceCheckMessage {
+                    Text(cleanupSourceCheckMessage).font(.footnote).foregroundStyle(.secondary)
+                }
             }
 
             Toggle("保存可访问用户相册目录（含空相册）", isOn: $includeAlbumCatalog)

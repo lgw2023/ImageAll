@@ -534,20 +534,23 @@ public struct RemotePhoneCleanupRecheck: Codable, Sendable, Equatable, Identifia
     public let candidateCount: Int
     public let favoriteProtectedCount: Int
     public let createdAtMs: Int64
+    public let factSnapshotSHA256: String?
 
     public init(id: UUID, hostID: UUID, deviceID: UUID, migrationID: UUID,
         sourceInstallID: UUID, sourceEpoch: UUID, scopeRevision: Int64, manifestSHA256: String,
         completionReceiptID: UUID, backupReceiptID: UUID, candidateCount: Int,
-        favoriteProtectedCount: Int, createdAtMs: Int64) {
+        favoriteProtectedCount: Int, createdAtMs: Int64, factSnapshotSHA256: String? = nil) {
         self.id = id; self.hostID = hostID; self.deviceID = deviceID; self.migrationID = migrationID
         self.sourceInstallID = sourceInstallID; self.sourceEpoch = sourceEpoch; self.scopeRevision = scopeRevision
         self.manifestSHA256 = manifestSHA256; self.completionReceiptID = completionReceiptID
         self.backupReceiptID = backupReceiptID; self.candidateCount = candidateCount
         self.favoriteProtectedCount = favoriteProtectedCount; self.createdAtMs = createdAtMs
+        self.factSnapshotSHA256 = factSnapshotSHA256
     }
 
     public var isValid: Bool {
-        scopeRevision >= 0 && createdAtMs >= 0 && candidateCount >= 0 && favoriteProtectedCount >= 0
+        (factSnapshotSHA256.map { $0.count == 64 && $0.allSatisfy { "0123456789abcdef".contains($0) } } ?? true)
+            && scopeRevision >= 0 && createdAtMs >= 0 && candidateCount >= 0 && favoriteProtectedCount >= 0
             && candidateCount <= 1_000_000 && favoriteProtectedCount <= 1_000_000
             && manifestSHA256.count == 64 && manifestSHA256.allSatisfy { "0123456789abcdef".contains($0) }
     }
@@ -559,5 +562,58 @@ public struct RemotePhoneCleanupInbox: Codable, Sendable, Equatable {
     public let request: RemotePhoneCleanupRecheck?
     public init(hostID: UUID, deviceID: UUID, request: RemotePhoneCleanupRecheck?) {
         self.hostID = hostID; self.deviceID = deviceID; self.request = request
+    }
+}
+
+
+extension RemotePhoneCleanupRecheck {
+    public static func factDigest(_ snapshot: ImageAllMigrationFactSnapshot) throws -> String {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        return SHA256.hash(data: try encoder.encode(snapshot)).map { String(format: "%02x", $0) }.joined()
+    }
+
+    /// Binds both the media manifest and the exact fact checkpoint audited on
+    /// Mac. Legacy count-only requests may be displayed but cannot pass this gate.
+    public func validateSourceEvidence(header: ImageAllMigrationHeader, items: [ImageAllMigrationItem],
+        archivedFacts: ImageAllMigrationFactSnapshot, currentFacts: ImageAllMigrationFactSnapshot? = nil
+    ) throws {
+        try ImageAllMigrationFacts.validate(archivedFacts)
+        if let currentFacts { try ImageAllMigrationFacts.validate(currentFacts) }
+        let protected = archivedFacts.items.filter { $0.observedFavorite || $0.favoriteTarget == true }.count
+        guard isValid, let factSnapshotSHA256,
+              header.migrationID == migrationID, header.sourceDeviceID == sourceInstallID,
+              header.sourceEpoch == sourceEpoch, header.scopeRevision == scopeRevision,
+              header.appleAlbumCoverage == .selectedAssetsOnly,
+              header.declaredItemCount == items.count,
+              manifestSHA256 == (try ImageAllMigrationStreamRecord.manifestSHA256(header: header, items: items)),
+              factSnapshotSHA256 == (try Self.factDigest(archivedFacts)),
+              archivedFacts.sourceDeviceID == sourceInstallID, archivedFacts.sourceEpoch == sourceEpoch,
+              archivedFacts.scopeRevision == scopeRevision,
+              let bound = archivedFacts.syncCheckpoint, bound.hostID == hostID, bound.deviceID == deviceID,
+              bound.archiveManifestSHA256 == manifestSHA256, bound.sourceVerifiedAtMs != nil,
+              Set(items.map(\.mediaID)).count == items.count,
+              Set(archivedFacts.items.map(\.mediaID)) == Set(items.map(\.mediaID)),
+              archivedFacts.items.count == items.count,
+              favoriteProtectedCount == protected, candidateCount == items.count - protected else {
+            throw RemoteAPIError(code: .conflict, message: "核对请求与本机归档或整理信息不一致，请在 Mac 重新预检并发送请求")
+        }
+        if let currentFacts {
+            guard currentFacts.sourceDeviceID == sourceInstallID, currentFacts.sourceEpoch == sourceEpoch,
+                  currentFacts.scopeRevision == scopeRevision, currentFacts.items == archivedFacts.items,
+                  currentFacts.factWatermark == archivedFacts.factWatermark,
+                  currentFacts.auditRecords == archivedFacts.auditRecords,
+                  let current = currentFacts.syncCheckpoint,
+                  current.hostID == bound.hostID, current.deviceID == bound.deviceID,
+                  current.acknowledgedScopeRevision == bound.acknowledgedScopeRevision,
+                  current.acknowledgedSnapshotSequence == bound.acknowledgedSnapshotSequence,
+                  current.tagChangeCursor == bound.tagChangeCursor,
+                  current.collectionChangeCursor == bound.collectionChangeCursor,
+                  current.favoriteChangeCursor == bound.favoriteChangeCursor,
+                  current.tagAliases == bound.tagAliases, current.collectionAliases == bound.collectionAliases,
+                  current.archiveManifestSHA256 == manifestSHA256, current.sourceVerifiedAtMs != nil else {
+                throw RemoteAPIError(code: .conflict, message: "手机整理信息、收藏或同步状态已变化，请先同步并更新归档与备份")
+            }
+        }
     }
 }
