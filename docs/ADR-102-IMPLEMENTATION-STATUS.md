@@ -4,6 +4,8 @@
 
 ## 当前切片
 
+- 2026-09-29 在已连接 iPhone 上补齐未知结果人工结束的真实跨进程合成验收。DEBUG 独立入口新增 `retirement-seed`／`retirement-close`：前者仅写合成 submitted 账本，不构造来源适配器；后者读取同一独立库，要求 seed 报告通过且 PID 不同，再验证重启门、人工结束未知状态、事实保留、无退役／共享删除及旧操作拒绝。构建和安装通过，两个实际进程 PID 10892、10893 的 3＋8 项全部通过，取回报告 PID 均与 devicectl 启动记录一致，随后结束验收进程。运行 ID `daec4c86-00d5-405c-9e9d-329231e805a2`，证据前缀 `/Volumes/SSD1/.codex-builds/ADR102-process-close-`。此证据验证真实 App 进程边界下的合成账本行为；没有执行 PhotoKit 请求、真实系统回调中断或生产 UI 人工确认，相关验收仍开放。
+
 - 2026-09-29 接通未知来源结果的重启后人工结束入口。提交事务保存进程会话 ID，同进程重开数据库仍拒绝结束，旧版未决记录首次打开后需再重启；重启后由用户检查系统照片和 Mac 副本并明确确认，记录为 closedUnknown。该终态不认定系统成功／失败，不写来源退役标记，不修改分享事实或队列，不允许旧操作重放；状态变化使旧 ACK 失效，可独立补传到 Mac。Mac 保留人工结束但结果未知的历史声明，拒绝改写为成功。本地库 46/46、协议 88/88、客户端 77/77、Mac 直接 XCTest 2/2、两端构建及 iPhone 安装通过。合成测试覆盖同进程拒绝、注入新会话允许、幂等结束、旧 ACK 失效、来源调用数为零、事实保留、备份恢复和 Mac 终态保护；未将注入会话测试视为真实进程／PhotoKit 回调验收。证据前缀 `/Volumes/SSD1/.codex-builds/ADR102-unknown-close-`：`local.log`、`protocol.log`、`client.log`、`mac-tests.log`、`phone.log/.xcresult`、`mac.log/.xcresult`、`install.json`。真实中断、系统照片核实与双端 UI 尚未验收，ADR-102 总目标未完成。
 
 - 2026-09-29 接通手机来源操作结果回传与 Mac 历史查看。Mac 保存原来源报告及候选 ID 的紧凑历史，按设备／操作 ID／完整证据绑定接收 completed、failed、outcomeUnknown；允许新请求替换旧请求或水位推进后的迟到回传，同内容重放复用回执，未知可更新，终态拒绝降级与改绑。接收仅更新独立结果账本，不修改投影资产／共享事实或归档文件。手机完成本地记录后尽力回传，按状态及更新时间保存 ACK，旧状态 ACK 不得确认新状态；历史入口可手动补传，绝不再次调用 PhotoKit。候选以数量＋规范化 SHA-256 回传，Mac 对照已保存的完整候选核验，避免 256 KiB 请求限制。协议 88/88（含 1 万候选消息小于 2 KiB）、客户端 77/77、本地库 45/45、Mac 定向 2/2、最终两端构建与 iPhone 安装通过。定向覆盖 HTTP 交付／认证、重放、错设备／候选拒绝、请求替换与水位变化后迟到、终态保护、账本重开及投影保留；本地回执升级／旧 ACK 拒绝和备份恢复通过。证据前缀 `/Volumes/SSD1/.codex-builds/ADR102-retirement-receipt-`，最终 `mac-history.log/.xcresult`、`mac-tests-final.log`、`phone-delivery.log/.xcresult`、`install-delivery.json`。真实 Photos 清理、真实断网重连和 UI 仍未验收；unknown 人工核实流程及更广的 ADR-102 要求仍未完成。

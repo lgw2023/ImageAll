@@ -240,3 +240,11 @@ xcrun devicectl device process launch --device <device-ID> --terminate-existing 
 - [ ] 真实进程中断和系统回调时序仍需在明确授权的可丢弃来源上验收，不以合成会话 ID 测试代替。
 
 2026-09-29：本地库 46/46、协议 88/88、客户端 77/77、Mac 定向 2/2、两端构建及 iPhone 安装通过。重启条件由合成会话 ID 注入验证；没有真实 PhotoKit 中断或人工核实 UI 证据。上述验收项保持未勾选。证据前缀 `ADR102-unknown-close-`。
+
+### 实体 iPhone 的合成账本跨进程补验
+
+- [x] DEBUG 参数 `--adr102-local-probe <新 UUID> retirement-seed` 创建独立合成库，记录 submitted，确认同进程人工结束被拒绝；不调用来源 API。
+- [x] 取回并核对 seed 报告通过及 PID 后结束该进程；用同 UUID 的 `retirement-close` 启动新进程，必须读取既有记录并验证 PID 不同。
+- [x] 重启后可人工结束为 closedUnknown，事实保留、无退役标记、无共享删除操作，旧操作重放拒绝。
+
+2026-09-29 实测运行 `daec4c86-00d5-405c-9e9d-329231e805a2`，PID 10892／10893，3＋8 项通过，报告 PID 与各自 launch JSON 一致，验收进程均已结束。构建、安装和报告证据前缀 `/Volumes/SSD1/.codex-builds/ADR102-process-close-`。仅复制该明确合成目录的两份报告。该探针无生产模型、PhotoKit 或网络客户端，不覆盖真实删除回调中断和用户确认界面；上节对应人工验收项仍保持未勾选。

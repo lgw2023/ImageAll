@@ -69,7 +69,7 @@ private enum DeviceLocalLibraryProbe {
     static var arguments: Run? {
         let args = ProcessInfo.processInfo.arguments
         guard let i = args.firstIndex(of: "--adr102-local-probe"), i + 2 < args.count,
-              let id = UUID(uuidString: args[i + 1]), ["seed", "verify"].contains(args[i + 2]) else { return nil }
+              let id = UUID(uuidString: args[i + 1]), ["seed", "verify", "retirement-seed", "retirement-close"].contains(args[i + 2]) else { return nil }
         return Run(id: id, phase: args[i + 2])
     }
 
@@ -88,7 +88,51 @@ private enum DeviceLocalLibraryProbe {
             let visible: Set<String> = ["synthetic-shared", "synthetic-private"]
             let encoder = JSONEncoder()
             encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-            if run.phase == "seed" {
+            if run.phase == "retirement-seed" {
+                guard !FileManager.default.fileExists(atPath: directory.path) else { throw Failure.existingRun }
+                let store = try LocalLibraryStore(url: databaseURL)
+                try await store.observe([LocalObservedAsset(localIdentifier: "synthetic-shared", kind: "image", creationDate: nil, isFavorite: false)])
+                guard let asset = try await store.assets(visibleIdentifiers: visible).first else { throw Failure.missingAsset }
+                try await store.setShared(assetID: asset.id, shared: true)
+                let snapshot = try await store.prepareSharedSnapshot(visibleIdentifiers: visible)
+                try await store.acknowledgeSharedSnapshot(snapshot, hostID: UUID(), deviceID: UUID(), importedAssetIDs: [asset.id])
+                let checkpoint = try await store.migrationCompletionCheckpoint(visibleIdentifiers: visible)
+                let plan = LocalSourceRetirementPlan(id: UUID(), migrationID: UUID(), requestID: UUID(), sourceReportID: UUID(),
+                    completionReceiptID: UUID(), backupReceiptID: UUID(), manifestSHA256: String(repeating: "a", count: 64),
+                    factSnapshotSHA256: String(repeating: "b", count: 64), candidateAssetIDs: [asset.id],
+                    snapshot: checkpoint.snapshot, checkpoint: checkpoint.checkpoint)
+                _ = try await store.prepareSourceRetirement(plan, visibleIdentifiers: visible)
+                try await store.markSourceRetirementSubmitted(id: plan.id, visibleIdentifiers: visible)
+                // Deliberately no source adapter: only a synthetic journal entry.
+                let record = try await store.sourceRetirementRecords().first
+                checks["submitted_without_source_adapter"] = record?.state == .submitted
+                checks["same_process_cannot_close"] = record?.canManuallyClose == false
+                do {
+                    try await store.manuallyCloseUnknownSourceRetirement(id: plan.id)
+                    checks["same_process_close_rejected"] = false
+                } catch { checks["same_process_close_rejected"] = true }
+                try encoder.encode(plan).write(to: expectedURL, options: .atomic)
+            } else if run.phase == "retirement-close" {
+                let plan = try JSONDecoder().decode(LocalSourceRetirementPlan.self, from: Data(contentsOf: expectedURL))
+                let previous = try JSONDecoder().decode(Report.self,
+                    from: Data(contentsOf: directory.appendingPathComponent("retirement-seed-report.json")))
+                checks["different_application_process"] = previous.passed && previous.processID != ProcessInfo.processInfo.processIdentifier
+                guard checks["different_application_process"] == true else { throw Failure.mismatch }
+                let store = try LocalLibraryStore(url: databaseURL)
+                let pending = try await store.sourceRetirementRecords().first
+                checks["restart_preserves_pending_operation"] = pending?.plan == plan && pending?.state == .submitted
+                checks["restart_allows_manual_close"] = pending?.canManuallyClose == true
+                try await store.manuallyCloseUnknownSourceRetirement(id: plan.id)
+                let closed = try await store.sourceRetirementRecords().first
+                checks["closure_remains_unknown"] = closed?.state == .closedUnknown && closed?.canManuallyClose == false
+                checks["no_retired_replica"] = try await store.retiredSourcePresence(assetID: plan.candidateAssetIDs[0]) == nil
+                checks["facts_preserved"] = try await store.sharedSnapshot(visibleIdentifiers: visible).assets == plan.snapshot.assets
+                checks["no_shared_delete_operation"] = try await store.pendingSharedOperations().isEmpty
+                do {
+                    try await store.markSourceRetirementSubmitted(id: plan.id, visibleIdentifiers: visible)
+                    checks["old_operation_replay_rejected"] = false
+                } catch { checks["old_operation_replay_rejected"] = true }
+            } else if run.phase == "seed" {
                 guard !FileManager.default.fileExists(atPath: directory.path) else { throw Failure.existingRun }
                 try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
                 let store = try LocalLibraryStore(url: databaseURL)
