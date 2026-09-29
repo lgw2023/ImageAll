@@ -21,6 +21,7 @@ public enum LocalLibraryError: Error, Equatable {
     case migrationSyncPending
     case sharePlanExpired
     case undoUnavailable
+    case sourceRetirementConflict
 }
 
 public struct LocalShareSelectionVersion: Sendable, Equatable {
@@ -450,6 +451,13 @@ public actor LocalLibraryStore {
             let schema = """
                 PRAGMA journal_mode=WAL;
                 PRAGMA foreign_keys=ON;
+                CREATE TABLE IF NOT EXISTS source_retirement_operations (
+                  id TEXT PRIMARY KEY, plan_json TEXT NOT NULL, state TEXT NOT NULL, updated_at_ms INTEGER NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS retired_source_replicas (
+                  asset_id TEXT PRIMARY KEY REFERENCES assets(id), operation_id TEXT NOT NULL
+                    REFERENCES source_retirement_operations(id), presence TEXT NOT NULL
+                );
                 CREATE TABLE IF NOT EXISTS identity (
                   key TEXT PRIMARY KEY, value TEXT NOT NULL
                 );
@@ -608,6 +616,113 @@ public actor LocalLibraryStore {
     }
 
     deinit { sqlite3_close(db) }
+
+    public func sourceRetirementRecords() throws -> [LocalSourceRetirementRecord] {
+        try rows("SELECT plan_json,state,updated_at_ms FROM source_retirement_operations ORDER BY updated_at_ms,id").map { row in
+            guard let json = row[0], let rawState = row[1], let state = LocalSourceRetirementState(rawValue: rawState),
+                  let time = Int64(row[2] ?? "") else { throw LocalLibraryError.sourceRetirementConflict }
+            return .init(plan: try JSONDecoder().decode(LocalSourceRetirementPlan.self, from: Data(json.utf8)),
+                state: state, updatedAtMs: time)
+        }
+    }
+
+    public func retiredSourcePresence(assetID: UUID) throws -> LocalRetiredReplicaPresence? {
+        guard let raw = try scalar("SELECT presence FROM retired_source_replicas WHERE asset_id=?", [assetID.uuidString]) else { return nil }
+        guard let presence = LocalRetiredReplicaPresence(rawValue: raw) else { throw LocalLibraryError.sourceRetirementConflict }
+        return presence
+    }
+
+    @discardableResult public func prepareSourceRetirement(_ plan: LocalSourceRetirementPlan,
+        visibleIdentifiers: Set<String>
+    ) throws -> LocalSourceRetirementRecord {
+        if let existing = try sourceRetirementRecords().first(where: { $0.id == plan.id }) {
+            guard existing.plan == plan else { throw LocalLibraryError.sourceRetirementConflict }
+            return existing
+        }
+        try validateSourceRetirementPlan(plan, visibleIdentifiers: visibleIdentifiers)
+        let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys]
+        let json = String(decoding: try encoder.encode(plan), as: UTF8.self)
+        try transaction {
+            let ids = Set(plan.candidateAssetIDs)
+            for record in try sourceRetirementRecords() where [.prepared, .submitted, .outcomeUnknown].contains(record.state) {
+                guard ids.isDisjoint(with: record.plan.candidateAssetIDs) else { throw LocalLibraryError.sourceRetirementConflict }
+            }
+            for id in ids {
+                guard try retiredSourcePresence(assetID: id) != .retired else { throw LocalLibraryError.sourceRetirementConflict }
+            }
+            try execute("INSERT INTO source_retirement_operations(id,plan_json,state,updated_at_ms) VALUES(?,?,'prepared',?)",
+                [plan.id.uuidString, json, String(Int64(Date().timeIntervalSince1970 * 1_000))])
+        }
+        return try sourceRetirementRecord(plan.id)
+    }
+
+    /// Persist immediately before the single PhotoKit submission. An interrupted
+    /// submitted operation must be reconciled; it must never be auto-replayed.
+    public func markSourceRetirementSubmitted(id: UUID, visibleIdentifiers: Set<String>) throws {
+        let record = try sourceRetirementRecord(id)
+        guard record.state == .prepared else { throw LocalLibraryError.sourceRetirementConflict }
+        try validateSourceRetirementPlan(record.plan, visibleIdentifiers: visibleIdentifiers)
+        try setSourceRetirementState(id, .submitted)
+    }
+
+    public func cancelSourceRetirement(id: UUID) throws {
+        let record = try sourceRetirementRecord(id)
+        guard record.state == .prepared || record.state == .cancelled else { throw LocalLibraryError.sourceRetirementConflict }
+        if record.state == .prepared { try setSourceRetirementState(id, .cancelled) }
+    }
+
+    /// Only a successful source API callback may supply .succeeded. Missing assets
+    /// or reduced permission never prove deletion. No shared tombstone is emitted.
+    public func finishSourceRetirement(id: UUID, outcome: LocalSourceRetirementOutcome) throws {
+        let next: LocalSourceRetirementState
+        switch outcome { case .succeeded: next = .completed; case .failed: next = .failed; case .unknown: next = .outcomeUnknown }
+        try transaction {
+            let record = try sourceRetirementRecord(id)
+            if record.state == next { return }
+            guard record.state == .submitted || record.state == .outcomeUnknown else {
+                throw LocalLibraryError.sourceRetirementConflict
+            }
+            if next == .completed {
+                for assetID in record.plan.candidateAssetIDs {
+                    try execute("""
+                        INSERT INTO retired_source_replicas(asset_id,operation_id,presence) VALUES(?,?,'retired')
+                        ON CONFLICT(asset_id) DO UPDATE SET operation_id=excluded.operation_id,presence='retired'
+                        """, [assetID.uuidString, id.uuidString])
+                }
+            }
+            try setSourceRetirementState(id, next)
+        }
+    }
+
+    private func sourceRetirementRecord(_ id: UUID) throws -> LocalSourceRetirementRecord {
+        guard let record = try sourceRetirementRecords().first(where: { $0.id == id }) else {
+            throw LocalLibraryError.sourceRetirementConflict
+        }
+        return record
+    }
+
+    private func setSourceRetirementState(_ id: UUID, _ state: LocalSourceRetirementState) throws {
+        try execute("UPDATE source_retirement_operations SET state=?,updated_at_ms=? WHERE id=?",
+            [state.rawValue, String(Int64(Date().timeIntervalSince1970 * 1_000)), id.uuidString])
+    }
+
+    private func validateSourceRetirementPlan(_ plan: LocalSourceRetirementPlan, visibleIdentifiers: Set<String>) throws {
+        let ids = Set(plan.candidateAssetIDs)
+        guard !ids.isEmpty, ids.count == plan.candidateAssetIDs.count,
+              [plan.manifestSHA256, plan.factSnapshotSHA256].allSatisfy({ $0.count == 64 && $0.allSatisfy { "0123456789abcdef".contains($0) } }) else {
+            throw LocalLibraryError.sourceRetirementConflict
+        }
+        let current = try migrationCompletionCheckpoint(visibleIdentifiers: visibleIdentifiers)
+        let expected = plan.snapshot, actual = current.snapshot
+        guard current.checkpoint == plan.checkpoint,
+              actual.installID == expected.installID, actual.sourceEpoch == expected.sourceEpoch,
+              actual.scopeRevision == expected.scopeRevision, actual.outboxWatermark == expected.outboxWatermark,
+              actual.selectedAssetIDs == expected.selectedAssetIDs, actual.assets == expected.assets,
+              actual.auditRecords == expected.auditRecords,
+              ids.isSubset(of: Set(actual.assets.filter { !$0.observedFavorite && $0.favoriteTarget != true }.map(\.id))) else {
+            throw LocalLibraryError.sourceRetirementConflict
+        }
+    }
 
     public func installID() throws -> UUID {
         UUID(uuidString: try requiredIdentity("install_id"))!
@@ -992,6 +1107,12 @@ public actor LocalLibraryStore {
                         asset.creationDate.map { String($0.timeIntervalSince1970) } ?? "",
                         asset.isFavorite ? "1" : "0"
                     ])
+                // Reappearance can mean a system Photos restore. Preserve the successful
+                // retirement audit while making the local replica's presence explicit.
+                try execute("""
+                    UPDATE retired_source_replicas SET presence='observedAgain'
+                    WHERE asset_id=(SELECT id FROM assets WHERE source_epoch=? AND local_identifier=?)
+                    """, [epoch, asset.localIdentifier])
                 // Source observation resolves an interrupted write and detects later drift.
                 try execute("""
                     UPDATE favorite_writebacks SET state=CASE
