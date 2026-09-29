@@ -116,3 +116,26 @@ iPhone 安装版本／代码提交：
 - [ ] 故障中断恢复／备份复制并重启，部分产物仍受保护；不得凭预留或标记显示“备份完成”。
 - [ ] 整体搬移恢复目录后，通过另一合成 catalog 接入，目录标记仍阻止清理；归档改名后检查目录 bookmark 的定位行为。
 - [ ] 断开包含保护目录的卷，无法解析 bookmark 时清理应保守失败；重新接入后复核，禁止自动移除保护记录。
+
+
+## 无真实照片的 iPhone 本地库跨进程验收
+
+2026-09-29 已在连接的 iPhone 16 Pro Max 上执行。此项独立于真实 Photos／迁移授权清单，不能勾选替代上文的权限、触摸或传输验收。
+
+- [x] Debug 合成入口与正常模型初始化分离；不创建 PhotoKit 来源或网络客户端。
+- [x] 第一进程创建两条合成资产，仅一条显式分享；写入 accepted 标签、集合成员、收藏目标与三个待同步操作，保存冻结快照和独立 SQLite 备份。
+- [x] 结束第一进程后启动第二进程，只读取已有资料库，核对安装身份／epoch、整理事实、待同步操作 ID 和冻结快照一致。
+- [x] 用空可见标识集合模拟暂时不可见，显式分享选择仍保留；恢复合成可见范围后事实不变。
+- [x] 从独立备份复制出新库，核对相同事实及待同步操作；Mac 对取回的合成快照逐值作独立核对。
+- [ ] 真实 PhotoKit 有限／拒绝权限及恢复、物理断网、系统重启和 UI 触摸仍需单独验证。
+
+运行标识为 `0543455e-52fe-42c6-b3d2-a1d0b772bd13`，两个进程 PID 为 `10687`、`10691`；设备报告合计 11 项通过。证据前缀为 `/Volumes/SSD1/.codex-builds/ADR102-device-local-probe-20260929-`，含 `seed-report.json`、`verify-report.json`、`expected.json`、`audit.json` 及构建／安装／启动记录。仅取回该明确合成目录中的文件，不导出整个 App 容器。
+
+重跑时生成新的 UUID，使用已安装的 Debug 构建分别启动：
+
+```text
+xcrun devicectl device process launch --device <device-ID> --terminate-existing com.gwlee.ImageAllMobile --adr102-local-probe <new-UUID> seed
+xcrun devicectl device process launch --device <device-ID> --terminate-existing com.gwlee.ImageAllMobile --adr102-local-probe <same-UUID> verify
+```
+
+两次启动之间先确认 `Documents/ADR102-Device-Probe/<lowercase-UUID>/seed-report.json` 为通过，再启动 verify 并检查独立 `verify-report.json`，确认 PID 不同。seed 拒绝已有目录；verify 不重新生成种子。启动参数错误时停留错误页，不打开正常资料库。模式仅在 `DEBUG` 编译；结束验收进程后正常启动恢复标准入口。合成产物保留供审计，不自动删除或覆盖其他运行目录。
