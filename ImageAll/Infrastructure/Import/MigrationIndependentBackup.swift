@@ -2,6 +2,7 @@ import Foundation
 import DiskArbitration
 import IOKit
 import GRDB
+import ImageAllRemoteProtocol
 
 struct MigrationBackupStorageIdentity: Codable, Equatable, Sendable {
     let volumeUUID: String
@@ -319,6 +320,32 @@ struct PhoneArchiveSourceCleanupPreflight: Sendable {
 }
 
 extension VerifiedPhoneArchiveImporter {
+    /// Re-audits both copies now, then binds them to the exact phone observation.
+    /// The returned preflight is historical evidence, never a source deletion permit.
+    func recheckCopies(for report: RemotePhoneCleanupSourceReport, backup: PhoneArchiveIndependentBackup,
+        storage: BackupStorageResolver = MigrationBackupStorage.resolve
+    ) throws -> PhoneArchiveSourceCleanupPreflight {
+        guard report.isValid, report.request.backupReceiptID == backup.id,
+              report.request.completionReceiptID == backup.completionReceiptID,
+              report.request.migrationID == backup.migrationID else {
+            throw PhoneArchiveImportError.validationStale
+        }
+        let preview = try prepareSourceCleanupPreflight(backup: backup, storage: storage)
+        let request = report.request
+        guard let facts = preview.integrity.factSnapshot, let checkpoint = facts.syncCheckpoint,
+              request.hostID == checkpoint.hostID, request.deviceID == checkpoint.deviceID,
+              request.sourceInstallID == facts.sourceDeviceID, request.sourceEpoch == facts.sourceEpoch,
+              request.scopeRevision == facts.scopeRevision,
+              request.manifestSHA256 == preview.integrity.manifestSHA256,
+              request.factSnapshotSHA256 == (try RemotePhoneCleanupRecheck.factDigest(facts)),
+              request.candidateCount == preview.candidateMediaIDs.count,
+              request.favoriteProtectedCount == preview.favoriteProtectedMediaIDs.count,
+              report.verifiedItemCount == preview.integrity.itemCount else {
+            throw PhoneArchiveImportError.validationStale
+        }
+        return preview
+    }
+
     func prepareSourceCleanupPreflight(backup: PhoneArchiveIndependentBackup,
         storage: BackupStorageResolver = MigrationBackupStorage.resolve
     ) throws -> PhoneArchiveSourceCleanupPreflight {

@@ -325,6 +325,27 @@ final class PhoneArchiveImportTests: XCTestCase {
             XCTAssertEqual(preview.completionReceiptID, completion.id)
             XCTAssertEqual(preview.backupReceiptID, backup.id)
             XCTAssertEqual(preview.integrity, integrity)
+            let sourceRequest = RemotePhoneCleanupRecheck(id: UUID(), hostID: completion.hostID,
+                deviceID: completion.deviceID, migrationID: completion.migrationID,
+                sourceInstallID: completion.sourceDeviceID, sourceEpoch: completion.sourceEpoch,
+                scopeRevision: completion.scopeRevision, manifestSHA256: completion.manifestSHA256,
+                completionReceiptID: completion.id, backupReceiptID: backup.id,
+                candidateCount: preview.candidateMediaIDs.count,
+                favoriteProtectedCount: preview.favoriteProtectedMediaIDs.count, createdAtMs: 1000,
+                factSnapshotSHA256: completion.factSnapshotSHA256)
+            let sourceReport = RemotePhoneCleanupSourceReport(id: UUID(), request: sourceRequest,
+                checkedAtMs: 2000, verifiedItemCount: completion.itemCount)
+            XCTAssertEqual(try reopenedImporter.recheckCopies(for: sourceReport, backup: backup, storage: storage).integrity, integrity)
+            let originalReport = try JSONSerialization.jsonObject(with: JSONEncoder().encode(sourceReport)) as! [String: Any]
+            for field in ["migrationID", "backupReceiptID", "completionReceiptID", "sourceInstallID", "sourceEpoch", "deviceID", "hostID", "manifestSHA256", "factSnapshotSHA256"] {
+                var changed = originalReport
+                var request = changed["request"] as! [String: Any]
+                request[field] = field.hasSuffix("SHA256") ? String(repeating: "e", count: 64) : UUID().uuidString
+                changed["request"] = request
+                let invalid = try JSONDecoder().decode(RemotePhoneCleanupSourceReport.self,
+                    from: JSONSerialization.data(withJSONObject: changed))
+                XCTAssertThrowsError(try reopenedImporter.recheckCopies(for: invalid, backup: backup, storage: storage), field)
+            }
             let expectedProtection = favoriteProtected || (observedFavoriteOverride ?? favoriteProtected)
             XCTAssertEqual(preview.favoriteProtectedMediaIDs, expectedProtection ? [item.mediaID] : [])
             XCTAssertEqual(preview.candidateMediaIDs, expectedProtection ? [] : [item.mediaID])
@@ -350,6 +371,7 @@ final class PhoneArchiveImportTests: XCTestCase {
             try Data("damaged-backup".utf8).write(to: copiedResource)
             XCTAssertThrowsError(try reopenedImporter.auditIndependentBackup(backup, storage: storage))
             XCTAssertThrowsError(try reopenedImporter.prepareSourceCleanupPreflight(backup: backup, storage: storage))
+            XCTAssertThrowsError(try reopenedImporter.recheckCopies(for: sourceReport, backup: backup, storage: storage))
             try expected.write(to: copiedResource)
             XCTAssertEqual(try reopenedImporter.auditIndependentBackup(backup, storage: storage), integrity)
         }
