@@ -1359,6 +1359,7 @@ final class PhoneArchiveImportModel: ObservableObject {
     @Published private(set) var latestCompletionReceipt: PhoneArchiveCompletionReceipt?
     @Published private(set) var latestIndependentBackup: PhoneArchiveIndependentBackup?
     @Published private(set) var backupIsCurrent = false
+    @Published private(set) var sourceCleanupPreflight: PhoneArchiveSourceCleanupPreflight?
     @Published private(set) var completionReceiptIsCurrent = false
     @Published private(set) var isBusy = false
     @Published private(set) var message: String?
@@ -1511,6 +1512,7 @@ final class PhoneArchiveImportModel: ObservableObject {
         latestValidationRecord = nil
         latestCompletionReceipt = nil
         latestIndependentBackup = nil
+        sourceCleanupPreflight = nil
         backupIsCurrent = false
         completionReceiptIsCurrent = false
         await loadMore(using: importer)
@@ -1981,6 +1983,7 @@ final class PhoneArchiveImportModel: ObservableObject {
         isBusy = true
         completionReceiptIsCurrent = false
         backupIsCurrent = false
+        sourceCleanupPreflight = nil
         defer { isBusy = false }
         do {
             let parent = try targetParent(for: batch)
@@ -2046,7 +2049,7 @@ final class PhoneArchiveImportModel: ObservableObject {
         }
     }
 
-    func verifyIndependentBackup(create: Bool) async {
+    func verifyIndependentBackup(create: Bool, prepareCleanup: Bool = false) async {
         guard !isBusy, let batch = selectedBatch, let completion = latestCompletionReceipt,
               completion.migrationID == batch.id, let validation = latestValidationRecord,
               validation.id == completion.validationID,
@@ -2074,6 +2077,7 @@ final class PhoneArchiveImportModel: ObservableObject {
             }
             isBusy = true
             backupIsCurrent = false
+            sourceCleanupPreflight = nil
             defer { isBusy = false }
             message = create ? "正在检查存储依赖、复制并逐项核验备份；请保持磁盘连接。" : "正在重新核验备份和当前存储依赖。"
             let parent = try targetParent(for: batch)
@@ -2105,17 +2109,26 @@ final class PhoneArchiveImportModel: ObservableObject {
                 guard let saved = latestIndependentBackup else { throw MigrationBackupError.missingRecord }
                 record = saved
             }
-            let after = try await CatalogBlockingExecutor.shared.run(priority: .utility) {
-                try importer.auditIndependentBackup(record)
+            let audited = try await CatalogBlockingExecutor.shared.run(priority: .utility) {
+                if prepareCleanup {
+                    let preview = try importer.prepareSourceCleanupPreflight(backup: record)
+                    return (preview.integrity, Optional(preview))
+                }
+                return (try importer.auditIndependentBackup(record), Optional<PhoneArchiveSourceCleanupPreflight>.none)
             }
+            let after = audited.0
             guard after == before, let current = after.factSnapshot,
                   try await RemoteHostProcessHolder.matchesMigrationCheckpoint(current, manifestSHA256: after.manifestSHA256) else {
                 throw PhoneArchiveImportError.validationStale
             }
+            guard selectedBatchID == batch.id, latestCompletionReceipt?.id == completion.id,
+                  latestIndependentBackup?.id == record.id else { throw PhoneArchiveImportError.validationStale }
             backupIsCurrent = true
+            sourceCleanupPreflight = audited.1
             message = "所选范围的独立备份当前复核通过：\(after.itemCount) 项、\(after.resourceCount) 个资源。仅证明本次可见存储依赖分离及数据一致，不授权删除手机来源；清理前仍须再次复核。"
         } catch {
             backupIsCurrent = false
+            sourceCleanupPreflight = nil
             message = "独立备份未通过：\(error.localizedDescription)。若复制已经开始，目标中的部分文件保留，请检查后另选空目录重试。"
         }
     }
@@ -2331,12 +2344,26 @@ private struct PhoneArchiveImportCard: View {
                         if model.latestIndependentBackup != nil {
                             Button("复核独立备份") { Task { await model.verifyIndependentBackup(create: false) } }
                                 .disabled(model.isBusy)
+                            Button("预检手机清理范围") {
+                                Task { await model.verifyIndependentBackup(create: false, prepareCleanup: true) }
+                            }.disabled(model.isBusy)
                         }
                     }.buttonStyle(.bordered)
                     if model.latestIndependentBackup != nil {
                         Text(model.backupIsCurrent ? "独立备份：当前复核通过" : "独立备份：历史记录，需复核")
                             .font(.caption).foregroundStyle(.secondary)
                     }
+                }
+                if let preview = model.sourceCleanupPreflight {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("手机清理预检记录").font(.headline)
+                        Text("Mac 归档与独立备份已核验：\(preview.integrity.itemCount) 项。")
+                        Text("按归档事实：\(preview.favoriteProtectedMediaIDs.count) 项收藏受保护，\(preview.candidateMediaIDs.count) 项可供手机进一步核对。")
+                        Text("核验时间：\(Date(timeIntervalSince1970: Double(preview.checkedAtMs) / 1_000).formatted(date: .abbreviated, time: .standard))")
+                            .font(.caption).foregroundStyle(.secondary)
+                        Text("尚未发送清理请求。手机仍须重新检查当前范围、原件版本和收藏，并在前台确认；不会自动清空最近删除。")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }.padding(.vertical, 6)
                 }
                 ForEach(model.items) { item in
                     HStack {

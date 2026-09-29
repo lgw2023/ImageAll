@@ -538,6 +538,8 @@ flowchart TD
 
 依据 [Apple Disk Arbitration：磁盘与 I/O Kit 对象](https://developer.apple.com/library/archive/documentation/DriversKernelHardware/Conceptual/DiskArbitrationProgGuide/ManipulatingDisks/ManipulatingDisks.html) 与本机 SDK 的 `IOStorageProtocolCharacteristics.h`。系统接口或 sandbox 拒绝观察时按无法证明处理，不降级为只比较路径或卷名。
 
+Mac 侧新增“预检手机清理范围”入口，复用归档、独立备份的实时逐字节复核及前后 Host 同步水位检查。只按已归档事实划分候选与收藏保护项：来源收藏观测为真或 ImageAll 收藏目标为真，均保留。预检结果绑定当前所选范围回执和最新备份回执，展示核验时间与数量；仅作为本机准备记录，不持久化为删除授权，也不发送命令。手机离线期间可能新增收藏、编辑原件或改变范围，因此手机当前来源复查和前台确认仍是后续执行的必要条件，不能由 Mac 历史事实替代。
+
 默认保留源端；用户可以把手机视图切到 Mac 图库，继续远程整理已经归档的内容。若进一步要求清理手机来源：
 
 1. 重新核验目标归档仍可读、版本匹配、收藏保护和必要事实已完成，源端选择范围没有变化。

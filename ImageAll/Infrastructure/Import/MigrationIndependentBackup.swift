@@ -306,3 +306,41 @@ enum MigrationCleanupProtection {
         return false
     }
 }
+
+/// A Mac-side preview only. This value is neither a deletion command nor a
+/// source authorization; the phone must re-observe scope, versions and favorites.
+struct PhoneArchiveSourceCleanupPreflight: Sendable {
+    let completionReceiptID: UUID
+    let backupReceiptID: UUID
+    let checkedAtMs: Int64
+    let candidateMediaIDs: [UUID]
+    let favoriteProtectedMediaIDs: [UUID]
+    let integrity: PhoneArchiveIntegrityReport
+}
+
+extension VerifiedPhoneArchiveImporter {
+    func prepareSourceCleanupPreflight(backup: PhoneArchiveIndependentBackup,
+        storage: BackupStorageResolver = MigrationBackupStorage.resolve
+    ) throws -> PhoneArchiveSourceCleanupPreflight {
+        guard try latestIndependentBackup(migrationID: backup.migrationID) == backup,
+              let completion = try latestCompletionReceipt(migrationID: backup.migrationID),
+              completion.id == backup.completionReceiptID else {
+            throw MigrationBackupError.missingRecord
+        }
+        let before = try auditIndependentBackup(backup, storage: storage)
+        guard let facts = before.factSnapshot, before.phoneSyncCheckpoint != nil,
+              facts.items.count == completion.itemCount,
+              Set(facts.items.map(\.mediaID)).count == completion.itemCount else {
+            throw PhoneArchiveImportError.validationStale
+        }
+        let protected = facts.items.filter { $0.observedFavorite || $0.favoriteTarget == true }.map(\.mediaID)
+        let candidates = facts.items.filter { !$0.observedFavorite && $0.favoriteTarget != true }.map(\.mediaID)
+        guard try auditCompletionReceipt(completion) == before,
+              try latestIndependentBackup(migrationID: backup.migrationID) == backup else {
+            throw MigrationBackupError.changed
+        }
+        return .init(completionReceiptID: completion.id, backupReceiptID: backup.id,
+            checkedAtMs: Int64(Date().timeIntervalSince1970 * 1_000), candidateMediaIDs: candidates,
+            favoriteProtectedMediaIDs: protected, integrity: before)
+    }
+}

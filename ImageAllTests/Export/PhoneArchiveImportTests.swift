@@ -107,7 +107,18 @@ final class PhoneArchiveImportTests: XCTestCase {
         try await checkNetworkArchiveRecovery(coverage: .selectedAssetsOnly, includeCatalog: true)
     }
 
-    private func checkNetworkArchiveRecovery(coverage: ImageAllMigrationAppleAlbumCoverage, includeCatalog: Bool = false) async throws {
+    func testUnfavoritedArchiveProducesMacCleanupPreflight() async throws {
+        try await checkNetworkArchiveRecovery(coverage: .selectedAssetsOnly, includeCatalog: true, favoriteProtected: false)
+    }
+
+    func testSourceOrTargetFavoriteIndependentlyProtectsCleanupPreflight() async throws {
+        try await checkNetworkArchiveRecovery(coverage: .selectedAssetsOnly, includeCatalog: true,
+            favoriteProtected: true, observedFavoriteOverride: false)
+        try await checkNetworkArchiveRecovery(coverage: .selectedAssetsOnly, includeCatalog: true,
+            favoriteProtected: false, observedFavoriteOverride: true)
+    }
+
+    private func checkNetworkArchiveRecovery(coverage: ImageAllMigrationAppleAlbumCoverage, includeCatalog: Bool = false, favoriteProtected: Bool = true, observedFavoriteOverride: Bool? = nil) async throws {
         let fixture = try Fixture()
         defer { fixture.remove() }
         let resource = try fixture.resource(
@@ -166,7 +177,7 @@ final class PhoneArchiveImportTests: XCTestCase {
             scopeRevision: header.scopeRevision, snapshotSequence: 8,
             factWatermark: 8,
             items: [.init(
-                mediaID: item.mediaID, observedFavorite: true, favoriteTarget: true,
+                mediaID: item.mediaID, observedFavorite: observedFavoriteOverride ?? favoriteProtected, favoriteTarget: favoriteProtected,
                 tagDecisions: [.init(
                     tagID: UUID(), tagName: "传输后标签", decision: .accepted
                 )], collections: []
@@ -310,6 +321,13 @@ final class PhoneArchiveImportTests: XCTestCase {
             }
             let backup = try reopenedImporter.createIndependentBackup(completion: completion,
                 into: backupDirectory, parentBookmark: nil, storage: storage)
+            let preview = try reopenedImporter.prepareSourceCleanupPreflight(backup: backup, storage: storage)
+            XCTAssertEqual(preview.completionReceiptID, completion.id)
+            XCTAssertEqual(preview.backupReceiptID, backup.id)
+            XCTAssertEqual(preview.integrity, integrity)
+            let expectedProtection = favoriteProtected || (observedFavoriteOverride ?? favoriteProtected)
+            XCTAssertEqual(preview.favoriteProtectedMediaIDs, expectedProtection ? [item.mediaID] : [])
+            XCTAssertEqual(preview.candidateMediaIDs, expectedProtection ? [] : [item.mediaID])
             XCTAssertEqual(try reopenedImporter.latestIndependentBackup(migrationID: header.migrationID), backup)
             XCTAssertEqual(try reopenedImporter.auditIndependentBackup(backup, storage: storage), integrity)
             let afterReboot: VerifiedPhoneArchiveImporter.BackupStorageResolver = { url in
@@ -331,6 +349,7 @@ final class PhoneArchiveImportTests: XCTestCase {
             let expected = try Data(contentsOf: copiedResource)
             try Data("damaged-backup".utf8).write(to: copiedResource)
             XCTAssertThrowsError(try reopenedImporter.auditIndependentBackup(backup, storage: storage))
+            XCTAssertThrowsError(try reopenedImporter.prepareSourceCleanupPreflight(backup: backup, storage: storage))
             try expected.write(to: copiedResource)
             XCTAssertEqual(try reopenedImporter.auditIndependentBackup(backup, storage: storage), integrity)
         }
