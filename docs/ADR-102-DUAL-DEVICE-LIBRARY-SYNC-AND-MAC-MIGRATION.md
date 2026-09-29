@@ -560,7 +560,9 @@ Mac 预检区增加“复核手机报告与双份副本”：先取得当前手�
 6. 不自动清空系统最近删除；恢复引导用户前往系统 Photos。进入最近删除不等于已立即释放全部空间。
 7. 清理结果只退役源 Replica，保留迁移身份沿革和 Mac 文件归档，禁止删除传播回独立归档。
 
-来源退役账本采用本机 SQLite 事务记录：`prepared → submitted → completed / failed / outcomeUnknown`，仅准备态可取消。准备计划绑定迁移、核对请求、手机报告、完成／备份回执、媒体／事实摘要及本地完整检查点；提交前重新核对范围、同步状态和收藏。中断后保留 submitted／outcomeUnknown，禁止自动再次提交 PhotoKit；暂时不可见或权限收缩不能判定成功。只有明确的来源 API 成功结果才原子记录源 Replica 退役与操作完成，不修改分享选择、整理事实，也不生成共享删除事件。后续 PhotoKit 重新观测到同身份时标记 observedAgain，保留历史成功记录；数据库备份包含账本。此为本地记录接口，尚未接通实际 PhotoKit 删除协调器或前台确认，不能仅凭准备记录执行来源操作。
+来源退役账本采用本机 SQLite 事务记录：`prepared → submitted → completed / failed / outcomeUnknown`，仅准备态可取消。准备计划绑定迁移、核对请求、手机报告、完成／备份回执、媒体／事实摘要及本地完整检查点；提交前重新核对范围、同步状态和收藏。中断后保留 submitted／outcomeUnknown，禁止自动再次提交 PhotoKit；暂时不可见或权限收缩不能判定成功。只有明确的来源 API 成功结果才原子记录源 Replica 退役与操作完成，不修改分享选择、整理事实，也不生成共享删除事件。后续 PhotoKit 重新观测到同身份时标记 observedAgain，保留历史成功记录；数据库备份包含账本。已接通手机前台协调器和显式确认入口；准备记录本身仍不是执行许可。确认后重新核验手机全资源与当前 Mac 副本，比较期间来源版本并重新检查本地同步状态，再持久化 submitted。PhotoKit 变更块再次检查完整权限、候选可删除性、来源版本与收藏；App 失去前台或取消会关闭本次提交门，且进入变更块须在 Mac 当次核验返回后的 30 秒内（本机单调时钟）。提交后的系统回调按实际结果保存，不能因 UI 任务取消而丢失成功记录。用户可查看历史和取消未提交准备；submitted／outcomeUnknown 不提供重试按钮。实际系统删除、系统确认、取消、锁屏及中断恢复尚未真机验收，Mac 退役回传仍待实现。
+
+系统适配器仅使用公开的 `PHPhotoLibrary.performChanges` 与 `PHAssetChangeRequest.deleteAssets`，成功回调才记为 completed；不调用永久删除或最近删除私有接口。确认文案遵守 §4.3，注明 Photos 删除可能随外部系统同步传播。[Apple：PHAssetChangeRequest 与变更块](https://developer.apple.com/documentation/photos/phassetchangerequest)。
 
 本期“释放手机空间”只通过已确认的来源回收表达，不承诺按字节立即释放；系统缓存、最近删除及外部同步的后续行为不由 ImageAll 控制。
 

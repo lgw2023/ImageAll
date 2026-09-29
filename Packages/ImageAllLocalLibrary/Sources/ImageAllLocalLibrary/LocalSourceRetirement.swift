@@ -46,3 +46,41 @@ public struct LocalSourceRetirementRecord: Codable, Sendable, Equatable, Identif
 public enum LocalRetiredReplicaPresence: String, Sendable {
     case retired, observedAgain
 }
+
+/// Adapters must validate foreground, current authorization, source versions and
+/// favorites immediately before submission. Throw only when the outcome is unknown.
+public protocol LocalSourceRetiring: Sendable {
+    func submitRetirement() async throws -> LocalSourceRetirementOutcome
+}
+
+public enum LocalSourceRetirementExecutor {
+    /// The caller has already obtained explicit foreground confirmation and fresh
+    /// Mac/source evidence. Once submitted, cancellation must not discard a known
+    /// source callback: persist its actual outcome before returning.
+    public static func perform(_ plan: LocalSourceRetirementPlan, store: LocalLibraryStore,
+        visibleIdentifiers: Set<String>, source: any LocalSourceRetiring
+    ) async throws -> LocalSourceRetirementRecord {
+        try Task.checkCancellation()
+        _ = try await store.prepareSourceRetirement(plan, visibleIdentifiers: visibleIdentifiers)
+        do {
+            try Task.checkCancellation()
+            try await store.markSourceRetirementSubmitted(id: plan.id, visibleIdentifiers: visibleIdentifiers)
+        } catch {
+            if try await store.sourceRetirementRecords().first(where: { $0.id == plan.id })?.state == .prepared {
+                try await store.cancelSourceRetirement(id: plan.id)
+            }
+            throw error
+        }
+        let outcome: LocalSourceRetirementOutcome
+        do { outcome = try await source.submitRetirement() }
+        catch {
+            try await store.finishSourceRetirement(id: plan.id, outcome: .unknown)
+            throw error
+        }
+        try await store.finishSourceRetirement(id: plan.id, outcome: outcome)
+        guard let result = try await store.sourceRetirementRecords().first(where: { $0.id == plan.id }) else {
+            throw LocalLibraryError.sourceRetirementConflict
+        }
+        return result
+    }
+}

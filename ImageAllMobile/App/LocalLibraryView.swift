@@ -25,6 +25,11 @@ struct LocalSharedSyncSummary {
     let remaining: Int
 }
 
+struct LocalCleanupSourceCheck {
+    let plan: LocalSourceRetirementPlan
+    let sourceVersions: [String: String]
+}
+
 @MainActor
 final class LocalLibraryModel: ObservableObject {
     @Published private(set) var authorization: PHAuthorizationStatus = PHPhotoLibrary.authorizationStatus(for: .readWrite)
@@ -454,8 +459,8 @@ final class LocalLibraryModel: ObservableObject {
     }
 
     func recheckCleanupSources(_ request: RemotePhoneCleanupRecheck,
-        remote: RemoteCompanionModel
-    ) async throws -> Int {
+        remote: RemoteCompanionModel, reportID: UUID = UUID()
+    ) async throws -> LocalCleanupSourceCheck {
         guard UIApplication.shared.applicationState == .active else { throw CancellationError() }
         try await validateCleanupRecheckIdentity(request)
         guard try await remote.fetchPhoneCleanupRecheck() == request else {
@@ -500,6 +505,7 @@ final class LocalLibraryModel: ObservableObject {
         let archivedFacts = try ImageAllMigrationFacts.read(at: factsURL)
         try request.validateSourceEvidence(header: header, items: items, archivedFacts: archivedFacts)
         try Task.checkCancellation()
+        let sourceVersions = try LocalPhotoArchiveExporter.cleanupSourceVersions(items.map(\.sourceLocalIdentifier))
         let currentURL = try await exportCompletionCheckpointFacts(for: root, streamRecord: record)
         defer { try? FileManager.default.removeItem(at: currentURL) }
         let current = try ImageAllMigrationFacts.read(at: currentURL)
@@ -521,7 +527,53 @@ final class LocalLibraryModel: ObservableObject {
             currentFacts: ImageAllMigrationFacts.read(at: finalURL))
         try Task.checkCancellation()
         guard UIApplication.shared.applicationState == .active else { throw CancellationError() }
-        return current.items.count
+        guard sourceVersions == (try LocalPhotoArchiveExporter.cleanupSourceVersions(items.map(\.sourceLocalIdentifier))),
+              let digest = request.factSnapshotSHA256 else { throw LocalArchiveExportError.selectionChanged }
+        let plan = LocalSourceRetirementPlan(id: UUID(), migrationID: request.migrationID,
+            requestID: request.id, sourceReportID: reportID, completionReceiptID: request.completionReceiptID,
+            backupReceiptID: request.backupReceiptID, manifestSHA256: request.manifestSHA256,
+            factSnapshotSHA256: digest,
+            candidateAssetIDs: final.snapshot.assets.filter { !$0.observedFavorite && $0.favoriteTarget != true }.map(\.id),
+            snapshot: final.snapshot, checkpoint: final.checkpoint)
+        return .init(plan: plan, sourceVersions: sourceVersions)
+    }
+
+    func sourceRetirementHistory() async throws -> [LocalSourceRetirementRecord] {
+        guard let store else { throw LocalFavoriteSourceError.storeUnavailable }
+        return try await store.sourceRetirementRecords().reversed()
+    }
+
+    func cancelPreparedSourceRetirement(_ id: UUID) async throws {
+        guard let store else { throw LocalFavoriteSourceError.storeUnavailable }
+        try await store.cancelSourceRetirement(id: id)
+    }
+
+    /// Only called from the explicit foreground confirmation button.
+    func retireCleanupSources(_ report: RemotePhoneCleanupSourceReport,
+        remote: RemoteCompanionModel
+    ) async throws -> LocalSourceRetirementRecord {
+        guard UIApplication.shared.applicationState == .active,
+              PHPhotoLibrary.authorizationStatus(for: .readWrite) == .authorized,
+              report.request.candidateCount > 0, let store else {
+            throw LocalFavoriteSourceError.authorizationRequired
+        }
+        let checked = try await recheckCleanupSources(report.request, remote: remote, reportID: report.id)
+        guard checked.plan.candidateAssetIDs.count == report.request.candidateCount else {
+            throw LocalArchiveExportError.selectionChanged
+        }
+        _ = try await remote.recheckMacCopies(for: report)
+        let auditDeadline = ProcessInfo.processInfo.systemUptime + 30
+        try Task.checkCancellation()
+        guard UIApplication.shared.applicationState == .active,
+              checked.sourceVersions == (try LocalPhotoArchiveExporter.cleanupSourceVersions(
+                checked.plan.snapshot.assets.map(\.localIdentifier))) else {
+            throw LocalArchiveExportError.selectionChanged
+        }
+        let visible = try await observedSharedVisibleIdentifiers()
+        let source = PhotoKitLocalRetirementSource(plan: checked.plan, versions: checked.sourceVersions,
+            auditDeadline: auditDeadline)
+        return try await LocalSourceRetirementExecutor.perform(checked.plan, store: store,
+            visibleIdentifiers: visible, source: source)
     }
 
     func exportCompletionCheckpointFacts(
@@ -1086,6 +1138,67 @@ private final class LocalPhotoChangeObserver: NSObject, PHPhotoLibraryChangeObse
     deinit { PHPhotoLibrary.shared().unregisterChangeObserver(self) }
 }
 
+private final class SourceRetirementGate: @unchecked Sendable {
+    private let lock = NSLock()
+    private var closed = false
+    private var submitted = false
+    private let deadline: TimeInterval
+    private var observer: NSObjectProtocol?
+    @MainActor init(deadline: TimeInterval) {
+        self.deadline = deadline
+        closed = UIApplication.shared.applicationState != .active
+        observer = NotificationCenter.default.addObserver(forName: UIApplication.willResignActiveNotification,
+            object: nil, queue: nil) { [weak self] _ in self?.close() }
+    }
+    deinit { if let observer { NotificationCenter.default.removeObserver(observer) } }
+    func close() { lock.lock(); closed = true; lock.unlock() }
+    func enter() -> Bool {
+        lock.lock(); defer { lock.unlock() }
+        guard !closed, !submitted, ProcessInfo.processInfo.systemUptime <= deadline else { return false }
+        submitted = true
+        return true
+    }
+    func didSubmit() -> Bool { lock.lock(); defer { lock.unlock() }; return submitted }
+}
+
+private final class PhotoKitLocalRetirementSource: LocalSourceRetiring, @unchecked Sendable {
+    private let identifiers: [String]
+    private let versions: [String: String]
+    private let gate: SourceRetirementGate
+    @MainActor init(plan: LocalSourceRetirementPlan, versions: [String: String], auditDeadline: TimeInterval) {
+        let candidates = Set(plan.candidateAssetIDs)
+        let selected = plan.snapshot.assets.filter { candidates.contains($0.id) }.map(\.localIdentifier)
+        identifiers = selected
+        self.versions = versions.filter { selected.contains($0.key) }
+        gate = SourceRetirementGate(deadline: auditDeadline)
+    }
+    func submitRetirement() async throws -> LocalSourceRetirementOutcome {
+        if Task.isCancelled { return .failed }
+        return await withTaskCancellationHandler {
+            await withCheckedContinuation { continuation in
+                PHPhotoLibrary.shared().performChanges {
+                    guard !self.identifiers.isEmpty,
+                          PHPhotoLibrary.authorizationStatus(for: .readWrite) == .authorized else { return }
+                    let options = PHFetchOptions()
+                    options.includeHiddenAssets = false; options.includeAssetSourceTypes = .typeUserLibrary
+                    let assets = PHAsset.fetchAssets(withLocalIdentifiers: self.identifiers, options: options)
+                    guard assets.count == self.identifiers.count else { return }
+                    for index in 0..<assets.count {
+                        let asset = assets.object(at: index)
+                        guard !asset.isFavorite, asset.canPerform(.delete),
+                              let fingerprint = try? LocalPhotoArchiveExporter.cleanupSourceFingerprint(asset),
+                              fingerprint == self.versions[asset.localIdentifier] else { return }
+                    }
+                    guard self.gate.enter() else { return }
+                    PHAssetChangeRequest.deleteAssets(assets)
+                } completionHandler: { success, _ in
+                    continuation.resume(returning: success && self.gate.didSubmit() ? .succeeded : .failed)
+                }
+            }
+        } onCancel: { self.gate.close() }
+    }
+}
+
 @MainActor
 private final class PhotoKitLocalFavoriteSource: LocalFavoriteSource {
     private func asset(_ identifier: String) throws -> PHAsset {
@@ -1509,6 +1622,8 @@ private struct LocalShareScopeView: View {
     @State private var isFetchingCleanupRecheck = false
     @State private var cleanupSourceCheckMessage: String?
     @State private var cleanupSourceReport: RemotePhoneCleanupSourceReport?
+    @State private var confirmsSourceRetirement = false
+    @State private var retirementHistory: [LocalSourceRetirementRecord] = []
     @State private var tagAliasCandidate: LocalSharedTagAliasCandidate?
     @State private var collectionAliasCandidate: LocalSharedCollectionAliasCandidate?
 
@@ -1797,9 +1912,9 @@ private struct LocalShareScopeView: View {
             archiveSection
         }
         .navigationTitle("待分享范围")
-        .onDisappear { streamTask?.cancel(); cleanupSourceCheckMessage = nil; cleanupSourceReport = nil }
+        .onDisappear { streamTask?.cancel(); cleanupSourceCheckMessage = nil; cleanupSourceReport = nil; confirmsSourceRetirement = false }
         .onChange(of: scenePhase) { _, phase in
-            if phase != .active { streamTask?.cancel(); cleanupSourceCheckMessage = nil; cleanupSourceReport = nil }
+            if phase != .active { streamTask?.cancel(); cleanupSourceCheckMessage = nil; cleanupSourceReport = nil; confirmsSourceRetirement = false }
         }
     }
 
@@ -1828,7 +1943,7 @@ private struct LocalShareScopeView: View {
                 Text("Mac 预检记录：\(request.candidateCount) 项待来源核对，\(request.favoriteProtectedCount) 项收藏保护。")
                 Text("收到请求不代表允许删除。后续仍需逐项复查当前原件版本和收藏，再由您在手机前台确认。")
                     .font(.footnote).foregroundStyle(.secondary)
-                Button(isStreamingArchive ? "正在核对来源原件…" : "核对当前手机来源（只读）") {
+                Button(isStreamingArchive ? "正在核对…" : "核对当前手机来源（只读）") {
                     guard !isStreamingArchive else { return }
                     cleanupSourceCheckMessage = nil
                     cleanupSourceReport = nil
@@ -1836,8 +1951,9 @@ private struct LocalShareScopeView: View {
                     streamTask = Task {
                         defer { isStreamingArchive = false; streamTask = nil }
                         do {
-                            let count = try await model.recheckCleanupSources(request, remote: remoteModel)
-                            let report = RemotePhoneCleanupSourceReport(id: UUID(), request: request,
+                            let checked = try await model.recheckCleanupSources(request, remote: remoteModel)
+                            let count = checked.plan.snapshot.assets.count
+                            let report = RemotePhoneCleanupSourceReport(id: checked.plan.sourceReportID, request: request,
                                 checkedAtMs: Int64(Date().timeIntervalSince1970 * 1_000), verifiedItemCount: count)
                             try Task.checkCancellation()
                             do { try await remoteModel.submitPhoneCleanupSourceReport(report) }
@@ -1871,9 +1987,67 @@ private struct LocalShareScopeView: View {
                         }
                     }.disabled(isStreamingArchive || isExporting || isUploadingArchive || isSending || isFetchingCleanupRecheck)
                 }
+                if let report = cleanupSourceReport, report.request.candidateCount > 0 {
+                    Button("从系统照片删除已迁移的非收藏项…", role: .destructive) {
+                        confirmsSourceRetirement = true
+                    }.disabled(isStreamingArchive || isExporting || isUploadingArchive || isSending || isFetchingCleanupRecheck)
+                    .confirmationDialog("从系统照片删除 \(report.request.candidateCount) 项？",
+                        isPresented: $confirmsSourceRetirement, titleVisibility: .visible) {
+                        Button("重新核验后从系统照片删除", role: .destructive) {
+                            guard !isStreamingArchive else { return }
+                            isStreamingArchive = true
+                            cleanupSourceCheckMessage = "正在重新检查手机来源及 Mac 两份副本，通过后交由系统确认。"
+                            streamTask = Task {
+                                defer { isStreamingArchive = false; streamTask = nil; cleanupSourceReport = nil }
+                                do {
+                                    let result = try await model.retireCleanupSources(report, remote: remoteModel)
+                                    switch result.state {
+                                    case .completed: cleanupSourceCheckMessage = "系统已确认删除 \(result.plan.candidateAssetIDs.count) 项，来源退役已记录。Mac 独立归档和整理事实保留；恢复请前往系统照片，空间不保证立即释放。"
+                                    case .failed: cleanupSourceCheckMessage = "系统未确认删除，或提交前条件已变化；未记为退役。"
+                                    default: cleanupSourceCheckMessage = "来源操作结果未确定，已保留记录，不会自动重试。"
+                                    }
+                                } catch { cleanupSourceCheckMessage = "来源清理未完成：\(error.localizedDescription)。若已提交系统，记录会保留，不会自动重试。" }
+                            }
+                        }
+                        Button("取消", role: .cancel) {}
+                    } message: {
+                        Text("收藏项保留。此操作从 Photos 图库删除，并非只清除本机缓存；若系统启用了外部同步，删除可能传播。Mac 独立归档保留。不清空最近删除，恢复请前往系统照片。")
+                    }
+                }
                 if let cleanupSourceCheckMessage {
                     Text(cleanupSourceCheckMessage).font(.footnote).foregroundStyle(.secondary)
                 }
+            }
+
+            Button("查看来源清理记录") {
+                Task {
+                    do {
+                        retirementHistory = try await model.sourceRetirementHistory()
+                        if retirementHistory.isEmpty { archiveStatusMessage = "暂无来源清理记录。" }
+                    } catch { archiveStatusMessage = error.localizedDescription }
+                }
+            }.disabled(isStreamingArchive)
+            ForEach(Array(retirementHistory.prefix(20))) { record in
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("\(record.plan.candidateAssetIDs.count) 项 · \(Date(timeIntervalSince1970: Double(record.updatedAtMs) / 1_000).formatted(date: .abbreviated, time: .shortened))")
+                    switch record.state {
+                    case .prepared:
+                        Text("尚未提交系统，可取消这条准备记录。")
+                        Button("取消未提交记录") {
+                            Task {
+                                do {
+                                    try await model.cancelPreparedSourceRetirement(record.id)
+                                    retirementHistory = try await model.sourceRetirementHistory()
+                                } catch { archiveStatusMessage = error.localizedDescription }
+                            }
+                        }.disabled(isStreamingArchive)
+                    case .submitted, .outcomeUnknown:
+                        Text("提交结果待核实，不会自动重试。请先在系统照片检查；暂时不可见不代表已删除。")
+                    case .completed: Text("系统曾确认删除，来源退役已记录。恢复请前往系统照片。")
+                    case .cancelled: Text("已取消准备，未提交系统。")
+                    case .failed: Text("系统未确认删除或提交前检查未通过。")
+                    }
+                }.font(.footnote).foregroundStyle(.secondary)
             }
 
             Toggle("保存可访问用户相册目录（含空相册）", isOn: $includeAlbumCatalog)
@@ -2380,7 +2554,7 @@ private struct LocalStreamingArchive: Identifiable {
 
 @MainActor
 private enum LocalPhotoArchiveExporter {
-    private struct SourceVersion: Codable, Equatable {
+    private struct SourceVersion: Codable, Equatable, Sendable {
         let modificationDate: Date?
         let creationDate: Date?
         let metadata: ImageAllMigrationSourceMetadata
@@ -2965,7 +3139,28 @@ private enum LocalPhotoArchiveExporter {
         return nil
     }
 
-    private static func sourceVersion(_ asset: PHAsset) -> SourceVersion {
+    nonisolated static func cleanupSourceFingerprint(_ asset: PHAsset) throws -> String {
+        let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys]
+        let data = try encoder.encode(sourceVersion(asset))
+        return SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+    }
+
+    nonisolated static func cleanupSourceVersions(_ identifiers: [String]) throws -> [String: String] {
+        guard PHPhotoLibrary.authorizationStatus(for: .readWrite) == .authorized,
+              Set(identifiers).count == identifiers.count else { throw LocalFavoriteSourceError.authorizationRequired }
+        let options = PHFetchOptions()
+        options.includeHiddenAssets = false; options.includeAssetSourceTypes = .typeUserLibrary
+        let fetched = PHAsset.fetchAssets(withLocalIdentifiers: identifiers, options: options)
+        guard fetched.count == identifiers.count else { throw LocalFavoriteSourceError.assetUnavailable }
+        var result: [String: String] = [:]
+        for index in 0..<fetched.count {
+            let asset = fetched.object(at: index)
+            result[asset.localIdentifier] = try cleanupSourceFingerprint(asset)
+        }
+        return result
+    }
+
+    private nonisolated static func sourceVersion(_ asset: PHAsset) -> SourceVersion {
         SourceVersion(
             modificationDate: asset.modificationDate,
             creationDate: asset.creationDate, metadata: sourceMetadata(asset),
@@ -2975,7 +3170,7 @@ private enum LocalPhotoArchiveExporter {
         )
     }
 
-    private static func sourceMetadata(_ asset: PHAsset) -> ImageAllMigrationSourceMetadata {
+    private nonisolated static func sourceMetadata(_ asset: PHAsset) -> ImageAllMigrationSourceMetadata {
         func milliseconds(_ date: Date?) -> Int64? {
             guard let value = date?.timeIntervalSince1970, value.isFinite,
                   value * 1_000 > Double(Int64.min), value * 1_000 < Double(Int64.max) else { return nil }
