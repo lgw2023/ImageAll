@@ -45,6 +45,16 @@ final class LocalLibraryModel: ObservableObject {
     private let browser: LocalLibraryBrowser?
     private var photoChanges: LocalPhotoChangeObserver?
 
+    func validateCleanupRecheckIdentity(_ request: RemotePhoneCleanupRecheck) async throws {
+        guard let store else { throw RemoteAPIError(code: .internalError, message: "本机资料库不可用") }
+        let install = try await store.installID()
+        let scope = try await store.shareSelectionVersion()
+        guard request.isValid, request.sourceInstallID == install,
+              request.sourceEpoch == scope.sourceEpoch, request.scopeRevision == scope.revision else {
+            throw RemoteAPIError(code: .conflict, message: "手机来源身份或分享范围已变化，请重新归档与预检")
+        }
+    }
+
     init(favoriteSource: any LocalFavoriteSource = PhotoKitLocalFavoriteSource(),
          browsingSource: any LocalLibraryBrowsingSource = PhotoKitLocalBrowsingSource()) {
         self.favoriteSource = favoriteSource
@@ -1423,6 +1433,8 @@ private struct LocalShareScopeView: View {
     @State private var exportedFacts: URL?
     @State private var statusMessage: String?
     @State private var archiveStatusMessage: String?
+    @State private var cleanupRecheck: RemotePhoneCleanupRecheck?
+    @State private var isFetchingCleanupRecheck = false
     @State private var tagAliasCandidate: LocalSharedTagAliasCandidate?
     @State private var collectionAliasCandidate: LocalSharedCollectionAliasCandidate?
 
@@ -1716,6 +1728,29 @@ private struct LocalShareScopeView: View {
 
     private var archiveSection: some View {
         Section("本机原件归档") {
+            Button(isFetchingCleanupRecheck ? "正在读取核对请求…" : "查看 Mac 清理核对请求") {
+                Task {
+                    guard !isFetchingCleanupRecheck else { return }
+                    isFetchingCleanupRecheck = true
+                    cleanupRecheck = nil
+                    defer { isFetchingCleanupRecheck = false }
+                    do {
+                        if let request = try await remoteModel.fetchPhoneCleanupRecheck() {
+                            try await model.validateCleanupRecheckIdentity(request)
+                            cleanupRecheck = request
+                            archiveStatusMessage = "已收到 Mac 来源核对请求；尚未核验当前原件，也未执行删除。"
+                        } else {
+                            archiveStatusMessage = "没有当前有效的核对请求。请先在 Mac 完成独立备份预检并请求手机核对。"
+                        }
+                    } catch { archiveStatusMessage = "读取核对请求失败：\(error.localizedDescription)" }
+                }
+            }.disabled(isFetchingCleanupRecheck || isStreamingArchive || isExporting || isUploadingArchive)
+            if let request = cleanupRecheck {
+                Text("Mac 预检记录：\(request.candidateCount) 项待来源核对，\(request.favoriteProtectedCount) 项收藏保护。")
+                Text("收到请求不代表允许删除。后续仍需逐项复查当前原件版本和收藏，再由您在手机前台确认。")
+                    .font(.footnote).foregroundStyle(.secondary)
+            }
+
             Toggle("保存可访问用户相册目录（含空相册）", isOn: $includeAlbumCatalog)
                 .disabled(isStreamingArchive || isExporting || isUploadingArchive)
             if includeAlbumCatalog {

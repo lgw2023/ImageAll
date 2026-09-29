@@ -513,3 +513,51 @@ public struct RemoteLocalLibraryFavoriteTargetReceipt: Codable, Sendable, Equata
         self.replayed = replayed
     }
 }
+
+
+extension RemoteHTTPPaths {
+    public static let phoneCleanupRecheck = "/v1/sync/local-library/cleanup-recheck"
+}
+
+/// A request to recheck a source scope, never permission to delete it.
+public struct RemotePhoneCleanupRecheck: Codable, Sendable, Equatable, Identifiable {
+    public let id: UUID
+    public let hostID: UUID
+    public let deviceID: UUID
+    public let migrationID: UUID
+    public let sourceInstallID: UUID
+    public let sourceEpoch: UUID
+    public let scopeRevision: Int64
+    public let manifestSHA256: String
+    public let completionReceiptID: UUID
+    public let backupReceiptID: UUID
+    public let candidateCount: Int
+    public let favoriteProtectedCount: Int
+    public let createdAtMs: Int64
+
+    public init(id: UUID, hostID: UUID, deviceID: UUID, migrationID: UUID,
+        sourceInstallID: UUID, sourceEpoch: UUID, scopeRevision: Int64, manifestSHA256: String,
+        completionReceiptID: UUID, backupReceiptID: UUID, candidateCount: Int,
+        favoriteProtectedCount: Int, createdAtMs: Int64) {
+        self.id = id; self.hostID = hostID; self.deviceID = deviceID; self.migrationID = migrationID
+        self.sourceInstallID = sourceInstallID; self.sourceEpoch = sourceEpoch; self.scopeRevision = scopeRevision
+        self.manifestSHA256 = manifestSHA256; self.completionReceiptID = completionReceiptID
+        self.backupReceiptID = backupReceiptID; self.candidateCount = candidateCount
+        self.favoriteProtectedCount = favoriteProtectedCount; self.createdAtMs = createdAtMs
+    }
+
+    public var isValid: Bool {
+        scopeRevision >= 0 && createdAtMs >= 0 && candidateCount >= 0 && favoriteProtectedCount >= 0
+            && candidateCount <= 1_000_000 && favoriteProtectedCount <= 1_000_000
+            && manifestSHA256.count == 64 && manifestSHA256.allSatisfy { "0123456789abcdef".contains($0) }
+    }
+}
+
+public struct RemotePhoneCleanupInbox: Codable, Sendable, Equatable {
+    public let hostID: UUID
+    public let deviceID: UUID
+    public let request: RemotePhoneCleanupRecheck?
+    public init(hostID: UUID, deviceID: UUID, request: RemotePhoneCleanupRecheck?) {
+        self.hostID = hostID; self.deviceID = deviceID; self.request = request
+    }
+}

@@ -105,7 +105,13 @@ actor RemoteLocalLibrarySyncStore {
         let favoriteChanges: [RemoteLocalLibraryFavoriteChange]?
     }
 
+    private struct CleanupRecheckRecord: Codable {
+        let request: RemotePhoneCleanupRecheck
+        let snapshot: ImageAllMigrationFactSnapshot
+    }
+
     private struct PersistedState: Codable {
+        var cleanupRechecks: [CleanupRecheckRecord]? = nil
         var records: [Record]
         var collectionRenames: [RemoteLocalCollectionRenameReceipt]?
     }
@@ -114,6 +120,7 @@ actor RemoteLocalLibrarySyncStore {
     private let storageURL: URL
     private var records: [UUID: Record]
     private var collectionRenames: [RemoteLocalCollectionRenameReceipt] = []
+    private var cleanupRechecks: [CleanupRecheckRecord] = []
 
     init(hostID: UUID, storageURL: URL) throws {
         self.hostID = hostID
@@ -130,6 +137,17 @@ actor RemoteLocalLibrarySyncStore {
                 throw RemoteAPIError(code: .internalError, message: "invalid collection rename receipts")
             }
             collectionRenames = renames
+            let pending = decoded.cleanupRechecks ?? []
+            guard Set(pending.map { $0.request.deviceID }).count == pending.count,
+                  pending.allSatisfy({ $0.request.isValid && $0.request.hostID == hostID
+                    && $0.request.deviceID == $0.snapshot.syncCheckpoint?.deviceID
+                    && $0.request.sourceInstallID == $0.snapshot.sourceDeviceID
+                    && $0.request.sourceEpoch == $0.snapshot.sourceEpoch
+                    && $0.request.scopeRevision == $0.snapshot.scopeRevision
+                    && $0.request.manifestSHA256 == $0.snapshot.syncCheckpoint?.archiveManifestSHA256 }) else {
+                throw RemoteAPIError(code: .internalError, message: "invalid cleanup recheck ledger")
+            }
+            cleanupRechecks = pending
             guard Set(decoded.records.map(\.deviceID)).count == decoded.records.count,
                   decoded.records.allSatisfy({ record in
                       let projectedIDs = record.projectedAssets.map(\.asset.id)
@@ -238,6 +256,41 @@ actor RemoteLocalLibrarySyncStore {
         } else {
             records = [:]
         }
+    }
+
+    func publishCleanupRecheck(_ preview: PhoneArchiveSourceCleanupPreflight) throws -> RemotePhoneCleanupRecheck {
+        guard let snapshot = preview.integrity.factSnapshot, let checkpoint = snapshot.syncCheckpoint,
+              matchesMigrationCheckpoint(snapshot, manifestSHA256: preview.integrity.manifestSHA256),
+              Set(preview.candidateMediaIDs) == Set(snapshot.items.filter { !$0.observedFavorite && $0.favoriteTarget != true }.map(\.mediaID)),
+              Set(preview.favoriteProtectedMediaIDs) == Set(snapshot.items.filter { $0.observedFavorite || $0.favoriteTarget == true }.map(\.mediaID)),
+              preview.candidateMediaIDs.count + preview.favoriteProtectedMediaIDs.count == snapshot.items.count else {
+            throw RemoteAPIError(code: .conflict, message: "migration checkpoint changed")
+        }
+        if let old = cleanupRechecks.first(where: { $0.request.deviceID == checkpoint.deviceID }),
+           old.request.completionReceiptID == preview.completionReceiptID,
+           old.request.backupReceiptID == preview.backupReceiptID, old.snapshot == snapshot {
+            return old.request
+        }
+        let request = RemotePhoneCleanupRecheck(id: UUID(), hostID: hostID, deviceID: checkpoint.deviceID,
+            migrationID: preview.integrity.migrationID, sourceInstallID: snapshot.sourceDeviceID,
+            sourceEpoch: snapshot.sourceEpoch, scopeRevision: snapshot.scopeRevision,
+            manifestSHA256: preview.integrity.manifestSHA256, completionReceiptID: preview.completionReceiptID,
+            backupReceiptID: preview.backupReceiptID, candidateCount: preview.candidateMediaIDs.count,
+            favoriteProtectedCount: preview.favoriteProtectedMediaIDs.count, createdAtMs: preview.checkedAtMs)
+        guard request.isValid else { throw RemoteAPIError(code: .badRequest, message: "invalid cleanup recheck") }
+        let updated = cleanupRechecks.filter { $0.request.deviceID != request.deviceID }
+            + [CleanupRecheckRecord(request: request, snapshot: snapshot)]
+        try persist(records, replacingCleanupRechecks: updated)
+        return request
+    }
+
+    func cleanupRecheck(authenticatedDeviceID: UUID) -> RemotePhoneCleanupInbox {
+        let pending = cleanupRechecks.first { $0.request.deviceID == authenticatedDeviceID }
+        let current = pending.flatMap { entry in
+            matchesMigrationCheckpoint(entry.snapshot, manifestSHA256: entry.request.manifestSHA256)
+                ? entry.request : nil
+        }
+        return .init(hostID: hostID, deviceID: authenticatedDeviceID, request: current)
     }
 
     func submitChunk(
@@ -1642,9 +1695,10 @@ actor RemoteLocalLibrarySyncStore {
         }.sorted { $0.assetID.uuidString < $1.assetID.uuidString }
     }
 
-    private func persist(_ updated: [UUID: Record], appendingRename: RemoteLocalCollectionRenameReceipt? = nil) throws {
+    private func persist(_ updated: [UUID: Record], appendingRename: RemoteLocalCollectionRenameReceipt? = nil, replacingCleanupRechecks: [CleanupRecheckRecord]? = nil) throws {
         let renames = collectionRenames + (appendingRename.map { [$0] } ?? [])
-        let persisted = PersistedState(records: updated.values.sorted {
+        let pending = replacingCleanupRechecks ?? cleanupRechecks
+        let persisted = PersistedState(cleanupRechecks: pending.isEmpty ? nil : pending, records: updated.values.sorted {
             $0.deviceID.uuidString < $1.deviceID.uuidString
         }, collectionRenames: renames.isEmpty ? nil : renames)
         let encoder = JSONEncoder()
@@ -1656,6 +1710,7 @@ actor RemoteLocalLibrarySyncStore {
         try data.write(to: storageURL, options: .atomic)
         records = updated
         collectionRenames = renames
+        cleanupRechecks = pending
     }
 
     private func receipt(

@@ -2049,7 +2049,7 @@ final class PhoneArchiveImportModel: ObservableObject {
         }
     }
 
-    func verifyIndependentBackup(create: Bool, prepareCleanup: Bool = false) async {
+    func verifyIndependentBackup(create: Bool, prepareCleanup: Bool = false, publishRecheck: Bool = false) async {
         guard !isBusy, let batch = selectedBatch, let completion = latestCompletionReceipt,
               completion.migrationID == batch.id, let validation = latestValidationRecord,
               validation.id == completion.validationID,
@@ -2125,6 +2125,11 @@ final class PhoneArchiveImportModel: ObservableObject {
                   latestIndependentBackup?.id == record.id else { throw PhoneArchiveImportError.validationStale }
             backupIsCurrent = true
             sourceCleanupPreflight = audited.1
+            if publishRecheck, let preview = audited.1 {
+                _ = try await RemoteHostProcessHolder.publishPhoneCleanupRecheck(preview)
+                message = "已为原配对手机保存来源核对请求。请在手机点击“查看 Mac 清理核对请求”；这不会执行删除。"
+                return
+            }
             message = "所选范围的独立备份当前复核通过：\(after.itemCount) 项、\(after.resourceCount) 个资源。仅证明本次可见存储依赖分离及数据一致，不授权删除手机来源；清理前仍须再次复核。"
         } catch {
             backupIsCurrent = false
@@ -2346,6 +2351,9 @@ private struct PhoneArchiveImportCard: View {
                                 .disabled(model.isBusy)
                             Button("预检手机清理范围") {
                                 Task { await model.verifyIndependentBackup(create: false, prepareCleanup: true) }
+                            }.disabled(model.isBusy)
+                            Button("请求手机核对") {
+                                Task { await model.verifyIndependentBackup(create: false, prepareCleanup: true, publishRecheck: true) }
                             }.disabled(model.isBusy)
                         }
                     }.buttonStyle(.bordered)

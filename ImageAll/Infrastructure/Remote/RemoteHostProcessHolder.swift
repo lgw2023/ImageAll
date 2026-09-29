@@ -610,6 +610,15 @@ enum RemoteHostProcessHolder {
         return await store.projections()
     }
 
+    static func publishPhoneCleanupRecheck(_ preview: PhoneArchiveSourceCleanupPreflight) async throws -> RemotePhoneCleanupRecheck {
+        guard let checkpoint = preview.integrity.phoneSyncCheckpoint,
+              (await pairedDevices()).contains(where: { $0.deviceID == checkpoint.deviceID }),
+              let store = try await state.syncStoreForUI() else {
+            throw RemoteAPIError(code: .unauthorized, message: "原手机配对已失效")
+        }
+        return try await store.publishCleanupRecheck(preview)
+    }
+
     static func matchesMigrationCheckpoint(
         _ snapshot: ImageAllMigrationFactSnapshot, manifestSHA256: String
     ) async throws -> Bool {

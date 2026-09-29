@@ -1034,6 +1034,20 @@ final class RemoteHTTPServerTests: XCTestCase {
             facts, manifestSHA256: String(repeating: "a", count: 64)
         )
         XCTAssertTrue(initiallyMatches)
+        let preview = PhoneArchiveSourceCleanupPreflight(completionReceiptID: UUID(), backupReceiptID: UUID(),
+            checkedAtMs: 1000, candidateMediaIDs: [assetID], favoriteProtectedMediaIDs: [],
+            integrity: .init(migrationID: UUID(), manifestSHA256: String(repeating: "a", count: 64),
+                itemCount: 1, resourceCount: 1, verifiedBytes: 10, factSnapshotSequence: 2,
+                factWatermark: 1, phoneSyncCheckpoint: checkpoint, factSnapshot: facts))
+        let published = try await store.publishCleanupRecheck(preview)
+        let replayed = try await store.publishCleanupRecheck(preview)
+        XCTAssertEqual(published, replayed)
+        let reopened = try RemoteLocalLibrarySyncStore(hostID: hostID, storageURL: root.appendingPathComponent("sync.json"))
+        let inbox = await reopened.cleanupRecheck(authenticatedDeviceID: deviceID)
+        XCTAssertEqual(inbox.request, published)
+        let otherInbox = await reopened.cleanupRecheck(authenticatedDeviceID: UUID())
+        XCTAssertNil(otherInbox.request)
+
         let wrongArchiveMatches = await store.matchesMigrationCheckpoint(
             facts, manifestSHA256: String(repeating: "b", count: 64)
         )
@@ -1046,6 +1060,14 @@ final class RemoteHTTPServerTests: XCTestCase {
             facts, manifestSHA256: String(repeating: "a", count: 64)
         )
         XCTAssertFalse(afterMacEditMatches)
+        let staleInbox = await store.cleanupRecheck(authenticatedDeviceID: deviceID)
+        XCTAssertNil(staleInbox.request)
+        do { _ = try await store.publishCleanupRecheck(preview); XCTFail("stale preview must be rejected") }
+        catch { XCTAssertNotNil(error as? RemoteAPIError) }
+        let restarted = try RemoteLocalLibrarySyncStore(hostID: hostID, storageURL: root.appendingPathComponent("sync.json"))
+        let restartedInbox = await restarted.cleanupRecheck(authenticatedDeviceID: deviceID)
+        XCTAssertNil(restartedInbox.request)
+
         let updatedFacts = ImageAllMigrationFactSnapshot(
             sourceDeviceID: installID, sourceEpoch: epoch,
             scopeRevision: 1, snapshotSequence: 3, factWatermark: 2,
@@ -1555,6 +1577,32 @@ final class RemoteHTTPServerTests: XCTestCase {
         )
         XCTAssertEqual(receipt.deviceID, tokens.deviceID)
         XCTAssertEqual(receipt.acceptedAssetCount, 1)
+        let nativeClient = RemoteLibraryClient(endpoint: try RemoteHostEndpoint(host: "127.0.0.1",
+            port: Int(port), accessToken: tokens.accessToken))
+        let inbox = try await nativeClient.fetchPhoneCleanupRecheck()
+        XCTAssertEqual(inbox.hostID, hostID)
+        XCTAssertEqual(inbox.deviceID, tokens.deviceID)
+        XCTAssertNil(inbox.request)
+        let checkpoint = ImageAllMigrationSyncCheckpoint(hostID: hostID, deviceID: tokens.deviceID,
+            acknowledgedScopeRevision: 1, acknowledgedSnapshotSequence: 1,
+            tagChangeCursor: 0, collectionChangeCursor: 0, favoriteChangeCursor: 0,
+            archiveManifestSHA256: String(repeating: "a", count: 64), sourceVerifiedAtMs: 1000)
+        let facts = ImageAllMigrationFactSnapshot(sourceDeviceID: snapshot.installID,
+            sourceEpoch: snapshot.sourceEpoch, scopeRevision: 1, snapshotSequence: 2, factWatermark: 0,
+            items: [.init(mediaID: assetID, observedFavorite: false, favoriteTarget: nil,
+                tagDecisions: [], collections: [])], syncCheckpoint: checkpoint)
+        let recheck = try await syncStore.publishCleanupRecheck(.init(completionReceiptID: UUID(), backupReceiptID: UUID(),
+            checkedAtMs: 1000, candidateMediaIDs: [assetID], favoriteProtectedMediaIDs: [],
+            integrity: .init(migrationID: UUID(), manifestSHA256: String(repeating: "a", count: 64),
+                itemCount: 1, resourceCount: 1, verifiedBytes: 10, factSnapshotSequence: 2,
+                factWatermark: 0, phoneSyncCheckpoint: checkpoint, factSnapshot: facts)))
+        let deliveredInbox = try await nativeClient.fetchPhoneCleanupRecheck()
+        XCTAssertEqual(deliveredInbox.request, recheck)
+
+        var noBearer = URLRequest(url: URL(string: "http://127.0.0.1:\(port)\(RemoteHTTPPaths.phoneCleanupRecheck)")!)
+        noBearer.httpMethod = "GET"
+        let (_, deniedInbox) = try await URLSession.shared.data(for: noBearer)
+        XCTAssertEqual((deniedInbox as? HTTPURLResponse)?.statusCode, 401)
         let lookup = try RemoteLocalLibrarySnapshotReceiptLookup(request: snapshot)
         let canonical = JSONEncoder()
         canonical.outputFormatting = [.sortedKeys]

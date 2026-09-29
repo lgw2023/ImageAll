@@ -1084,6 +1084,15 @@ actor RemoteHTTPServer {
                     supportsRevisionedVideoRanges: mediaResources.supportsRevisionedVideoRanges
                 )
                 await respondJSON(connection, status: 200, value: payload, timeoutTask: timeoutTask)
+            case ("GET", RemoteHTTPPaths.phoneCleanupRecheck):
+                guard let deviceID = requestAuthentication.deviceID else {
+                    throw RemoteAPIError(code: .unauthorized, message: "paired device required")
+                }
+                guard let localLibrarySyncStore else {
+                    throw RemoteAPIError(code: .notFound, message: "local library sync unavailable")
+                }
+                let payload = await localLibrarySyncStore.cleanupRecheck(authenticatedDeviceID: deviceID)
+                await respondJSON(connection, status: 200, value: payload, timeoutTask: timeoutTask)
             case ("POST", RemoteHTTPPaths.localLibrarySnapshot):
                 guard let deviceID = requestAuthentication.deviceID else {
                     throw RemoteAPIError(code: .unauthorized, message: "paired device required")
