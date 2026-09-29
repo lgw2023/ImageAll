@@ -491,6 +491,25 @@ public struct RemoteLibraryClient: Sendable {
         return inbox
     }
 
+    public func startPhoneCopyAudit(_ request: RemotePhoneCopyAuditRequest) async throws -> RemotePhoneCopyAudit {
+        guard request.sourceReport.isValid else { throw RemoteAPIError(code: .badRequest, message: "invalid copy audit request") }
+        let result: RemotePhoneCopyAudit = try await postJSON(path: RemoteHTTPPaths.phoneCleanupCopyAudit,
+            body: encoder.encode(request))
+        guard result.isValid, result.request == request else {
+            throw RemoteAPIError(code: .conflict, message: "copy audit response mismatch")
+        }
+        return result
+    }
+
+    public func fetchPhoneCopyAudit(_ request: RemotePhoneCopyAuditRequest) async throws -> RemotePhoneCopyAudit {
+        let result: RemotePhoneCopyAudit = try await getJSON(path: RemoteHTTPPaths.phoneCleanupCopyAudit,
+            queryItems: [.init(name: "id", value: request.id.uuidString)])
+        guard result.isValid, result.request == request else {
+            throw RemoteAPIError(code: .conflict, message: "copy audit response mismatch")
+        }
+        return result
+    }
+
     public func submitPhoneCleanupSourceReport(_ report: RemotePhoneCleanupSourceReport) async throws -> RemotePhoneCleanupSourceReport {
         guard report.isValid else { throw RemoteAPIError(code: .badRequest, message: "invalid source report") }
         let receipt: RemotePhoneCleanupSourceReport = try await postJSON(

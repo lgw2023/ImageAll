@@ -1055,6 +1055,22 @@ final class RemoteHTTPServerTests: XCTestCase {
         let inbox = await reopened.cleanupRecheck(authenticatedDeviceID: deviceID)
         XCTAssertEqual(inbox.request, published)
         XCTAssertEqual(inbox.sourceReport, report)
+        let auditRequest = RemotePhoneCopyAuditRequest(id: UUID(), sourceReport: report)
+        var audit = try await store.startCopyAudit(auditRequest, authenticatedDeviceID: deviceID) { _ in
+            throw RemoteAPIError(code: .conflict, message: "synthetic damaged backup")
+        }
+        for _ in 0..<50 where audit.state == .running {
+            try await Task.sleep(for: .milliseconds(10))
+            audit = try await store.copyAudit(id: auditRequest.id, authenticatedDeviceID: deviceID)
+        }
+        XCTAssertEqual(audit.state, .failed)
+        do { _ = try await store.copyAudit(id: auditRequest.id, authenticatedDeviceID: UUID()); XCTFail("other device") }
+        catch { XCTAssertNotNil(error as? RemoteAPIError) }
+        do { _ = try await reopened.copyAudit(id: auditRequest.id, authenticatedDeviceID: deviceID); XCTFail("jobs must not persist") }
+        catch { XCTAssertNotNil(error as? RemoteAPIError) }
+        await store.invalidateCopyAudits()
+        do { _ = try await store.copyAudit(id: auditRequest.id, authenticatedDeviceID: deviceID); XCTFail("stopped host invalidates jobs") }
+        catch { XCTAssertNotNil(error as? RemoteAPIError) }
         let otherInbox = await reopened.cleanupRecheck(authenticatedDeviceID: UUID())
         XCTAssertNil(otherInbox.request)
 
@@ -1073,6 +1089,8 @@ final class RemoteHTTPServerTests: XCTestCase {
         let staleInbox = await store.cleanupRecheck(authenticatedDeviceID: deviceID)
         XCTAssertNil(staleInbox.request)
         XCTAssertNil(staleInbox.sourceReport)
+        do { _ = try await store.startCopyAudit(auditRequest, authenticatedDeviceID: deviceID) { _ in }; XCTFail("stale report cannot start disk work") }
+        catch { XCTAssertNotNil(error as? RemoteAPIError) }
         do { _ = try await store.submitCleanupSourceReport(report, authenticatedDeviceID: deviceID); XCTFail("stale report") }
         catch { XCTAssertNotNil(error as? RemoteAPIError) }
         do { _ = try await store.publishCleanupRecheck(preview); XCTFail("stale preview must be rejected") }
@@ -1546,7 +1564,10 @@ final class RemoteHTTPServerTests: XCTestCase {
             hostID: hostID, storageURL: tempStorageURL(name: "local-sync.json")
         )
         let (server, _) = makeServer(
-            port: port, pairingStore: pairing, localLibrarySyncStore: syncStore
+            port: port, pairingStore: pairing, localLibrarySyncStore: syncStore,
+            phoneCopyAuditor: { report in
+                guard report.isValid else { throw RemoteAPIError(code: .badRequest, message: "invalid fixture") }
+            }
         )
         try await server.start()
         try await Task.sleep(nanoseconds: 150_000_000)
@@ -1617,6 +1638,20 @@ final class RemoteHTTPServerTests: XCTestCase {
         XCTAssertEqual(reportReceipt, sourceReport)
         let reportedInbox = try await nativeClient.fetchPhoneCleanupRecheck()
         XCTAssertEqual(reportedInbox.sourceReport, sourceReport)
+        let auditRequest = RemotePhoneCopyAuditRequest(id: UUID(), sourceReport: sourceReport)
+        var audit = try await nativeClient.startPhoneCopyAudit(auditRequest)
+        for _ in 0..<50 where audit.state == .running {
+            try await Task.sleep(for: .milliseconds(10))
+            audit = try await nativeClient.fetchPhoneCopyAudit(auditRequest)
+        }
+        XCTAssertEqual(audit.state, .passed)
+        XCTAssertNotNil(audit.checkedAtMs)
+        XCTAssertEqual(audit.request, auditRequest)
+        var noAuditBearer = URLRequest(url: URL(string: "http://127.0.0.1:\(port)\(RemoteHTTPPaths.phoneCleanupCopyAudit)")!)
+        noAuditBearer.httpMethod = "POST"
+        noAuditBearer.httpBody = try JSONEncoder().encode(auditRequest)
+        let (_, deniedAudit) = try await URLSession.shared.data(for: noAuditBearer)
+        XCTAssertEqual((deniedAudit as? HTTPURLResponse)?.statusCode, 401)
         var noReportBearer = URLRequest(url: URL(string: "http://127.0.0.1:\(port)\(RemoteHTTPPaths.phoneCleanupSourceReport)")!)
         noReportBearer.httpMethod = "POST"
         noReportBearer.httpBody = try JSONEncoder().encode(sourceReport)
@@ -2701,6 +2736,7 @@ final class RemoteHTTPServerTests: XCTestCase {
         catalog: any RemoteCatalogServing = RemoteHTTPServerTestCatalog(),
         pairingStore: RemotePairingStore? = nil,
         localLibrarySyncStore: RemoteLocalLibrarySyncStore? = nil,
+        phoneCopyAuditor: (@Sendable (RemotePhoneCleanupSourceReport) async throws -> Void)? = nil,
         migrationTransferStore: ImageAllMigrationTransferStore? = nil,
         accessAccountStore: RemoteAccessAccountStore? = nil,
         trainingWorkspace: (any TrainingWorkspacePort)? = nil,
@@ -2734,6 +2770,7 @@ final class RemoteHTTPServerTests: XCTestCase {
             facade: facade,
             pairingStore: store,
             localLibrarySyncStore: localLibrarySyncStore,
+            phoneCopyAuditor: phoneCopyAuditor,
             migrationTransferStore: migrationTransferStore,
             accessAccountStore: accessAccountStore ?? makeAccessAccountStore(),
             eventBroker: RemoteEventBroker(),

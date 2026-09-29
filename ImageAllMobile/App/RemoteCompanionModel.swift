@@ -689,6 +689,31 @@ final class RemoteCompanionModel: ObservableObject {
         return inbox.request
     }
 
+    func recheckMacCopies(for report: RemotePhoneCleanupSourceReport) async throws -> RemotePhoneCopyAudit {
+        guard isConnected, let client, let sessionTokens,
+              sessionTokens.hostID == report.request.hostID, sessionTokens.deviceID == report.request.deviceID else {
+            throw RemoteAPIError(code: .unauthorized, message: "请连接原配对 Mac")
+        }
+        let request = RemotePhoneCopyAuditRequest(id: UUID(), sourceReport: report)
+        var result = try await client.startPhoneCopyAudit(request)
+        while result.state == .running {
+            try Task.checkCancellation()
+            guard isConnected, self.sessionTokens?.hostID == sessionTokens.hostID,
+                  self.sessionTokens?.deviceID == sessionTokens.deviceID else {
+                throw RemoteAPIError(code: .conflict, message: "副本核验期间配对身份已变化")
+            }
+            try await Task.sleep(for: .seconds(1))
+            result = try await client.fetchPhoneCopyAudit(request)
+        }
+        try Task.checkCancellation()
+        guard isConnected, self.sessionTokens?.hostID == sessionTokens.hostID,
+              self.sessionTokens?.deviceID == sessionTokens.deviceID,
+              result.state == .passed else {
+            throw RemoteAPIError(code: .conflict, message: "Mac 副本未通过当前复核，请在 Mac 检查归档、备份与共享状态")
+        }
+        return result
+    }
+
     func submitPhoneCleanupSourceReport(_ report: RemotePhoneCleanupSourceReport) async throws {
         guard isConnected, let client, let sessionTokens,
               sessionTokens.hostID == report.request.hostID, sessionTokens.deviceID == report.request.deviceID else {

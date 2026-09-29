@@ -300,6 +300,63 @@ actor RemoteLocalLibrarySyncStore {
             sourceReport: current == nil ? nil : pending?.sourceReport)
     }
 
+    // Read-only jobs are intentionally not persisted. One retained job per paired
+    // device and one running audit globally bound the expensive disk work.
+    private var copyAudits: [UUID: RemotePhoneCopyAudit] = [:]
+    private var copyAuditGeneration = UUID()
+    private var runningCopyAuditID: UUID?
+
+    func invalidateCopyAudits() {
+        copyAuditGeneration = UUID()
+        copyAudits.removeAll()
+    }
+
+    func startCopyAudit(_ request: RemotePhoneCopyAuditRequest, authenticatedDeviceID: UUID,
+        auditor: @escaping @Sendable (RemotePhoneCleanupSourceReport) async throws -> Void
+    ) throws -> RemotePhoneCopyAudit {
+        try requireCurrentSourceReport(request.sourceReport, deviceID: authenticatedDeviceID)
+        if let old = copyAudits[authenticatedDeviceID], old.request.id == request.id {
+            guard old.request == request else { throw RemoteAPIError(code: .conflict, message: "copy audit identity changed") }
+            return old
+        }
+        guard runningCopyAuditID == nil else {
+            throw RemoteAPIError(code: .conflict, message: "Mac 正在复核副本，请等待当前检查完成")
+        }
+        let job = RemotePhoneCopyAudit(request: request, state: .running)
+        copyAudits[authenticatedDeviceID] = job
+        runningCopyAuditID = request.id
+        let generation = copyAuditGeneration
+        Task {
+            defer { runningCopyAuditID = nil }
+            do {
+                try await auditor(request.sourceReport)
+                guard generation == copyAuditGeneration else { return }
+                try requireCurrentSourceReport(request.sourceReport, deviceID: authenticatedDeviceID)
+                copyAudits[authenticatedDeviceID] = .init(request: request, state: .passed,
+                    checkedAtMs: Int64(Date().timeIntervalSince1970 * 1_000))
+            } catch {
+                guard generation == copyAuditGeneration else { return }
+                copyAudits[authenticatedDeviceID] = .init(request: request, state: .failed)
+            }
+        }
+        return job
+    }
+
+    func copyAudit(id: UUID, authenticatedDeviceID: UUID) throws -> RemotePhoneCopyAudit {
+        guard let job = copyAudits[authenticatedDeviceID], job.request.id == id else {
+            throw RemoteAPIError(code: .notFound, message: "副本核验任务不存在，请重新核验")
+        }
+        try requireCurrentSourceReport(job.request.sourceReport, deviceID: authenticatedDeviceID)
+        return job
+    }
+
+    private func requireCurrentSourceReport(_ report: RemotePhoneCleanupSourceReport, deviceID: UUID) throws {
+        guard report.isValid, report.request.hostID == hostID, report.request.deviceID == deviceID,
+              cleanupRecheck(authenticatedDeviceID: deviceID).sourceReport == report else {
+            throw RemoteAPIError(code: .conflict, message: "手机报告或共享水位已变化，请重新复查")
+        }
+    }
+
     func submitCleanupSourceReport(_ report: RemotePhoneCleanupSourceReport,
         authenticatedDeviceID: UUID
     ) throws -> RemotePhoneCleanupSourceReport {

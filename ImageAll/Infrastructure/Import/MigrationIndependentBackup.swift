@@ -371,3 +371,46 @@ extension VerifiedPhoneArchiveImporter {
             favoriteProtectedMediaIDs: protected, integrity: before)
     }
 }
+
+
+extension PhoneArchiveImportProcessHolder {
+    /// Uses only the current catalog's saved, explicitly selected destinations.
+    static func recheckCopiesForPhone(_ report: RemotePhoneCleanupSourceReport) async throws {
+        guard let importer = importer() else { throw MigrationBackupError.missingRecord }
+        try await CatalogBlockingExecutor.shared.run(priority: .utility) {
+            let migrationID = report.request.migrationID
+            guard let batch = try importer.importedBatches().first(where: { $0.id == migrationID }),
+                  let completion = try importer.latestCompletionReceipt(migrationID: migrationID),
+                  let validation = try importer.latestValidationRecord(migrationID: migrationID),
+                  validation.id == completion.validationID,
+                  let backup = try importer.latestIndependentBackup(migrationID: migrationID),
+                  completion.id == report.request.completionReceiptID, backup.id == report.request.backupReceiptID else {
+                throw PhoneArchiveImportError.validationStale
+            }
+            func resolve(_ bookmark: Data?, expected: URL) throws -> URL {
+                guard let bookmark else { throw MigrationBackupError.missingRecord }
+                var stale = false
+                let url = try URL(resolvingBookmarkData: bookmark, options: [.withSecurityScope],
+                    relativeTo: nil, bookmarkDataIsStale: &stale)
+                guard !stale, url.standardizedFileURL == expected.standardizedFileURL else {
+                    throw MigrationBackupError.changed
+                }
+                let path = url.standardizedFileURL.resolvingSymlinksInPath().path
+                guard path != "/Volumes/HDD2", !path.hasPrefix("/Volumes/HDD2/") else {
+                    throw MigrationBackupError.changed
+                }
+                return url
+            }
+            let directories = try [
+                resolve(batch.targetBookmark, expected: URL(fileURLWithPath: batch.targetParentPath, isDirectory: true)),
+                resolve(validation.recoveryParentBookmark,
+                    expected: URL(fileURLWithPath: validation.recoveryCatalogPath).deletingLastPathComponent()),
+                resolve(backup.parentBookmark,
+                    expected: URL(fileURLWithPath: backup.backupCatalogPath).deletingLastPathComponent())
+            ]
+            let access = directories.map { $0.startAccessingSecurityScopedResource() }
+            defer { for (url, started) in zip(directories, access) where started { url.stopAccessingSecurityScopedResource() } }
+            _ = try importer.recheckCopies(for: report, backup: backup)
+        }
+    }
+}

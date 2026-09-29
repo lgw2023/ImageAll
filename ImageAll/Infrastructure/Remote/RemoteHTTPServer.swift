@@ -221,6 +221,7 @@ actor RemoteHTTPServer {
     private let cloudPreviewDownloads: RemoteCloudPreviewDownloadCoordinator
     private let pairingStore: RemotePairingStore
     private let localLibrarySyncStore: RemoteLocalLibrarySyncStore?
+    private let phoneCopyAuditor: (@Sendable (RemotePhoneCleanupSourceReport) async throws -> Void)?
     private let migrationTransferStore: ImageAllMigrationTransferStore?
     private var migrationTransferScopeURL: URL?
     private let accessAccountStore: RemoteAccessAccountStore
@@ -247,6 +248,7 @@ actor RemoteHTTPServer {
         facade: RemoteCatalogFacade,
         pairingStore: RemotePairingStore,
         localLibrarySyncStore: RemoteLocalLibrarySyncStore? = nil,
+        phoneCopyAuditor: (@Sendable (RemotePhoneCleanupSourceReport) async throws -> Void)? = nil,
         migrationTransferStore: ImageAllMigrationTransferStore? = nil,
         migrationTransferScopeURL: URL? = nil,
         accessAccountStore: RemoteAccessAccountStore,
@@ -264,6 +266,7 @@ actor RemoteHTTPServer {
         cloudPreviewDownloads = RemoteCloudPreviewDownloadCoordinator(facade: facade)
         self.pairingStore = pairingStore
         self.localLibrarySyncStore = localLibrarySyncStore
+        self.phoneCopyAuditor = phoneCopyAuditor
         self.migrationTransferStore = migrationTransferStore
         self.migrationTransferScopeURL = migrationTransferScopeURL
         self.accessAccountStore = accessAccountStore
@@ -323,7 +326,7 @@ actor RemoteHTTPServer {
         return true
     }
 
-    func stop() {
+    func stop() async {
         listener?.cancel()
         listener = nil
         localWebListener?.cancel()
@@ -334,6 +337,7 @@ actor RemoteHTTPServer {
         webSocketConnections.removeAll()
         migrationTransferScopeURL?.stopAccessingSecurityScopedResource()
         migrationTransferScopeURL = nil
+        await localLibrarySyncStore?.invalidateCopyAudits()
         Task { await cloudPreviewDownloads.cancelAll() }
         Task { await eventBroker.stopPingLoop() }
     }
@@ -1092,6 +1096,26 @@ actor RemoteHTTPServer {
                     throw RemoteAPIError(code: .notFound, message: "local library sync unavailable")
                 }
                 let payload = await localLibrarySyncStore.cleanupRecheck(authenticatedDeviceID: deviceID)
+                await respondJSON(connection, status: 200, value: payload, timeoutTask: timeoutTask)
+            case ("POST", RemoteHTTPPaths.phoneCleanupCopyAudit):
+                guard let deviceID = requestAuthentication.deviceID else {
+                    throw RemoteAPIError(code: .unauthorized, message: "paired device required")
+                }
+                guard let localLibrarySyncStore, let phoneCopyAuditor else {
+                    throw RemoteAPIError(code: .notFound, message: "Mac 副本复核暂不可用")
+                }
+                let audit = try jsonDecoder.decode(RemotePhoneCopyAuditRequest.self, from: body)
+                let payload = try await localLibrarySyncStore.startCopyAudit(audit,
+                    authenticatedDeviceID: deviceID, auditor: phoneCopyAuditor)
+                await respondJSON(connection, status: 200, value: payload, timeoutTask: timeoutTask)
+            case ("GET", RemoteHTTPPaths.phoneCleanupCopyAudit):
+                guard let deviceID = requestAuthentication.deviceID else {
+                    throw RemoteAPIError(code: .unauthorized, message: "paired device required")
+                }
+                guard let localLibrarySyncStore, let raw = query["id"], let id = UUID(uuidString: raw) else {
+                    throw RemoteAPIError(code: .badRequest, message: "invalid copy audit lookup")
+                }
+                let payload = try await localLibrarySyncStore.copyAudit(id: id, authenticatedDeviceID: deviceID)
                 await respondJSON(connection, status: 200, value: payload, timeoutTask: timeoutTask)
             case ("POST", RemoteHTTPPaths.phoneCleanupSourceReport):
                 guard let deviceID = requestAuthentication.deviceID else {

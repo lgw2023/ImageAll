@@ -516,6 +516,7 @@ public struct RemoteLocalLibraryFavoriteTargetReceipt: Codable, Sendable, Equata
 
 
 extension RemoteHTTPPaths {
+    public static let phoneCleanupCopyAudit = "/v1/sync/local-library/cleanup-copy-audit"
     public static let phoneCleanupSourceReport = "/v1/sync/local-library/cleanup-source-report"
     public static let phoneCleanupRecheck = "/v1/sync/local-library/cleanup-recheck"
 }
@@ -637,5 +638,28 @@ extension RemotePhoneCleanupRecheck {
                 throw RemoteAPIError(code: .conflict, message: "手机整理信息、收藏或同步状态已变化，请先同步并更新归档与备份")
             }
         }
+    }
+}
+
+/// A fresh challenge for a read-only Mac copy audit, not an execution permit.
+public struct RemotePhoneCopyAuditRequest: Codable, Sendable, Equatable, Identifiable {
+    public let id: UUID
+    public let sourceReport: RemotePhoneCleanupSourceReport
+    public init(id: UUID, sourceReport: RemotePhoneCleanupSourceReport) {
+        self.id = id; self.sourceReport = sourceReport
+    }
+}
+
+public enum RemotePhoneCopyAuditState: String, Codable, Sendable { case running, passed, failed }
+
+public struct RemotePhoneCopyAudit: Codable, Sendable, Equatable {
+    public let request: RemotePhoneCopyAuditRequest
+    public let state: RemotePhoneCopyAuditState
+    public let checkedAtMs: Int64?
+    public init(request: RemotePhoneCopyAuditRequest, state: RemotePhoneCopyAuditState, checkedAtMs: Int64? = nil) {
+        self.request = request; self.state = state; self.checkedAtMs = checkedAtMs
+    }
+    public var isValid: Bool {
+        request.sourceReport.isValid && (state == .passed ? (checkedAtMs.map { $0 >= 0 } ?? false) : checkedAtMs == nil)
     }
 }

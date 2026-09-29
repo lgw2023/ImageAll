@@ -1508,6 +1508,7 @@ private struct LocalShareScopeView: View {
     @State private var cleanupRecheck: RemotePhoneCleanupRecheck?
     @State private var isFetchingCleanupRecheck = false
     @State private var cleanupSourceCheckMessage: String?
+    @State private var cleanupSourceReport: RemotePhoneCleanupSourceReport?
     @State private var tagAliasCandidate: LocalSharedTagAliasCandidate?
     @State private var collectionAliasCandidate: LocalSharedCollectionAliasCandidate?
 
@@ -1796,9 +1797,9 @@ private struct LocalShareScopeView: View {
             archiveSection
         }
         .navigationTitle("待分享范围")
-        .onDisappear { streamTask?.cancel(); cleanupSourceCheckMessage = nil }
+        .onDisappear { streamTask?.cancel(); cleanupSourceCheckMessage = nil; cleanupSourceReport = nil }
         .onChange(of: scenePhase) { _, phase in
-            if phase != .active { streamTask?.cancel(); cleanupSourceCheckMessage = nil }
+            if phase != .active { streamTask?.cancel(); cleanupSourceCheckMessage = nil; cleanupSourceReport = nil }
         }
     }
 
@@ -1809,6 +1810,7 @@ private struct LocalShareScopeView: View {
                     guard !isFetchingCleanupRecheck else { return }
                     isFetchingCleanupRecheck = true
                     cleanupRecheck = nil
+                    cleanupSourceReport = nil
                     cleanupSourceCheckMessage = nil
                     defer { isFetchingCleanupRecheck = false }
                     do {
@@ -1829,6 +1831,7 @@ private struct LocalShareScopeView: View {
                 Button(isStreamingArchive ? "正在核对来源原件…" : "核对当前手机来源（只读）") {
                     guard !isStreamingArchive else { return }
                     cleanupSourceCheckMessage = nil
+                    cleanupSourceReport = nil
                     isStreamingArchive = true
                     streamTask = Task {
                         defer { isStreamingArchive = false; streamTask = nil }
@@ -1843,6 +1846,7 @@ private struct LocalShareScopeView: View {
                                 return
                             }
                             try Task.checkCancellation()
+                            cleanupSourceReport = report
                             cleanupSourceCheckMessage = "Mac 已接收本次来源检查记录。已复查 \(count) 项原件与整理信息，\(request.favoriteProtectedCount) 项收藏继续保护。未执行删除；仍需 Mac 当前副本复核和手机前台确认。"
                         } catch is CancellationError {
                             cleanupSourceCheckMessage = "来源复查已取消，未形成通过结果。"
@@ -1851,6 +1855,22 @@ private struct LocalShareScopeView: View {
                         }
                     }
                 }.disabled(isStreamingArchive || isExporting || isUploadingArchive || isSending || isFetchingCleanupRecheck)
+                if let report = cleanupSourceReport {
+                    Button("请求 Mac 重新核验副本") {
+                        guard !isStreamingArchive else { return }
+                        isStreamingArchive = true
+                        cleanupSourceCheckMessage = "Mac 正在逐项核验归档与独立备份，请保持前台和连接。"
+                        streamTask = Task {
+                            defer { isStreamingArchive = false; streamTask = nil }
+                            do {
+                                _ = try await remoteModel.recheckMacCopies(for: report)
+                                cleanupSourceCheckMessage = "Mac 本次归档与独立备份复核通过。来源检查与前台删除确认仍须另行完成；未执行删除。"
+                            } catch is CancellationError {
+                                cleanupSourceCheckMessage = "已停止等待副本核验；Mac 只读检查可能仍在结束，未执行删除。"
+                            } catch { cleanupSourceCheckMessage = "副本核验未通过：\(error.localizedDescription)" }
+                        }
+                    }.disabled(isStreamingArchive || isExporting || isUploadingArchive || isSending || isFetchingCleanupRecheck)
+                }
                 if let cleanupSourceCheckMessage {
                     Text(cleanupSourceCheckMessage).font(.footnote).foregroundStyle(.secondary)
                 }

@@ -890,6 +890,9 @@ enum RemoteHostProcessHolder {
                 facade: facade,
                 pairingStore: pairingStore,
                 localLibrarySyncStore: localLibrarySyncStore,
+                phoneCopyAuditor: { report in
+                    try await PhoneArchiveImportProcessHolder.recheckCopiesForPhone(report)
+                },
                 migrationTransferStore: migrationTransferStore,
                 migrationTransferScopeURL: migrationTransferScopeURL,
                 accessAccountStore: accessAccountStore,
