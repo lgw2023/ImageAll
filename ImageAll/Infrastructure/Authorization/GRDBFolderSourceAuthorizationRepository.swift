@@ -267,6 +267,27 @@ struct GRDBFolderSourceAuthorizationRepository: Sendable {
         }
     }
 
+    /// Access observations must never overwrite an explicit disable/delete that
+    /// happened while a bookmark or watcher was being opened.
+    @discardableResult
+    func updateObservedAccessState(sourceID: UUID, state: SourceState, nowMs: Int64) throws -> Bool {
+        guard state != .disabled else { throw FolderAuthorizationError.invalidSourceState }
+        return try mapPersistence {
+            try database.pool.write { db in
+                try db.execute(
+                    sql: """
+                    UPDATE source SET state = ?, updated_at_ms = ?
+                    WHERE id = ? AND kind = 'folder'
+                        AND state IN ('active', 'unavailable', 'authorizationRequired')
+                        AND state != ?
+                    """,
+                    arguments: [state.rawValue, nowMs, sourceID.uuidString.lowercased(), state.rawValue]
+                )
+                return db.changesCount == 1
+            }
+        }
+    }
+
     func updateSourceState(sourceID: UUID, state: SourceState, nowMs: Int64) throws {
         try mapPersistence {
             try database.pool.write { db in

@@ -2466,12 +2466,8 @@ struct ProductionLibraryWorkspaceService:
         }
         photosSourceMonitor.refreshRegistration()
 
-        let folderSources = try sourceRepository.fetchAllFolderSources()
-        for source in folderSources where source.state == .authorizationRequired {
-            _ = try? authorization.attemptRestoreFolderAuthorization(sourceID: source.id)
-        }
-        // Restore security-scoped sessions for reads without enqueueing a
-        // full-library reconcile for every newly activated folder source.
+        // The monitor also restores offline/authorizationRequired folders with
+        // their existing read-only bookmarks, without full-library reconciles.
         try folderSourceMonitor.synchronize(enqueueInitialReconciles: false)
     }
 

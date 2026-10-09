@@ -5631,7 +5631,13 @@ final class LibraryWorkspaceModel: ObservableObject {
         let service = service
         let onCatalogChange: @Sendable () -> Void = { [weak self] in
             Task { @MainActor [weak self] in
-                self?.startCatalogReconcileRunnerIfNeeded()
+                guard let self else { return }
+                // A source may recover without any scan being queued. Publish
+                // its state independently of the reconcile runner.
+                if let refreshed = try? await Self.offMain({ try service.fetchSources() }) {
+                    self.publishSourceAccessChanges(refreshed)
+                }
+                self.startCatalogReconcileRunnerIfNeeded()
             }
         }
         catalogSourceMonitoringTask = Task(priority: .utility) { [weak self] in
@@ -7265,9 +7271,22 @@ final class LibraryWorkspaceModel: ObservableObject {
         do {
             try await service.restoreDefaultSourceAuthorizations()
             let service = service
-            sources = try await Self.offMain { try service.fetchSources() }
+            publishSourceAccessChanges(try await Self.offMain { try service.fetchSources() })
         } catch {
             // Keep previous source list; user can still reauthorize manually.
+        }
+    }
+
+    private func publishSourceAccessChanges(_ refreshed: [LibrarySourceSummary]) {
+        let inaccessibleIDs = Set(sources.filter { $0.state != .active }.map(\.id))
+        let restoredIDs = Set(refreshed.filter {
+            $0.state == .active && inaccessibleIDs.contains($0.id)
+        }.map(\.id))
+        sources = refreshed
+        if items.contains(where: { restoredIDs.contains($0.sourceID) }) {
+            // Retry visible placeholders through the existing thumbnail task
+            // identity; this does not enqueue a source scan or a prewarm job.
+            thumbnailRecoveryGeneration &+= 1
         }
     }
 

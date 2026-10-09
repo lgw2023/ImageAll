@@ -1,3 +1,4 @@
+import AppKit
 import CoreServices
 import Foundation
 import GRDB
@@ -307,15 +308,18 @@ final class FolderSourceMonitoringCoordinator: @unchecked Sendable {
     }
 
     private final class Session {
+        let id: UUID
         let stream: any FolderFileSystemEventStream
         let rootURL: URL
         let bookmarkPort: any SecurityScopedBookmarkPort
 
         init(
+            id: UUID,
             stream: any FolderFileSystemEventStream,
             rootURL: URL,
             bookmarkPort: any SecurityScopedBookmarkPort
         ) {
+            self.id = id
             self.stream = stream
             self.rootURL = rootURL
             self.bookmarkPort = bookmarkPort
@@ -334,6 +338,11 @@ final class FolderSourceMonitoringCoordinator: @unchecked Sendable {
     private let streamFactory: any FolderFileSystemEventStreamFactory
     private let clock: any JobClock
     private let lock = NSLock()
+    private let operationLock = NSRecursiveLock()
+    private let volumeNotificationCenter: NotificationCenter?
+    private let recoveryQueue = DispatchQueue(label: "com.imageall.folder-source-recovery", qos: .utility)
+    private var mountObserver: (any NSObjectProtocol)?
+    private var monitoringGeneration: UUID?
     private var sessions: [UUID: Session] = [:]
     private var onChange: (@Sendable () -> Void)?
 
@@ -343,7 +352,8 @@ final class FolderSourceMonitoringCoordinator: @unchecked Sendable {
         rootValidator: FolderRootValidator,
         dirtyTrigger: FolderSourceDirtyTrigger,
         streamFactory: any FolderFileSystemEventStreamFactory,
-        clock: any JobClock = SystemJobClock()
+        clock: any JobClock = SystemJobClock(),
+        volumeNotificationCenter: NotificationCenter? = nil
     ) {
         self.repository = repository
         self.bookmarkPort = bookmarkPort
@@ -351,6 +361,7 @@ final class FolderSourceMonitoringCoordinator: @unchecked Sendable {
         self.dirtyTrigger = dirtyTrigger
         self.streamFactory = streamFactory
         self.clock = clock
+        self.volumeNotificationCenter = volumeNotificationCenter
     }
 
     deinit {
@@ -361,13 +372,32 @@ final class FolderSourceMonitoringCoordinator: @unchecked Sendable {
         onChange: @escaping @Sendable () -> Void,
         enqueueInitialReconciles: Bool = true
     ) throws {
+        operationLock.lock()
+        defer { operationLock.unlock() }
         lock.withLock { self.onChange = onChange }
+        if mountObserver == nil, let volumeNotificationCenter {
+            let generation = UUID()
+            monitoringGeneration = generation
+            mountObserver = volumeNotificationCenter.addObserver(
+                forName: NSWorkspace.didMountNotification, object: nil, queue: nil
+            ) { [weak self] _ in
+                self?.recoveryQueue.async { [weak self] in
+                    guard let self else { return }
+                    self.operationLock.withLock {
+                        guard self.monitoringGeneration == generation else { return }
+                        try? self.synchronize(enqueueInitialReconciles: false)
+                    }
+                }
+            }
+        }
         try synchronize(enqueueInitialReconciles: enqueueInitialReconciles)
     }
 
     func synchronize(enqueueInitialReconciles: Bool = true) throws {
-        let activeSources = try repository.fetchAllFolderSources().filter { $0.state == .active }
-        let activeIDs = Set(activeSources.map(\.id))
+        operationLock.lock()
+        defer { operationLock.unlock() }
+        let sources = try repository.fetchAllFolderSources().filter { $0.state != .disabled }
+        let activeIDs = Set(sources.filter { $0.state == .active }.map(\.id))
         let removedSessions = lock.withLock { () -> [Session] in
             let removed = sessions.compactMap { activeIDs.contains($0.key) ? nil : $0.value }
             sessions = sessions.filter { activeIDs.contains($0.key) }
@@ -375,17 +405,30 @@ final class FolderSourceMonitoringCoordinator: @unchecked Sendable {
         }
         removedSessions.forEach { $0.stop() }
 
-        for source in activeSources {
+        for source in sources {
             let alreadyWatching = lock.withLock { sessions[source.id] != nil }
             guard !alreadyWatching else { continue }
             do {
                 let session = try makeSession(for: source)
-                lock.withLock { sessions[source.id] = session }
+                let restored: Bool
+                do {
+                    if source.state == .active {
+                        restored = false
+                    } else {
+                        restored = try repository.updateObservedAccessState(
+                            sourceID: source.id, state: .active, nowMs: clock.nowMs
+                        )
+                    }
+                } catch {
+                    session.stop()
+                    throw error
+                }
                 guard isActiveFolderSource(source.id) else {
-                    let removed = lock.withLock { sessions.removeValue(forKey: source.id) }
-                    removed?.stop()
+                    session.stop()
                     continue
                 }
+                lock.withLock { sessions[source.id] = session }
+                if restored { notifyChange() }
                 // Soft auth restore may activate many large folders at once. Keep
                 // security-scoped sessions alive for reads, but skip the initial
                 // reconcile storm that freezes sidebar navigation.
@@ -395,17 +438,24 @@ final class FolderSourceMonitoringCoordinator: @unchecked Sendable {
                 }
             } catch {
                 let sourceState = (error as? StartFailure)?.sourceState ?? .unavailable
-                try? repository.updateSourceState(
+                let changed = try? repository.updateObservedAccessState(
                     sourceID: source.id,
                     state: sourceState,
                     nowMs: clock.nowMs
                 )
-                notifyChange()
+                if changed == true { notifyChange() }
             }
         }
     }
 
     func stop() {
+        operationLock.lock()
+        defer { operationLock.unlock() }
+        monitoringGeneration = nil
+        if let mountObserver {
+            volumeNotificationCenter?.removeObserver(mountObserver)
+            self.mountObserver = nil
+        }
         let stoppedSessions = lock.withLock { () -> [Session] in
             let stopped = Array(sessions.values)
             sessions.removeAll()
@@ -441,19 +491,23 @@ final class FolderSourceMonitoringCoordinator: @unchecked Sendable {
                     nowMs: clock.nowMs
                 )
             }
+            let sessionID = UUID()
             let stream = try streamFactory.start(rootURL: resolved.url) { [weak self] batch in
-                self?.handle(batch: batch, sourceID: source.id)
+                self?.handle(batch: batch, sourceID: source.id, sessionID: sessionID)
             }
-            return Session(stream: stream, rootURL: resolved.url, bookmarkPort: bookmarkPort)
+            return Session(id: sessionID, stream: stream, rootURL: resolved.url, bookmarkPort: bookmarkPort)
         } catch {
             bookmarkPort.stopAccessing(resolved.url)
             throw error
         }
     }
 
-    private func handle(batch: FolderFileSystemEventBatch, sourceID: UUID) {
+    private func handle(batch: FolderFileSystemEventBatch, sourceID: UUID, sessionID: UUID) {
+        operationLock.lock()
+        defer { operationLock.unlock() }
+        guard lock.withLock({ sessions[sourceID]?.id == sessionID }) else { return }
         if batch.flags.indicatesRootUnavailable {
-            try? repository.updateSourceState(
+            try? repository.updateObservedAccessState(
                 sourceID: sourceID,
                 state: .unavailable,
                 nowMs: clock.nowMs

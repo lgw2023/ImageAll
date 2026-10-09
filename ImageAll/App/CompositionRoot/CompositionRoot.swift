@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 
 struct CompositionRoot {
@@ -166,7 +167,8 @@ struct CompositionRoot {
                 clock: clock
             ),
             streamFactory: FoundationFolderFileSystemEventStreamFactory(),
-            clock: clock
+            clock: clock,
+            volumeNotificationCenter: NSWorkspace.shared.notificationCenter
         )
         let handler = FolderReconcileHandler(
             rootAccess: sourceAccess,

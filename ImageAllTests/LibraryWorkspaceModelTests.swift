@@ -1260,6 +1260,37 @@ final class LibraryWorkspaceModelTests: XCTestCase {
         )
     }
 
+    func testFolderSourceStateChangeRefreshesSidebarWithoutPendingReconcile() async {
+        let sourceID = UUID()
+        let source = LibrarySourceSummary(id: sourceID, displayName: "Fixture", state: .unavailable)
+        let asset = Self.makeAsset(sourceID: sourceID, fileName: "cached-before-disconnect.png")
+        let service = FakeLibraryWorkspaceService(
+            connectedSource: source,
+            reconciledItems: [asset],
+            initialItems: [asset],
+            startsConnected: true,
+            hasPendingCatalogReconcileJobs: false
+        )
+        let model = LibraryWorkspaceModel(service: service, idlePrewarmInstallEventMonitor: false)
+        await model.start()
+        let deadline = Date().addingTimeInterval(3)
+        while !service.isMonitoringSources, Date() < deadline { await Task.yield() }
+        XCTAssertTrue(service.isMonitoringSources)
+        XCTAssertEqual(model.sources.first?.state, .unavailable)
+        let previousThumbnailGeneration = model.thumbnailRecoveryGeneration
+
+        service.triggerFolderMonitoringChange(
+            hasPendingReconcile: false,
+            sources: [LibrarySourceSummary(id: sourceID, displayName: "Fixture", state: .active)]
+        )
+
+        while model.sources.first?.state != .active, Date() < deadline { await Task.yield() }
+        XCTAssertEqual(model.sources.first?.state, .active)
+        XCTAssertEqual(model.thumbnailRecoveryGeneration, previousThumbnailGeneration + 1)
+        XCTAssertEqual(service.reconcileRunCount, 0)
+        XCTAssertTrue(service.enqueueReconcileCalls.isEmpty)
+    }
+
     func testFolderMonitoringChangeRunsAutomaticReconcile() async {
         let sourceID = UUID()
         let asset = Self.makeAsset(sourceID: sourceID, fileName: "auto-added.png")
@@ -18174,9 +18205,17 @@ final class FakeLibraryWorkspaceService: LibraryWorkspacePort, @unchecked Sendab
         lock.withLock { folderMonitoringCallback = nil }
     }
 
-    func triggerFolderMonitoringChange() {
+    var isMonitoringSources: Bool {
+        lock.withLock { folderMonitoringCallback != nil }
+    }
+
+    func triggerFolderMonitoringChange(
+        hasPendingReconcile: Bool = true,
+        sources: [LibrarySourceSummary]? = nil
+    ) {
         let callback = lock.withLock {
-            storedHasPendingCatalogReconcileJobs = true
+            storedHasPendingCatalogReconcileJobs = hasPendingReconcile
+            if let sources { storedSources = sources }
             return folderMonitoringCallback
         }
         callback?()

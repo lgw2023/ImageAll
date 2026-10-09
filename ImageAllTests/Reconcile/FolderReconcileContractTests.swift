@@ -1,7 +1,141 @@
+import AppKit
 import XCTest
 @testable import ImageAll
 
 final class FolderReconcileContractTests: XCTestCase {
+    func testVolumeMountRestoresOfflineSourceAndStopRemovesRecoveryObserver() throws {
+        let fixture = FolderReconcileTestSupport.TempFixtureRoot()
+        defer { fixture.cleanup() }
+        let root = try fixture.makeRoot(label: "volume-source-recovery")
+        let marker = try fixture.writeFile(root: root, relativePath: "marker.png", contents: FolderReconcileTestSupport.minimalPNGData())
+        let original = try Data(contentsOf: marker)
+        let bookmark = Data("mount-bookmark".utf8)
+        let database = try CatalogDatabase.open(at: makeTempDatabaseURL())
+        let repository = GRDBFolderSourceAuthorizationRepository(database: database)
+        let sourceID = UUID()
+        try FolderReconcileTestSupport.seedActiveFolderSource(database: database, sourceID: sourceID, bookmark: bookmark)
+        let bookmarkPort = MountTestBookmarkPort(bookmark: bookmark, root: root)
+        let notifications = NotificationCenter()
+        let streamFactory = TestFolderEventStreamFactory()
+        let monitor = FolderSourceMonitoringCoordinator(
+            repository: repository, bookmarkPort: bookmarkPort,
+            rootValidator: FolderRootValidator(),
+            dirtyTrigger: FolderSourceDirtyTrigger(database: database),
+            streamFactory: streamFactory, volumeNotificationCenter: notifications
+        )
+        defer { monitor.stop() }
+        let restored = expectation(description: "mounted source becomes active")
+        restored.assertForOverFulfill = false
+        try monitor.start(onChange: {
+            if case let .folder(source) = try? repository.lookupSource(id: sourceID), source.state == .active {
+                restored.fulfill()
+            }
+        }, enqueueInitialReconciles: false)
+        XCTAssertEqual(try FolderAuthorizationTestSupport.fetchSourceState(database, sourceID: sourceID), .unavailable)
+        XCTAssertEqual(streamFactory.startCount, 0)
+
+        bookmarkPort.isMounted = true
+        notifications.post(name: NSWorkspace.didMountNotification, object: nil)
+        wait(for: [restored], timeout: 3)
+
+        XCTAssertEqual(try FolderAuthorizationTestSupport.fetchSourceState(database, sourceID: sourceID), .active)
+        XCTAssertEqual(streamFactory.startCount, 1)
+        XCTAssertEqual(try activeFolderReconcileJobCount(database: database), 0)
+        XCTAssertEqual(try Data(contentsOf: marker), original)
+        monitor.stop()
+        XCTAssertEqual(bookmarkPort.delegate.scopeStartCount, bookmarkPort.delegate.scopeStopCount)
+
+        try repository.updateSourceState(sourceID: sourceID, state: .unavailable, nowMs: 2)
+        notifications.post(name: NSWorkspace.didMountNotification, object: nil)
+        XCTAssertEqual(try FolderAuthorizationTestSupport.fetchSourceState(database, sourceID: sourceID), .unavailable)
+        XCTAssertEqual(streamFactory.startCount, 1)
+    }
+
+    func testFolderRecoveryKeepsDeniedSourceInactiveAndDoesNotOverrideConcurrentDisable() throws {
+        let fixture = FolderReconcileTestSupport.TempFixtureRoot()
+        defer { fixture.cleanup() }
+        let root = try fixture.makeRoot(label: "denied-source-recovery")
+        let bookmark = Data("denied-bookmark".utf8)
+        let database = try CatalogDatabase.open(at: makeTempDatabaseURL())
+        let repository = GRDBFolderSourceAuthorizationRepository(database: database)
+        let sourceID = UUID()
+        try FolderReconcileTestSupport.seedActiveFolderSource(database: database, sourceID: sourceID, bookmark: bookmark)
+        try repository.updateSourceState(sourceID: sourceID, state: .unavailable, nowMs: 1)
+        let deniedPort = MountTestBookmarkPort(bookmark: bookmark, root: root, scopeAllowed: false)
+        deniedPort.isMounted = true
+        let deniedStreams = TestFolderEventStreamFactory()
+        let deniedMonitor = FolderSourceMonitoringCoordinator(
+            repository: repository, bookmarkPort: deniedPort,
+            rootValidator: FolderRootValidator(), dirtyTrigger: FolderSourceDirtyTrigger(database: database),
+            streamFactory: deniedStreams
+        )
+        try deniedMonitor.start(onChange: {}, enqueueInitialReconciles: false)
+        XCTAssertEqual(try FolderAuthorizationTestSupport.fetchSourceState(database, sourceID: sourceID), .authorizationRequired)
+        XCTAssertEqual(deniedStreams.startCount, 0)
+        deniedMonitor.stop()
+
+        let bookmarkPort = FolderReconcileTestSupport.TestBookmarkPort(rootByBookmark: [bookmark: root])
+        let streams = TestFolderEventStreamFactory(onStart: {
+            try repository.disableFolderSource(sourceID: sourceID, nowMs: 2)
+        })
+        let monitor = FolderSourceMonitoringCoordinator(
+            repository: repository, bookmarkPort: bookmarkPort,
+            rootValidator: FolderRootValidator(), dirtyTrigger: FolderSourceDirtyTrigger(database: database),
+            streamFactory: streams
+        )
+        defer { monitor.stop() }
+        try monitor.start(onChange: {}, enqueueInitialReconciles: false)
+        XCTAssertEqual(try FolderAuthorizationTestSupport.fetchSourceState(database, sourceID: sourceID), .disabled)
+        XCTAssertEqual(streams.stopCount, 1)
+        XCTAssertEqual(bookmarkPort.scopeStartCount, bookmarkPort.scopeStopCount)
+        XCTAssertEqual(try activeFolderReconcileJobCount(database: database), 0)
+    }
+
+    func testFolderMonitorStartupRestoresRecoverableSourcesWithoutScanningOrEnablingDisabledSources() throws {
+        let fixture = FolderReconcileTestSupport.TempFixtureRoot()
+        defer { fixture.cleanup() }
+        let root = try fixture.makeRoot(label: "startup-source-recovery")
+        let database = try CatalogDatabase.open(at: makeTempDatabaseURL())
+        let repository = GRDBFolderSourceAuthorizationRepository(database: database)
+        let bookmark = Data("recovery-bookmark".utf8)
+        var sourceIDs: [SourceState: UUID] = [:]
+        for state in [SourceState.unavailable, .authorizationRequired, .disabled] {
+            let sourceID = UUID()
+            sourceIDs[state] = sourceID
+            try FolderReconcileTestSupport.seedActiveFolderSource(
+                database: database, sourceID: sourceID, bookmark: bookmark
+            )
+            try repository.updateSourceState(sourceID: sourceID, state: state, nowMs: 1)
+        }
+        let bookmarkPort = FolderReconcileTestSupport.TestBookmarkPort(rootByBookmark: [bookmark: root])
+        let monitor = FolderSourceMonitoringCoordinator(
+            repository: repository,
+            bookmarkPort: bookmarkPort,
+            rootValidator: FolderRootValidator(),
+            dirtyTrigger: FolderSourceDirtyTrigger(database: database),
+            streamFactory: TestFolderEventStreamFactory()
+        )
+        defer { monitor.stop() }
+
+        try monitor.start(onChange: {}, enqueueInitialReconciles: false)
+
+        for state in [SourceState.unavailable, .authorizationRequired, .disabled] {
+            let sourceID = try XCTUnwrap(sourceIDs[state])
+            guard case let .folder(source) = try repository.lookupSource(id: sourceID) else {
+                return XCTFail("folder source missing")
+            }
+            XCTAssertEqual(source.state, state == .disabled ? .disabled : .active)
+            XCTAssertEqual(source.scanGeneration, 0)
+            XCTAssertEqual(source.dirtyEpoch, 0)
+        }
+        XCTAssertEqual(bookmarkPort.scopeStartCount, 2)
+        XCTAssertEqual(try activeFolderReconcileJobCount(database: database), 0)
+        try monitor.synchronize(enqueueInitialReconciles: false)
+        XCTAssertEqual(bookmarkPort.scopeStartCount, 2, "Do not duplicate live scopes/watchers")
+        monitor.stop()
+        XCTAssertEqual(bookmarkPort.scopeStopCount, 2)
+    }
+
     func testFolderDirtyBatchIncrementsEpochAndCoalescesReconcileJob() throws {
         let url = try makeTempDatabaseURL()
         let database = try CatalogDatabase.open(at: url)
@@ -82,6 +216,18 @@ final class FolderReconcileContractTests: XCTestCase {
         XCTAssertEqual(source.dirtyEpoch, 0)
         XCTAssertEqual(streamFactory.stopCount, 1)
         XCTAssertEqual(bookmarkPort.scopeStopCount, 1)
+
+        try monitor.synchronize(enqueueInitialReconciles: false)
+        XCTAssertEqual(try FolderAuthorizationTestSupport.fetchSourceState(database, sourceID: sourceID), .active)
+        // An unmount event queued by the old watcher must not take a newly
+        // restored source offline again.
+        streamFactory.send(
+            FolderFileSystemEventBatch(eventCount: 1, flags: [.unmounted]), callbackIndex: 0
+        )
+        XCTAssertEqual(try FolderAuthorizationTestSupport.fetchSourceState(database, sourceID: sourceID), .active)
+        XCTAssertEqual(streamFactory.stopCount, 1)
+        monitor.stop()
+        XCTAssertEqual(bookmarkPort.scopeStartCount, bookmarkPort.scopeStopCount)
     }
 
     func testFolderMonitorCanSkipStartupReconcileAndStillObserveLaterChanges() throws {
@@ -460,6 +606,13 @@ private final class TestFolderEventStreamFactory: FolderFileSystemEventStreamFac
     private let lock = NSLock()
     private var storedStopCount = 0
     private var callbacks: [@Sendable (FolderFileSystemEventBatch) -> Void] = []
+    private let onStart: (@Sendable () throws -> Void)?
+
+    init(onStart: (@Sendable () throws -> Void)? = nil) {
+        self.onStart = onStart
+    }
+
+    var startCount: Int { lock.withLock { callbacks.count } }
 
     var stopCount: Int {
         lock.withLock { storedStopCount }
@@ -469,6 +622,7 @@ private final class TestFolderEventStreamFactory: FolderFileSystemEventStreamFac
         rootURL: URL,
         onEventBatch: @escaping @Sendable (FolderFileSystemEventBatch) -> Void
     ) throws -> any FolderFileSystemEventStream {
+        try onStart?()
         lock.withLock {
             callbacks.append(onEventBatch)
         }
@@ -477,10 +631,39 @@ private final class TestFolderEventStreamFactory: FolderFileSystemEventStreamFac
         }
     }
 
-    func send(_ batch: FolderFileSystemEventBatch) {
+    func send(_ batch: FolderFileSystemEventBatch, callbackIndex: Int? = nil) {
         let captured = lock.withLock { callbacks }
-        captured.forEach { $0(batch) }
+        if let callbackIndex {
+            captured[callbackIndex](batch)
+        } else {
+            captured.forEach { $0(batch) }
+        }
     }
+}
+
+private final class MountTestBookmarkPort: SecurityScopedBookmarkPort, @unchecked Sendable {
+    let delegate: FolderReconcileTestSupport.TestBookmarkPort
+    private let lock = NSLock()
+    private var mounted = false
+    private let scopeAllowed: Bool
+
+    init(bookmark: Data, root: URL, scopeAllowed: Bool = true) {
+        delegate = FolderReconcileTestSupport.TestBookmarkPort(rootByBookmark: [bookmark: root])
+        self.scopeAllowed = scopeAllowed
+    }
+
+    var isMounted: Bool {
+        get { lock.withLock { mounted } }
+        set { lock.withLock { mounted = newValue } }
+    }
+
+    func createReadOnlyBookmark(for url: URL) throws -> Data { try delegate.createReadOnlyBookmark(for: url) }
+    func resolveBookmark(_ bookmark: Data) throws -> BookmarkResolveResult {
+        guard isMounted else { throw NSError(domain: NSCocoaErrorDomain, code: NSFileReadNoSuchFileError) }
+        return try delegate.resolveBookmark(bookmark)
+    }
+    func startAccessing(_ url: URL) -> Bool { scopeAllowed && delegate.startAccessing(url) }
+    func stopAccessing(_ url: URL) { delegate.stopAccessing(url) }
 }
 
 private final class TestFolderEventStream: FolderFileSystemEventStream, @unchecked Sendable {
