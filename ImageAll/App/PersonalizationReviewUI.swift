@@ -12,6 +12,7 @@ struct ContextualTagFeedView: View {
     let onShowScopeInspector: () -> Void
     @State private var cellFrames = LibraryGridCellFrameStore()
     @State private var isMarqueeSelecting = false
+    @State private var previewMember: ContextualTagFeedMember?
 
     private var group: ContextualTagFeedGroup? { model.currentContextualTagFeed }
 
@@ -30,6 +31,11 @@ struct ContextualTagFeedView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .navigationTitle("智能推流")
+        .sheet(item: $previewMember, onDismiss: { model.videoViewingSession.stop() }) { member in
+            LibraryVideoAssetPreview(assetID: member.assetID, fileName: member.fileName, model: model) {
+                previewMember = nil
+            }
+        }
         .contextualTagFeedKeyboardShortcutHandling(
             isEnabled: group != nil || model.canUndoContextualTagFeedMutation
         ) { action in
@@ -55,7 +61,7 @@ struct ContextualTagFeedView: View {
     private var header: some View {
         HStack(spacing: 12) {
             VStack(alignment: .leading, spacing: 3) {
-                Text("智能标签照片推流")
+                Text("智能标签媒体推流")
                     .font(.title2.weight(.semibold))
                 Text("默认优先推送依赖时间、位置和事件上下文的标签；不会自动写标签。")
                     .font(.caption)
@@ -75,7 +81,7 @@ struct ContextualTagFeedView: View {
             }
             .buttonStyle(.borderless)
             .fixedSize()
-            .persistentHelp("打开右侧检查器，为锚点或候选照片修改标签，并设置推流范围。")
+            .persistentHelp("打开右侧检查器，为锚点或候选媒体修改标签，并设置推流范围。")
             Button("刷新", systemImage: "arrow.clockwise") {
                 Task { await model.refreshContextualTagFeed(generateRecentAnchors: true) }
             }
@@ -88,7 +94,7 @@ struct ContextualTagFeedView: View {
         VStack(spacing: 0) {
             HStack(alignment: .top, spacing: 12) {
                 VStack(alignment: .leading, spacing: 5) {
-                    Text("这些照片也属于“\(group.tagDisplayName)”吗？")
+                    Text("这些媒体也属于“\(group.tagDisplayName)”吗？")
                         .font(.headline)
                     Text(groupEvidenceSummary(group))
                         .font(.callout)
@@ -108,7 +114,7 @@ struct ContextualTagFeedView: View {
                 Spacer(minLength: 12)
                 VStack(alignment: .trailing, spacing: 6) {
                     Text(
-                        "\(group.members.count) 张 · 已选 \(model.selectedContextualTagFeedAssetIDs.count)"
+                        "\(group.members.count) 项 · 已选 \(model.selectedContextualTagFeedAssetIDs.count)"
                             + " · 可确认 \(model.selectedContextualTagFeedCandidateAssetIDs.count)"
                     )
                         .font(.caption.monospacedDigit())
@@ -118,7 +124,7 @@ struct ContextualTagFeedView: View {
                             model.selectAllContextualTagFeedCandidates()
                         }
                         .disabled(model.areAllContextualTagFeedCandidatesSelected)
-                        .persistentHelp("选择当前组的全部候选照片（⌘A）。")
+                        .persistentHelp("选择当前组的全部候选媒体（⌘A）。")
                         Button("清除选择") {
                             model.clearContextualTagFeedSelection()
                         }
@@ -160,6 +166,7 @@ struct ContextualTagFeedView: View {
                                     isSelected: model.selectedContextualTagFeedAssetIDs.contains(
                                         member.assetID
                                     ),
+                                    onPreview: { previewMember = member },
                                     onSelect: { additive, extendRange in
                                         guard !isMarqueeSelecting else { return }
                                         model.selectContextualTagFeedCandidate(
@@ -193,7 +200,7 @@ struct ContextualTagFeedView: View {
                         Task { await model.undoLastContextualTagFeedMutation() }
                     }
                     .buttonStyle(.bordered)
-                    .persistentHelp("撤销最近一次智能推流确认或拒绝，恢复照片原标签状态并重新打开该候选组。")
+                    .persistentHelp("撤销最近一次智能推流确认或拒绝，恢复媒体原标签状态并重新打开该候选组。")
                 }
                 Button("稍后处理 (U)", action: onLater)
                     .buttonStyle(.bordered)
@@ -202,7 +209,7 @@ struct ContextualTagFeedView: View {
                     Task { await model.dismissCurrentContextualTagFeed() }
                 }
                 .buttonStyle(.bordered)
-                .persistentHelp("只忽略当前候选组，不会把照片写成“不属于”或训练负样本；快捷键 I。")
+                .persistentHelp("只忽略当前候选组，不会把媒体写成“不属于”或训练负样本；快捷键 I。")
                 Button(rejectButtonTitle(group), role: .destructive) {
                     Task { await model.resolveCurrentContextualTagFeed(decision: .rejected) }
                 }
@@ -235,8 +242,17 @@ struct ContextualTagFeedView: View {
         ContentUnavailableView {
             Label("暂无智能推流", systemImage: "sparkles.rectangle.stack")
         } description: {
-            Text("确认照片标签后，ImageAll 会从近期已确认记录中寻找时间、位置或文件序列共同支持的候选组。")
+            Text("确认媒体标签后，ImageAll 会从近期已确认记录中寻找时间、位置或文件序列共同支持的候选组。")
         } actions: {
+            if model.canUndoContextualTagFeedMutation {
+                Button("撤销上一步 (⌘Z)") {
+                    Task { await model.undoLastContextualTagFeedMutation() }
+                }
+                .buttonStyle(.bordered)
+            }
+            if let message = model.contextualTagFeedStatusMessage {
+                Text(message).font(.caption).foregroundStyle(.secondary)
+            }
             Button("检查近期标签") {
                 Task { await model.refreshContextualTagFeed(generateRecentAnchors: true) }
             }
@@ -250,13 +266,13 @@ struct ContextualTagFeedView: View {
     private func confirmButtonTitle(_ group: ContextualTagFeedGroup) -> String {
         let selectedCount = model.selectedContextualTagFeedCandidateAssetIDs.count
         let remainingCount = max(0, model.contextualTagFeedCandidateAssetIDs.count - selectedCount)
-        return "选中 \(selectedCount) 张属于“\(group.tagDisplayName)”，其余 \(remainingCount) 张不属于 (P)"
+        return "选中 \(selectedCount) 项属于“\(group.tagDisplayName)”，其余 \(remainingCount) 项不属于 (P)"
     }
 
     private func rejectButtonTitle(_ group: ContextualTagFeedGroup) -> String {
         let selectedCount = model.selectedContextualTagFeedCandidateAssetIDs.count
         let remainingCount = max(0, model.contextualTagFeedCandidateAssetIDs.count - selectedCount)
-        return "选中 \(selectedCount) 张不属于“\(group.tagDisplayName)”，其余 \(remainingCount) 张属于 (X)"
+        return "选中 \(selectedCount) 项不属于“\(group.tagDisplayName)”，其余 \(remainingCount) 项属于 (X)"
     }
 
     private func groupEvidenceSummary(_ group: ContextualTagFeedGroup) -> String {
@@ -707,6 +723,7 @@ private struct ContextualTagFeedThumbnail: View {
     let member: ContextualTagFeedMember
     @ObservedObject var model: LibraryWorkspaceModel
     let isSelected: Bool
+    let onPreview: () -> Void
     let onSelect: (_ additive: Bool, _ extendRange: Bool) -> Void
     @State private var image: NSImage?
     @State private var loadState: ContextualTagFeedThumbnailLoadState = .loading
@@ -761,6 +778,11 @@ private struct ContextualTagFeedThumbnail: View {
             Text(member.fileName ?? (member.mediaKind == .video ? "视频" : "照片"))
                 .font(.caption.weight(.medium))
                 .lineLimit(1)
+            if member.mediaKind == .video {
+                Button("播放视频", systemImage: "play.rectangle", action: onPreview)
+                    .buttonStyle(.bordered)
+                    .accessibilityLabel("播放视频：\(member.fileName ?? "未命名视频")")
+            }
             Text(evidenceText)
                 .font(.caption2)
                 .foregroundStyle(.secondary)
@@ -773,8 +795,9 @@ private struct ContextualTagFeedThumbnail: View {
             let flags = NSEvent.modifierFlags.intersection(.deviceIndependentFlagsMask)
             onSelect(flags.contains(.command), flags.contains(.shift))
         }
-        .accessibilityElement(children: .combine)
+        .accessibilityElement(children: .contain)
         .accessibilityLabel(member.fileName ?? "候选媒体")
+        .accessibilityAction { onSelect(false, false) }
         .accessibilityValue(
             member.role == .anchor
                 ? "已确认锚点，\(isSelected ? "已选择" : "未选择")"

@@ -12515,6 +12515,107 @@ final class LibraryWorkspaceModelTests: XCTestCase {
 
     }
 
+    func testInteractiveVideoMetadataAndFeedWhenRequested() async throws {
+        guard let path = ProcessInfo.processInfo.environment["IMAGEALL_INTERACTIVE_METADATA_FEED_EVIDENCE"] else {
+            throw XCTSkip("Explicit synthetic metadata/feed verification only")
+        }
+        let isFeed = ProcessInfo.processInfo.environment["IMAGEALL_INTERACTIVE_FEED"] == "1"
+        let evidence = URL(fileURLWithPath: path, isDirectory: true)
+        let fixture = try SimilarityTestSupport.Environment(label: "interactive-video-metadata-feed")
+        defer { fixture.cleanup() }
+        let source = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("docs/evidence/time-story-phase-1-20260918/synthetic-silent.mp4")
+        let bytes = try Data(contentsOf: source)
+        let photo = try fixture.seedAsset(relativePath: "IMG_0001.png", contents: Data([1]),
+            mediaType: "public.png", mediaCreatedAtMs: 1718440200000)
+        let video = try fixture.seedAsset(relativePath: "IMG_0002.mp4", contents: bytes,
+            mediaType: "public.mpeg-4", mediaCreatedAtMs: 1718440201000, mediaKind: .video, durationMs: 2567)
+        let missing = try fixture.seedAsset(relativePath: "IMG_0003.mp4", contents: bytes,
+            mediaType: "public.mpeg-4", mediaKind: .video, durationMs: 2000)
+        try await fixture.database.pool.write { db in
+            try db.execute(sql: "INSERT INTO asset_location (asset_id, latitude, longitude, source_kind, updated_at_ms) VALUES (?, 35, 139, 'embeddedGPS', 1)", arguments: [video.assetID.uuidString.lowercased()])
+            try db.execute(sql: "UPDATE asset SET width = 160, height = 90 WHERE id = ?", arguments: [video.assetID.uuidString.lowercased()])
+            try db.execute(sql: "UPDATE asset SET width = 90, height = 160 WHERE id = ?", arguments: [missing.assetID.uuidString.lowercased()])
+        }
+        let catalog = GRDBAssetCatalogQueryRepository(database: fixture.database)
+        let tags = GRDBTagCatalogRepository(database: fixture.database)
+        let tag = try tags.createTag(rawName: "旅行", timestampMs: 1)
+        _ = try tags.batchAccept(tagID: tag.id, assetIDs: [photo.assetID], timestampMs: 2)
+        let feed = ContextualTagFeedService(database: fixture.database)
+        if isFeed {
+            let group = try XCTUnwrap(feed.generate(tagID: tag.id, anchorAssetID: photo.assetID, timestampMs: 3))
+            XCTAssertEqual(Set(group.members.filter { $0.role == .candidate }.map(\.assetID)), Set([video.assetID, missing.assetID]))
+        }
+        let items = try catalog.fetchAssetPage(.init(filter: .init(), sort: .fileNameAscending, cursor: nil, limit: 50)).items
+        let service = FakeLibraryWorkspaceService(
+            connectedSource: LibrarySourceSummary(id: fixture.sourceID, displayName: "Synthetic media only", state: .active),
+            reconciledItems: items, tags: [TagListItem(id: tag.id, displayName: "旅行", state: .active)],
+            initialItems: items,
+            startsConnected: true, hasPendingCatalogReconcileJobs: false)
+        service.mapFixtureDatabase = fixture.database
+        let model = LibraryWorkspaceModel(service: service, contextualTagFeed: feed,
+            videoPlaybackProvider: GallerySyntheticVideoProvider(url: source),
+            contextualTagFeedScopePreferences: ContextualTagFeedScopePreferences(keyPrefix: "tests.video-feed.\(UUID())"),
+            idlePrewarmInstallEventMonitor: false)
+        await model.start()
+        await model.setMediaKind(.video)
+        if isFeed { await model.refreshContextualTagFeed(generateRecentAnchors: false) }
+        let host = NSHostingView(rootView: LibraryWorkspaceView(model: model, loadsSharedPhoneProjections: false,
+            initialSelection: isFeed ? .contextualTagFeed : .all)
+            .environmentObject(ToolbarDisplayModeSettingsModel()).frame(width: 1400, height: 900))
+        let window = NSWindow(contentRect: NSRect(x: 50, y: 50, width: 1400, height: 900),
+            styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.title = isFeed ? "ImageAll Synthetic Video Feed" : "ImageAll Synthetic Video Metadata"
+        window.contentView = host
+        NSApplication.shared.setActivationPolicy(.regular)
+        NSApplication.shared.finishLaunching()
+        window.makeKeyAndOrderFront(nil)
+        NSApplication.shared.activate(ignoringOtherApps: true)
+        defer { model.videoViewingSession.stop(); window.close() }
+        var samples: [[String: Any]] = []
+        let finish = evidence.appendingPathComponent("finish"), deadline = Date().addingTimeInterval(600)
+        while Date() < deadline, !FileManager.default.fileExists(atPath: finish.path) {
+            let aggregate = try XCTUnwrap(tags.selectionAggregate(tagIDs: [tag.id], assetIDs: [video.assetID, missing.assetID]).first)
+            samples.append(["inspector": model.inspectorDetail?.assetID.uuidString ?? "",
+                "items": model.items.map { $0.assetID.uuidString },
+                "sort": String(describing: model.sort), "orientation": model.videoOrientationFilter.rawValue,
+                "duration": model.videoDurationFilter.rawValue,
+                "feedSelection": model.selectedContextualTagFeedAssetIDs.map(\.uuidString).sorted(),
+                "accepted": aggregate.acceptedCount, "rejected": aggregate.rejectedCount,
+                "unknown": aggregate.unknownCount, "pending": try feed.pendingCount(),
+                "playerAsset": model.videoViewingSession.identity?.assetID.uuidString ?? "",
+                "rate": model.videoViewingSession.player.rate])
+            try JSONSerialization.data(withJSONObject: samples)
+                .write(to: evidence.appendingPathComponent("observations.json"), options: .atomic)
+            try await Task.sleep(for: .milliseconds(200))
+        }
+        XCTAssertTrue(FileManager.default.fileExists(atPath: finish.path))
+        if isFeed {
+            let playing = samples.filter { ($0["rate"] as? Float ?? 0) > 0 }
+            XCTAssertTrue(playing.contains { $0["playerAsset"] as? String == video.assetID.uuidString })
+            XCTAssertTrue(playing.allSatisfy { Set($0["feedSelection"] as? [String] ?? []) == Set([video.assetID.uuidString, missing.assetID.uuidString]) }, "Playback must not change candidate selection")
+            XCTAssertTrue(samples.contains { $0["accepted"] as? Int == 2 })
+            XCTAssertTrue(samples.contains { $0["accepted"] as? Int == 0 && $0["unknown"] as? Int == 2 && $0["pending"] as? Int == 1 })
+            XCTAssertEqual(try feed.pendingCount(), 0, "Ignore the reopened group after undo")
+            let reopened = try CatalogDatabase.open(at: fixture.root.appendingPathComponent("catalog.sqlite"))
+            let final = try XCTUnwrap(GRDBTagCatalogRepository(database: reopened).selectionAggregate(tagIDs: [tag.id], assetIDs: [video.assetID, missing.assetID]).first)
+            XCTAssertEqual(final.unknownCount, 2, "Undo and ignore must leave no positive or negative facts")
+            XCTAssertEqual(final.rejectedCount, 0)
+            XCTAssertNil(model.videoViewingSession.player.currentItem)
+        } else {
+            for id in [video.assetID, missing.assetID] {
+                XCTAssertTrue(samples.contains { $0["inspector"] as? String == id.uuidString })
+            }
+            XCTAssertTrue(samples.contains { $0["orientation"] as? String == "portrait" && $0["items"] as? [String] == [missing.assetID.uuidString] })
+            XCTAssertTrue(samples.contains { $0["duration"] as? String == "underMinute" })
+            XCTAssertTrue(samples.contains { $0["sort"] as? String == "durationLongest" && $0["items"] as? [String] == [video.assetID.uuidString, missing.assetID.uuidString] })
+            XCTAssertEqual(try catalog.fetchInspectorDetail(assetID: video.assetID).gpsCoordinate, .init(latitude: 35, longitude: 139))
+            XCTAssertNil(try catalog.fetchInspectorDetail(assetID: missing.assetID).gpsCoordinate)
+            XCTAssertNil(try catalog.fetchInspectorDetail(assetID: missing.assetID).mediaCreatedAtMs)
+        }
+    }
+
     func testInteractiveVideoMapWhenRequested() async throws {
         guard let path = ProcessInfo.processInfo.environment["IMAGEALL_INTERACTIVE_MAP_EVIDENCE"] else {
             throw XCTSkip("Explicit synthetic map verification only")
@@ -16221,6 +16322,18 @@ final class WorldMapCatalogS1Tests: XCTestCase {
                 sort: .fileNameAscending, cursor: nil, limit: 50))
             XCTAssertEqual(Set(page.items.map(\.assetID)), expected)
         }
+        XCTAssertEqual(try gallery.fetchInspectorDetail(assetID: video).gpsCoordinate,
+            AssetLocationCoordinate(latitude: 39.9, longitude: 116.4))
+        XCTAssertEqual(try gallery.fetchInspectorDetail(assetID: photo).gpsCoordinate,
+            AssetLocationCoordinate(latitude: 39.9, longitude: 116.4))
+        XCTAssertNil(try gallery.fetchInspectorDetail(assetID: unlocated).gpsCoordinate)
+        // A place-tag inference is useful on the map, but is never presented as GPS.
+        try database.pool.write { db in
+            let placeID = UUID()
+            try db.execute(sql: "INSERT INTO place (id, canonical_name, kind, latitude, longitude, created_at_ms, updated_at_ms) VALUES (?, '合成地点', 'city', 39.9, 116.4, 1, 1)", arguments: [placeID.uuidString.lowercased()])
+            try db.execute(sql: "INSERT INTO asset_location (asset_id, latitude, longitude, source_kind, place_id, updated_at_ms) VALUES (?, 39.9, 116.4, 'placeTag', ?, 1)", arguments: [unlocated.uuidString.lowercased(), placeID.uuidString.lowercased()])
+        }
+        XCTAssertNil(try gallery.fetchInspectorDetail(assetID: unlocated).gpsCoordinate)
         let legacy = try JSONDecoder().decode(WorldMapCatalogQuery.self,
             from: JSONEncoder().encode(WorldMapCatalogQuery.global))
         XCTAssertNil(legacy.mediaScope)
@@ -19104,7 +19217,10 @@ final class FakeLibraryWorkspaceService: LibraryWorkspacePort, @unchecked Sendab
     }
 
     func selectionAggregate(tagIDs: [UUID], assetIDs: [UUID]) throws -> [TagSelectionAggregate] {
-        lock.withLock {
+        if let database = mapFixtureDatabase {
+            return try GRDBTagCatalogRepository(database: database).selectionAggregate(tagIDs: tagIDs, assetIDs: assetIDs)
+        }
+        return lock.withLock {
             storedSelectionAggregateCallCount += 1
             return tagIDs.map { tagID in
                 let states = assetIDs.map { decisions[$0]?[tagID] ?? .unknown }

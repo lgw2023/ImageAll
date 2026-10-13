@@ -462,6 +462,8 @@ struct GRDBAssetCatalogQueryRepository: AssetCatalogQueryPort, Sendable {
                     asset.media_created_at_ms AS media_created_at_ms,
                     asset.media_modified_at_ms AS media_modified_at_ms,
                     asset.file_modified_at_ms AS file_modified_at_ms,
+                    gps.latitude AS gps_latitude,
+                    gps.longitude AS gps_longitude,
                     asset.width AS width,
                     asset.height AS height,
                     asset.availability AS availability,
@@ -481,6 +483,8 @@ struct GRDBAssetCatalogQueryRepository: AssetCatalogQueryPort, Sendable {
                 FROM asset
                 INNER JOIN source ON source.id = asset.source_id
                 LEFT JOIN file_fingerprint ON file_fingerprint.asset_id = asset.id
+                LEFT JOIN asset_location gps ON gps.asset_id = asset.id
+                    AND gps.source_kind IN ('embeddedGPS', 'photosGPS')
                 WHERE asset.id = ?
                     AND asset.locator_state = 'current'
                     AND \(Self.missingPhotosBrowseExclusionSQL)
@@ -527,6 +531,9 @@ struct GRDBAssetCatalogQueryRepository: AssetCatalogQueryPort, Sendable {
                 )
             }
 
+            let latitude: Double? = row["gps_latitude"]
+            let longitude: Double? = row["gps_longitude"]
+            let gps = latitude.flatMap { lat in longitude.map { AssetLocationCoordinate(latitude: lat, longitude: $0) } }
             return AssetInspectorDetail(
                 assetID: UUID(uuidString: row["asset_id"])!,
                 sourceID: UUID(uuidString: row["source_id"])!,
@@ -549,7 +556,8 @@ struct GRDBAssetCatalogQueryRepository: AssetCatalogQueryPort, Sendable {
                 rejectedTagCount: row["rejected_tag_count"],
                 fingerprintSizeBytes: row["fingerprint_size_bytes"],
                 fingerprintModifiedAtNs: row["fingerprint_modified_at_ns"],
-                tags: tags
+                tags: tags,
+                gpsCoordinate: gps
             )
             }
         }

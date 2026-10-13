@@ -472,6 +472,7 @@ struct AssetInspectorDetail: Sendable, Equatable {
     let fingerprintSizeBytes: Int64?
     let fingerprintModifiedAtNs: Int64?
     let tags: [InspectorTagState]
+    let gpsCoordinate: AssetLocationCoordinate?
 
     init(
         assetID: UUID,
@@ -495,7 +496,8 @@ struct AssetInspectorDetail: Sendable, Equatable {
         rejectedTagCount: Int,
         fingerprintSizeBytes: Int64?,
         fingerprintModifiedAtNs: Int64?,
-        tags: [InspectorTagState]
+        tags: [InspectorTagState],
+        gpsCoordinate: AssetLocationCoordinate? = nil
     ) {
         self.assetID = assetID
         self.sourceID = sourceID
@@ -519,6 +521,7 @@ struct AssetInspectorDetail: Sendable, Equatable {
         self.fingerprintSizeBytes = fingerprintSizeBytes
         self.fingerprintModifiedAtNs = fingerprintModifiedAtNs
         self.tags = tags
+        self.gpsCoordinate = gpsCoordinate?.isValid == true ? gpsCoordinate : nil
     }
 }
 

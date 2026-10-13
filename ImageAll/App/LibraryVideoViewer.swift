@@ -547,3 +547,46 @@ struct VideoPredictionEvidenceStrip: View {
         }.padding(.horizontal, 12)
     }
 }
+
+/// A catalog-checked preview for off-grid video members (for example contextual feeds).
+struct LibraryVideoAssetPreview: View {
+    let assetID: UUID
+    let fileName: String?
+    @ObservedObject var model: LibraryWorkspaceModel
+    let onClose: () -> Void
+    @State private var identity: LibraryVideoViewingSession.Identity?
+    @State private var loadFailed = false
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack {
+                Text(fileName ?? "视频预览").font(.headline).lineLimit(1)
+                Spacer()
+                Button("关闭视频预览", systemImage: "xmark", action: onClose)
+                    .keyboardShortcut(.cancelAction)
+            }.padding()
+            if let identity, identity.assetID == assetID {
+                LibraryVideoViewer(assetID: assetID, contentRevision: identity.revision, model: model)
+            } else if loadFailed {
+                ContentUnavailableView("无法读取视频身份", systemImage: "exclamationmark.triangle",
+                    description: Text("请检查来源连接后重新打开。"))
+            } else {
+                ProgressView("正在读取视频信息…").frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
+        }
+        .frame(minWidth: 720, minHeight: 520)
+        .task(id: assetID) {
+            identity = nil
+            loadFailed = false
+            do {
+                let current = try await model.videoViewingIdentity(assetID: assetID)
+                guard !Task.isCancelled else { return }
+                identity = current
+            } catch {
+                guard !Task.isCancelled else { return }
+                loadFailed = true
+            }
+        }
+        .onDisappear { model.videoViewingSession.stop() }
+    }
+}

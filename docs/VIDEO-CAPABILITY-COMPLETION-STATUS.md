@@ -937,3 +937,13 @@
 - 同产品`map-regression.log` 7/7 PASS，逐项选择见`map-regression-selection.json`：地图范围/图库集合、旧GPS补读、显式启动、播放器关闭/迟到资源/视图失活通知。源码与产物SHA见`map-source-artifact-sha256.json`；仍属已审计脏工作区，不是最终纯提交验收。
 - 常规签名的`map-playback-build.log`在Helper签名时报`errSecInternalComponent`；保留失败，测试命令临时指定`CODE_SIGN_IDENTITY=- CODE_SIGN_ENTITLEMENTS=`后`map-playback-adhoc-build.log`成功。未改工程签名设置或钥匙串，未发布安装。正常签名最终构建仍待核对。
 - 初始导航参数随后改为可选覆盖；不传时保留原工作区/提交各自默认导航，避免把并行首页改动收入视频提交。`map-default-navigation-build.log` TEST BUILD SUCCEEDED；已核对暂存diff只包含本轮导航参数/地图文案，不包含并行首页与故事改动。
+
+## 2026-10-14 元数据详情与推流播放/批量确认闭环
+
+- Inspector投影连接同一asset_location，仅embeddedGPS/photosGPS显示为GPS；placeTag推定地点不冒充GPS。缺GPS/拍摄时间显式显示“未提供／尚未读取”，媒体时间标明系统时区，文件时间不代填。无migration、无源文件修改。
+- `metadata-ui-1/tests.log` 1/1 PASS（89.660秒），正式完整图库点选两视频：35/139、Asia/Shanghai 16:30、另一视频双缺失提示；竖屏仅返回目标、少于1分钟条件与时长降序均由菜单触发并核对真实DB查询集合。该fixture的时长/方向为目录查询控制值，不冒充容器提取测试；真实提取仍见既有分类回归。随后发现视频菜单展示照片UTI分组，已将该照片专用格式菜单限于照片页，相关帮助改用媒体表述；底层筛选不变。
+- 推流新增显式播放按钮，先读取当前assetID/revision，再复用查看器；播放不更改候选选择。相关标题/批量数量由照片/张改为媒体/项。
+- `feed-ui-1`实际播放并确认2项后，发现最后一组进入空状态导致可见撤销按钮消失；测试重读DB仍有2项accepted，1项断言失败。原失败保留。空状态现保留撤销按钮和处理结果。
+- `feed-ui-2/tests.log` 1/1 PASS（48.253秒）：正式整页播放、关闭、确认2项、空状态撤销、忽略；12个采样周期rate>0且始终保持2候选选择。独立重开临时DB后2项unknown、0项rejected、pending0，播放器currentItem为空。真实ContextualTagFeedService/GRDB事务，外围缩略图为fake，无模型调用。
+- `metadata-feed-build.log`测试参数顺序编译错误已修正，`metadata-feed-build-2.log`及`feed-empty-undo-build.log`成功；同最新产品`metadata-feed-regression.log` 8/8 PASS，覆盖GPS真实/缺失/推定位置排除、修订/照片拒绝、媒体切换、排序分页、跨域模型排序、确认撤销/忽略及播放器释放。选择清单与当前源码/产物SHA在同证据根。metadata-ui-1属于前一个构建，不能与最新产品混称同一版本；最终统一验证仍待。
+- 地图提交`ce4a7525`已完成本地收口。此次元数据/推流切片不包含并行故事/手机/OpenMontage修改，不push。

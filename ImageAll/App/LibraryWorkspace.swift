@@ -11445,13 +11445,13 @@ extension LibraryWorkspaceModel {
                 affectedCount: plan.affectedCount
             )
             contextualTagFeedStatusMessage =
-                "已处理本组：\(plan.acceptedAssetIDs.count) 张属于“\(group.tagDisplayName)”，"
-                    + "\(plan.rejectedAssetIDs.count) 张不属于。"
+                "已处理本组：\(plan.acceptedAssetIDs.count) 项属于“\(group.tagDisplayName)”，"
+                    + "\(plan.rejectedAssetIDs.count) 项不属于。"
             await enqueueAutomaticPersonalModelRebuildIfReady()
             await refreshContextualTagFeed(generateRecentAnchors: false)
             await refreshReviewState(reloadActiveQueue: false)
         } catch ContextualTagFeedError.feedChanged {
-            contextualTagFeedStatusMessage = "这组照片已经变化，已为你刷新。"
+            contextualTagFeedStatusMessage = "这组媒体已经变化，已为你刷新。"
             await refreshContextualTagFeed(generateRecentAnchors: true)
         } catch {
             contextualTagFeedStatusMessage = "标签没有提交，请重试。"
@@ -11468,13 +11468,13 @@ extension LibraryWorkspaceModel {
             }
             lastContextualTagFeedMutation = nil
             contextualTagFeedStatusMessage =
-                "已撤销：恢复 \(undo.affectedCount) 张照片对“\(undo.tagDisplayName)”的原标签状态。"
+                "已撤销：恢复 \(undo.affectedCount) 项媒体对“\(undo.tagDisplayName)”的原标签状态。"
             await enqueueAutomaticPersonalModelRebuildIfReady()
             await refreshContextualTagFeed(generateRecentAnchors: false)
             await refreshReviewState(reloadActiveQueue: false)
         } catch ContextualTagFeedError.feedChanged {
             lastContextualTagFeedMutation = nil
-            contextualTagFeedStatusMessage = "无法撤销：相关照片或推流组已经发生变化。"
+            contextualTagFeedStatusMessage = "无法撤销：相关媒体或推流组已经发生变化。"
         } catch {
             contextualTagFeedStatusMessage = "撤销没有完成，请重试。"
         }
@@ -11492,10 +11492,10 @@ extension LibraryWorkspaceModel {
                     timestampMs: timestampMs
                 )
             }
-            contextualTagFeedStatusMessage = "已忽略这组；没有把任何照片写成负样本。"
+            contextualTagFeedStatusMessage = "已忽略这组；没有把任何媒体写成负样本。"
             await refreshContextualTagFeed(generateRecentAnchors: false)
         } catch ContextualTagFeedError.feedChanged {
-            contextualTagFeedStatusMessage = "这组照片已经变化，已为你刷新。"
+            contextualTagFeedStatusMessage = "这组媒体已经变化，已为你刷新。"
             await refreshContextualTagFeed(generateRecentAnchors: false)
         } catch {
             contextualTagFeedStatusMessage = "没有忽略这组，请重试。"
@@ -16597,13 +16597,16 @@ struct LibraryWorkspaceView: View {
                     value: ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file)
                 )
             }
-            if let createdAt = detail.mediaCreatedAtMs {
-                LabeledContent(
-                    "媒体内嵌时间",
-                    value: Date(timeIntervalSince1970: TimeInterval(createdAt) / 1_000)
+            LabeledContent("GPS（纬度，经度）", value: detail.gpsCoordinate.map {
+                String(format: "%.6f, %.6f", $0.latitude, $0.longitude)
+            } ?? "未提供／尚未读取")
+            LabeledContent(
+                "媒体时间（\(TimeZone.current.identifier)）",
+                value: detail.mediaCreatedAtMs.map {
+                    Date(timeIntervalSince1970: TimeInterval($0) / 1_000)
                         .formatted(date: .abbreviated, time: .shortened)
-                )
-            }
+                } ?? "未提供／尚未读取"
+            )
             if let fileModifiedAt = detail.fileModifiedAtMs {
                 LabeledContent(
                     "文件修改时间",
@@ -17099,13 +17102,13 @@ struct LibraryWorkspaceView: View {
             } label: {
                 Label(model.selectedMediaKind == .video ? "全部视频" : "全部照片", systemImage: model.tagPresence == .any ? "checkmark" : "circle")
             }
-            .persistentHelp("取消“无标签”条件，显示当前范围内有标签和无标签的照片。")
+            .persistentHelp("取消“无标签”条件，显示当前范围内有标签和无标签的媒体。")
             Button {
                 Task { await model.setTagPresence(.untagged) }
             } label: {
                 Label("无标签", systemImage: model.tagPresence == .untagged ? "checkmark" : "circle")
             }
-            .persistentHelp("只显示尚未设置任何人工标签决定的照片。")
+            .persistentHelp("只显示尚未设置任何人工标签决定的媒体。")
 
             if !model.tags.isEmpty {
                 Divider()
@@ -17128,13 +17131,13 @@ struct LibraryWorkspaceView: View {
                 } label: {
                     Label("全部标签（ALL）", systemImage: model.tagMatchMode == .all ? "checkmark" : "circle")
                 }
-                .persistentHelp("照片必须同时符合全部已选标签条件才会显示。")
+                .persistentHelp("媒体必须同时符合全部已选标签条件才会显示。")
                 Button {
                     Task { await model.setTagMatchMode(.any) }
                 } label: {
                     Label("任一标签（ANY）", systemImage: model.tagMatchMode == .any ? "checkmark" : "circle")
                 }
-                .persistentHelp("照片符合任意一个已选标签条件就会显示。")
+                .persistentHelp("媒体符合任意一个已选标签条件就会显示。")
             }
 
             if model.hasActiveTagFilters {
@@ -17155,36 +17158,38 @@ struct LibraryWorkspaceView: View {
                         systemImage: model.selectedAvailabilities.isEmpty ? "checkmark" : "circle"
                     )
                 }
-                .persistentHelp("清除照片可用状态条件；普通浏览隐藏已确认缺失的文件。")
+                .persistentHelp("清除媒体可用状态条件；普通浏览隐藏已确认缺失的文件。")
                 Divider()
                 availabilityFilterButton(.available, title: "可用")
                 availabilityFilterButton(.missing, title: "文件缺失")
                 availabilityFilterButton(.unreadable, title: "不可读取")
                 availabilityFilterButton(.unsupported, title: "格式不支持")
             }
-            Menu("文件格式") {
-                Button {
-                    Task { await model.clearMediaTypeFilters() }
-                } label: {
-                    Label(
-                        "全部格式",
-                        systemImage: model.selectedMediaTypes.isEmpty ? "checkmark" : "circle"
-                    )
-                }
-                .persistentHelp("清除文件格式条件，显示所有支持格式。")
-                Divider()
-                ForEach(Self.mediaFormatFilterOptions, id: \.title) { option in
+            if model.selectedMediaKind == .image {
+                Menu("文件格式") {
                     Button {
-                        Task { await model.toggleMediaTypeFilterGroup(option.mediaTypes) }
+                        Task { await model.clearMediaTypeFilters() }
                     } label: {
                         Label(
-                            option.title,
-                            systemImage: model.isMediaTypeFilterGroupSelected(option.mediaTypes)
-                                ? "checkmark"
-                                : "circle"
+                            "全部格式",
+                            systemImage: model.selectedMediaTypes.isEmpty ? "checkmark" : "circle"
                         )
                     }
-                    .persistentHelp("切换“\(option.title)”格式组是否包含在当前筛选中。")
+                    .persistentHelp("清除文件格式条件，显示所有支持格式。")
+                    Divider()
+                    ForEach(Self.mediaFormatFilterOptions, id: \.title) { option in
+                        Button {
+                            Task { await model.toggleMediaTypeFilterGroup(option.mediaTypes) }
+                        } label: {
+                            Label(
+                                option.title,
+                                systemImage: model.isMediaTypeFilterGroupSelected(option.mediaTypes)
+                                    ? "checkmark"
+                                    : "circle"
+                            )
+                        }
+                        .persistentHelp("切换“\(option.title)”格式组是否包含在当前筛选中。")
+                    }
                 }
             }
         } label: {
@@ -17242,7 +17247,7 @@ struct LibraryWorkspaceView: View {
                 Task { await model.clearTagFilters() }
             }
             .buttonStyle(.borderless)
-            .persistentHelp("清除当前全部标签筛选条件，恢复显示当前来源范围内的照片。")
+            .persistentHelp("清除当前全部标签筛选条件，恢复显示当前来源范围内的媒体。")
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
