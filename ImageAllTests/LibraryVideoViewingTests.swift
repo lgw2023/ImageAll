@@ -128,7 +128,16 @@ final class LibraryVideoViewingTests: XCTestCase {
         } else {
             XCTAssertEqual(opener.openCount, 1)
             XCTAssertEqual(provider.downloads, 0)
-            let background = try XCTUnwrap(samples.firstIndex { $0["externalOpens"] as? Int == 1 && $0["active"] as? Bool == false })
+            // The external-open button explicitly stops playback. An inactive sample
+            // alone therefore cannot prove that a real foreground transition occurred.
+            let foreground = try XCTUnwrap(samples.firstIndex {
+                $0["active"] as? Bool == true && $0["externalOpens"] as? Int == 0
+                    && ($0["rate"] as? Float ?? 0) > 0
+            }, "Begin playback with the test app actually in the foreground")
+            let background = try XCTUnwrap(samples.indices.first {
+                $0 > foreground && samples[$0]["externalOpens"] as? Int == 1
+                    && samples[$0]["active"] as? Bool == false
+            })
             XCTAssertEqual(samples[background]["hasItem"] as? Bool, false)
             XCTAssertTrue(samples.dropFirst(background + 1).contains { $0["active"] as? Bool == true && $0["state"] as? String == "ready" && $0["rate"] as? Float == 0 }, "Return to the real app foreground; background AX actions do not prove focus")
         }

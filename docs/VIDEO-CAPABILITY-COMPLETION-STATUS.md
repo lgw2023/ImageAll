@@ -953,7 +953,7 @@
 - 瘦身视频卡片原有播放图标只用于标识；现改为正式可点击按钮，并补工作台/预览的无障碍容器分组，使播放、关闭、前后切换保持独立名称。视频计数使用“段”。
 - `slimming-ui-2` / `slimming-ui-3` 实际打开并播放两段合成视频，明确完整原件组；确认按钮之后 `SkyComputerUseService` 崩溃，App采样仍继续。日志仅因未发生回收而失败，不能算回收/恢复整页通过。macOS诊断报告显示工具服务 `EXC_BREAKPOINT`，栈顶 `Array.remove(at:)`。未修改工具服务。
 - `cloud-ui-1/tests.log` **1/1 PASS，50.764秒**：取消初次确认不发起下载，确认后进度0.4、无player item，取消一次，重新载入后再确认、以新grant重试并播放；2次fake下载、1次取消，修订均1，没有外部打开。无真实网络下载或Photos读取。
-- `external-ui-1` 实际调用NSWorkspace打开证据目录的合成MP4，QuickTime正确URL及播放进度已观察；ImageAll失焦后idle且item释放。CUA后台操作未能恢复真实前台，因此该测试保留FAIL；不以AX Raise当作已恢复前台。外部资产解析器为fake，仅系统打开是真实动作。
+- `external-ui-1` 实际调用NSWorkspace打开证据目录的合成MP4，QuickTime正确URL及播放进度已观察；外部打开后idle且item释放（后续复核：按钮主动stop，不证明真实失焦）。CUA后台操作未能恢复真实前台，因此该测试保留FAIL；不以AX Raise当作已恢复前台。外部资产解析器为fake，仅系统打开是真实动作。
 - 上述产品来自`slimming-accessibility-build.log`，ad hoc合成构建通过；产物及日志摘要为`cloud-external-first-artifact-sha256.json`。源码包含已审计并行改动，非纯提交最终验收。
 
 ## 2026-10-14 批量审核与缺模型收口
@@ -975,3 +975,13 @@
 - `committed-mac-verification.json`绑定源码SHA、App dylib SHA、XCTest SHA、测试清单SHA及128个Helper关键文件逐个校验。源码与依赖种子均未被验证修改。
 - **未完成门禁**：①瘦身确认/可恢复回收/恢复实际整页操作；②外部播放器返回真实前台后自动重建且暂停；③默认开发签名构建。前两项不得用业务回归或后台AX动作冒充。当前无待确认的真实媒体写入请求。
 - 真实Photos/受保护媒体、真实iCloud、实体设备、付费模型、安装发布均NOT_RUN；它们不阻止其他工程交付。目标保持active，不标complete。
+
+## 2026-10-14 续跑：正常构建与焦点证据纠正
+
+- 单独运行默认开发签名的正常`build`（非build-for-testing），使用33e900ec纯提交和新的`committed-app`输出目录：`committed-app-build.log`仍FAIL，明确失败于OpenMontage Helper签名`errSecInternalComponent`。只读签名身份查询返回1个有效身份，不推断证书缺失，也不修改钥匙串或持久配置。
+- 重新审计`external-ui-1/2/3`原始采样，所有轮次`active`样本数均0。外部打开按钮自身调用`session.stop()`，因此先前“失焦释放”的表述证据不足；当前仅确认正确文件外部打开与显式停止。实际前台→后台→前台整个序列仍未验证。审计结果`external-focus-evidence-audit.json`保留各轮计数。
+- 收紧opt-in测试：必须先观测前台实际播放，再记录外部打开后的后台状态，最后观测前台ready且暂停；不得把从未激活的宿主判为生命周期通过。
+- 在证据目录准备了可独立启动的本地合成宿主，尝试由访达打开，但未产生测试日志，故不声称启动成功；未将这个未验证原型加入仓库。原始失败记录保留。
+- 两条UI验收与开发签名阻塞仍在，目标active。33e900ec的71/71工程回归保持有效；本次仅修改测试断言和证据说明，未修改App实现。
+
+- 收紧后的测试源码已通过`focus-assertion-build.log`的ad hoc build-for-testing编译；没有运行真实焦点操作，不把编译成功计为焦点PASS。正常签名仍失败，等待人工UI或工具/签名环境变化。

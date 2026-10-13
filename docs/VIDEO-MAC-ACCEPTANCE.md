@@ -95,7 +95,7 @@ python3 scripts/verify_video_viewer_ui.py \
 
 fake云端专项使用`--cloud`：首次点击获取后取消确认，再次确认，看到40%进度后取消获取，重新载入再确认并播放，创建finish。两次fake请求必须有不同grant，第一次取消完成；不接真实PhotoKit、不下载iCloud。`cloud-ui-1`已通过。
 
-外部播放专项使用`--external`：内部播放后点系统播放器，核对QuickTime URL在当前证据目录并实际播放；真正切回合成App前台，确认暂停且已重建item，再创建finish。后台AX操作不证明前台返回；`external-ui-1/2/3`只通过外部打开、失焦释放，前台返回未通过。生产来源权限解析仍由独立回归证明。
+外部播放专项使用`--external`：先由人让合成App真正处于前台并播放，再点系统播放器，核对QuickTime URL在当前证据目录并实际播放；真正切回合成App前台，确认暂停且已重建item，再创建finish。后台AX操作不证明前台返回；`external-ui-1/2/3`只通过外部打开、按钮显式停止；从未观测前台状态，实际焦点往返未验，前台返回未通过。生产来源权限解析仍由独立回归证明。
 
 缺模型专项使用`--metadata --models`：显示检查器，选IMG_0002点“个人标签”，应说明没有样本匹配模型；选IMG_0003点“标准场景”，应说明本地服务不可用且人工标签不受影响，再创建finish。断言没有推理调用、没有标签修改，`models-ui-1`已通过。
 
@@ -107,6 +107,6 @@ fake云端专项使用`--cloud`：首次点击获取后取消确认，再次确�
 
 1. 用同一包装器、上述products及全新的evidence目录启动`--slimming`，按前文完成整页可恢复回收/恢复。工具若仍报告SkyComputerUseService native pipe closed，保留FAIL，需工具修复或人工实际操作；不要改用永久清理。
 2. 新目录启动`--external`，由人实际将合成App切回前台后创建finish，确认测试通过。外部播放器只使用该目录的`synthetic-current-video.mp4`。
-3. 在正常开发签名环境用Xcode打开`/Volumes/SSD1/ImageAll/ImageAll.xcodeproj`构建；当前默认签名曾报errSecInternalComponent。不得把ad hoc测试产物当作开发签名或发布安装已完成。
+3. 在正常开发签名环境用Xcode打开`/Volumes/SSD1/ImageAll/ImageAll.xcodeproj`构建；当前默认签名的build-for-testing及正常build均报errSecInternalComponent。不得把ad hoc测试产物当作开发签名或发布安装已完成。
 
 完成两条UI及默认构建后再更新矩阵/目标。真实数据、真实iCloud、付费模型与发布安装继续单列NOT_RUN。
