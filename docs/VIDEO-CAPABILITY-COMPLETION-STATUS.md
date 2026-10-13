@@ -5,12 +5,12 @@
 ## 当前收口摘要（2026-10-14，优先于下方历史待办）
 
 - 目标 active：完成 ImageAll macOS 视频能力补全与最终工程验收。仅 Mac；Web/iOS/Companion 专属开发与验收退出门禁，既有代码保留。
-- 实时主工作区 main，HEAD `5bddaf0f01718b23edebf712b183efa7dbee0de3`；staged 为空，44 个已跟踪文件及多个未跟踪文件为既有并行改动。完整状态及 diff 保存于 `/Volumes/SSD1/.codex-builds/video-completion-20261014/baseline-*`，本轮不纳入这些改动。
+- 续跑基线：main，HEAD `5bddaf0f01718b23edebf712b183efa7dbee0de3`；当时 staged 为空，44 个已跟踪文件及多个未跟踪文件为既有并行改动。完整状态及 diff 保存于 `/Volumes/SSD1/.codex-builds/video-completion-20261014/baseline-*`，本轮不纳入这些改动。
 - 旧验证工作树固定 `ee393455`，六个已跟踪文件有修改，另有 Runtime 依赖入口；保留原状，不作为纯 HEAD 或最终版本证据。
 - 指定 `/var/folders/.../imageall-mac-video-handoff-20261013-ht5xaiqu/MAC-VIDEO-COMPLETION-NEXT-SESSION.md` 已不存在，限定临时目录及 Codex 目录搜索未找到副本。本轮以用户 2026-10-14 的完整交接消息及仓库记录恢复；不声称读取了缺失文件。
 - 历史基线 `ac6ab717` 完整构建及 58/58 回归 PASS；之后图库、审核、多帧、冻结证据和混合故事实际 UI 各自 PASS，不能相加为当前版本统一验收。
-- 首个未完成闭环：地图照片/视频/混合范围 → 聚合数量 → 选择视频 → 详情播放 → 地点图库；同轮核对元数据缺失、筛选排序和回填入口。
-- 后续：瘦身整页比较/保留依据/保护/确认/合成回收恢复；fake 云端确认取消、批量审核、缺模型、智能推流播放及普通外部播放/生命周期；最后当前版本构建与定向回归、准确矩阵、人工路线和本地提交。
+- 已完成本地提交 `ce4a7525`（地图/播放入口）与 `19a57034`（元数据/推流审核）。地图三范围、播放与地点图库、缺失元数据、筛选排序及推流确认/撤销/忽略均有本轮分片通过证据。fake 云端确认/取消/重试/播放也已通过；尚不代表同一最终版本。
+- 当前剩余：瘦身确认/回收恢复整页路线、外部打开已到 QuickTime 播放，真实前台返回仍待验。瘦身已实际播放/切换，但确认弹窗触发 UI 工具服务崩溃，保留失败记录。最后执行最终源码构建与定向回归、准确矩阵和本地提交。
 - P5 与 P6 已通过且不受修改影响的路线仅做最终版本关联核对，不重复建设。真实资料、iCloud、付费模型、发布安装保持 NOT_RUN。
 
 ## 当前有效范围调整（2026-09-28）
@@ -39,14 +39,14 @@
 |---|---|---|
 | P0 | VERIFIED（静态） | 2026-10-14 有界核查完成，主分支与旧验证树差异已保存；不代表当前功能验收 |
 | P1 | IN_PROGRESS | 共用播放器/图库整理/审核实际 UI 已分轮通过；普通外部播放、瘦身整页与部分生命周期待收口 |
-| P2 | IN_PROGRESS | 时间/GPS/技术信息、补读、查询/地图及云状态已有实现与合成证据；正在补地图操作、详情与回填入口 |
-| P3 | IN_PROGRESS | 视频域训练/建议/审核/持久人工事实与撤销已分层通过；批量入口、缺模型、智能推流播放待收口 |
+| P2 | IN_PROGRESS | 时间/GPS/技术信息、补读、查询/地图及云状态已有实现与合成证据；本轮地图操作、详情缺失/筛选排序、回填入口和fake云端操作已分片通过，最终版本待绑定 |
+| P3 | IN_PROGRESS | 视频域训练/建议/审核/持久人工事实与撤销已分层通过；智能推流、批量审核及缺模型UI已分片通过，最终版本待绑定 |
 | P4 | VERIFIED（最小合成） | 完整字节证据、分组、保护及合成回收恢复通过；完整 UI 比较路线待补 |
 | P5 | IMPLEMENTED | 实际多帧/内容候选/冻结审核证据及时间跳转 UI 已通过；最终版本关联待核对 |
 | P6 | IMPLEMENTED | 混合选材/片段/原声/调序/保存重开/实际导出/QuickTime 已通过；最终版本关联待核对 |
 | P7 | IN_PROGRESS | ac6ab717 的构建及 58/58 回归为历史基线；当前最终版本和全部 Mac 必需条款尚未验收 |
 
-下一动作：完成地图整页合成 UI 路线，修复本轮核查发现的实际缺口，再沿顶部所列顺序收口。下方逐次记录保持原貌，其“下一步”仅代表当次历史状态。
+下一动作：补齐顶部剩余操作，再做最终版本验证。下方逐次记录保持原貌，其“下一步”仅代表当次历史状态。
 
 ## 历史启动能力矩阵（已过时，仅保留审计；现状见顶部与完成矩阵）
 
@@ -947,3 +947,19 @@
 - `feed-ui-2/tests.log` 1/1 PASS（48.253秒）：正式整页播放、关闭、确认2项、空状态撤销、忽略；12个采样周期rate>0且始终保持2候选选择。独立重开临时DB后2项unknown、0项rejected、pending0，播放器currentItem为空。真实ContextualTagFeedService/GRDB事务，外围缩略图为fake，无模型调用。
 - `metadata-feed-build.log`测试参数顺序编译错误已修正，`metadata-feed-build-2.log`及`feed-empty-undo-build.log`成功；同最新产品`metadata-feed-regression.log` 8/8 PASS，覆盖GPS真实/缺失/推定位置排除、修订/照片拒绝、媒体切换、排序分页、跨域模型排序、确认撤销/忽略及播放器释放。选择清单与当前源码/产物SHA在同证据根。metadata-ui-1属于前一个构建，不能与最新产品混称同一版本；最终统一验证仍待。
 - 地图提交`ce4a7525`已完成本地收口。此次元数据/推流切片不包含并行故事/手机/OpenMontage修改，不push。
+
+## 2026-10-14 瘦身操作与 fake 云端获取（进行中）
+
+- 瘦身视频卡片原有播放图标只用于标识；现改为正式可点击按钮，并补工作台/预览的无障碍容器分组，使播放、关闭、前后切换保持独立名称。视频计数使用“段”。
+- `slimming-ui-2` / `slimming-ui-3` 实际打开并播放两段合成视频，明确完整原件组；确认按钮之后 `SkyComputerUseService` 崩溃，App采样仍继续。日志仅因未发生回收而失败，不能算回收/恢复整页通过。macOS诊断报告显示工具服务 `EXC_BREAKPOINT`，栈顶 `Array.remove(at:)`。未修改工具服务。
+- `cloud-ui-1/tests.log` **1/1 PASS，50.764秒**：取消初次确认不发起下载，确认后进度0.4、无player item，取消一次，重新载入后再确认、以新grant重试并播放；2次fake下载、1次取消，修订均1，没有外部打开。无真实网络下载或Photos读取。
+- `external-ui-1` 实际调用NSWorkspace打开证据目录的合成MP4，QuickTime正确URL及播放进度已观察；ImageAll失焦后idle且item释放。CUA后台操作未能恢复真实前台，因此该测试保留FAIL；不以AX Raise当作已恢复前台。外部资产解析器为fake，仅系统打开是真实动作。
+- 上述产品来自`slimming-accessibility-build.log`，ad hoc合成构建通过；产物及日志摘要为`cloud-external-first-artifact-sha256.json`。源码包含已审计并行改动，非纯提交最终验收。
+
+## 2026-10-14 批量审核与缺模型收口
+
+- 审核栏新增“全选已加载”，复用现有review选择集合与批量事务，不自动加载全库。`batch-review-ui-3/tests.log` **1/1 PASS，27.539秒**：全选2视频→一次接受2项→空队列撤销→恢复2项unknown及待审队列。前两次失败分别保留新首页与修饰键操作未形成多选的记录。
+- `models-ui-1/tests.log` **1/1 PASS，35.380秒**：个人模型缺失、标准服务不可用分别显示，推理调用0、标签变更0。
+- `remaining-mac-regression.log` **12/12 PASS**：完整原件/代表帧与混合组隔离、favorite/Photos编辑保护、真实合成文件回收恢复、计划变化拒绝、预览边界、云端修订及取消重试、缺模型门禁与批量审核撤销。选择清单在`remaining-mac-regression-selection.json`。该回归产品对应`batch-foreground-build.log`；后续审核按钮变更由`batch-selection-build.log`及batch-review-ui-3覆盖。
+- 当前源与batch-review-ui-3产物SHA记录为`remaining-ui-source-artifact-sha256.json`，完整未提交差异保存在同目录；仍不是纯HEAD最终验收。
+- 瘦身确认弹窗在`slimming-ui-4`仍触发CUA原生服务Array.remove崩溃。外部播放器路线在`external-ui-3`仍未记录真实前台恢复；尝试的测试宿主激活按钮无效，已从最终测试源移除，保留失败日志。两个实际运行缺口保持未通过，目标active。

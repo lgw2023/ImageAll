@@ -2178,6 +2178,14 @@ struct ReviewDecisionBar: View {
         Text("已选 \(model.selectedAssetIDs.count) 项").font(.callout.monospacedDigit())
     }
 
+    private var selectLoadedButton: some View {
+        Button("全选已加载") {
+            Task { await model.selectAllVisibleAssets() }
+        }
+        .disabled(model.reviewQueueItems.isEmpty || model.isApplyingReviewDecision || model.isLoadingReviewQueue)
+        .help("只选择当前已加载的待审核媒体，不会加载或选择整个图库。")
+    }
+
     private var undoButton: some View {
         Button("撤销", systemImage: "arrow.uturn.backward") {
             Task { await model.undoLastReviewMutation() }
@@ -2204,12 +2212,13 @@ struct ReviewDecisionBar: View {
             ViewThatFits(in: .horizontal) {
                 HStack(spacing: 10) {
                     selectionLabel
+                    selectLoadedButton
                     decisionButtons
                     Spacer(minLength: 0)
                     undoButton
                 }.fixedSize(horizontal: true, vertical: false)
                 VStack(alignment: .leading, spacing: 8) {
-                    HStack { selectionLabel; Spacer(); undoButton }
+                    HStack { selectionLabel; selectLoadedButton; Spacer(); undoButton }
                     decisionButtons
                 }
             }

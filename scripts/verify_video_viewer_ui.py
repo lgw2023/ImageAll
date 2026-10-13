@@ -30,7 +30,16 @@ def main():
     parser.add_argument('--map', action='store_true', help='Operate the real map with a synthetic database: three media scopes, video preview and gallery navigation')
     parser.add_argument('--metadata', action='store_true', help='Operate synthetic catalog detail, missing GPS/time and filters')
     parser.add_argument('--feed', action='store_true', help='Play a mixed feed video, accept both candidates, undo and ignore with a private real database')
+    parser.add_argument('--slimming', action='store_true', help='Operate real synthetic exact groups, playback, protected cleanup and restore')
+    parser.add_argument('--cloud', action='store_true', help='Operate fake-only cloud consent, progress, cancellation and retry')
+    parser.add_argument('--external', action='store_true', help='Open the exact synthetic movie with the system player, then return to this app foreground')
+    parser.add_argument('--models', action='store_true', help='With --metadata: verify unavailable video model states without inference')
+    parser.add_argument('--batch-review', action='store_true', help='With --gallery --review: accept both selected videos and undo')
     args = parser.parse_args()
+    if (args.cloud or args.external) and (args.cloud == args.external or any((args.slimming, args.metadata, args.feed, args.map, args.gallery, args.review, args.analysis, args.candidates, args.review_evidence, args.story_clip, args.story_workspace, args.with_audio, args.require_focus))):
+        parser.error('--cloud and --external are standalone modes')
+    if args.slimming and any((args.metadata, args.feed, args.map, args.gallery, args.review, args.analysis, args.candidates, args.review_evidence, args.story_clip, args.story_workspace, args.with_audio, args.require_focus)):
+        parser.error('--slimming is a standalone mode')
     if (args.metadata or args.feed) and (args.metadata == args.feed or any((args.map, args.gallery, args.review, args.analysis, args.candidates, args.review_evidence, args.story_clip, args.story_workspace, args.with_audio, args.require_focus))):
         parser.error('--metadata and --feed are standalone modes')
     if args.map and any((args.gallery, args.review, args.analysis, args.candidates, args.review_evidence, args.story_clip, args.story_workspace, args.with_audio, args.require_focus)):
@@ -47,6 +56,10 @@ def main():
         parser.error('Story clip mode cannot be combined with viewer options')
     if args.gallery and (args.story_clip or args.story_workspace or args.with_audio or args.require_focus):
         parser.error('Gallery mode cannot be combined with other modes')
+    if args.models and not args.metadata:
+        parser.error('--models requires --metadata')
+    if args.batch_review and not (args.gallery and args.review):
+        parser.error('--batch-review requires --gallery --review')
     products, evidence = args.products.resolve(), args.evidence.resolve()
     host = products / 'ImageAll.app/Contents'
     bundle = host / 'PlugIns/ImageAllTests.xctest'
@@ -109,6 +122,8 @@ def main():
             environment['IMAGEALL_INTERACTIVE_CANDIDATES'] = '1'
         if args.analysis:
             environment['IMAGEALL_INTERACTIVE_ANALYSIS'] = '1'
+        if args.batch_review:
+            environment['IMAGEALL_INTERACTIVE_BATCH_REVIEW'] = '1'
         if args.review:
             environment['IMAGEALL_INTERACTIVE_REVIEW'] = '1'
         selector = 'ImageAllTests.LibraryWorkspaceModelTests/testInteractiveVideoGalleryWhenRequested'
@@ -123,9 +138,21 @@ def main():
     if args.metadata or args.feed:
         environment.pop('IMAGEALL_INTERACTIVE_VIDEO_EVIDENCE', None)
         environment['IMAGEALL_INTERACTIVE_METADATA_FEED_EVIDENCE'] = str(evidence)
+        if args.models:
+            environment['IMAGEALL_INTERACTIVE_MODELS'] = '1'
         if args.feed:
             environment['IMAGEALL_INTERACTIVE_FEED'] = '1'
         selector = 'ImageAllTests.LibraryWorkspaceModelTests/testInteractiveVideoMetadataAndFeedWhenRequested'
+    if args.slimming:
+        environment.pop('IMAGEALL_INTERACTIVE_VIDEO_EVIDENCE', None)
+        environment['IMAGEALL_INTERACTIVE_SLIMMING_EVIDENCE'] = str(evidence)
+        selector = 'ImageAllTests.LibrarySlimmingRecycleTests/testInteractiveVideoSlimmingWhenRequested'
+    if args.cloud or args.external:
+        environment.pop('IMAGEALL_INTERACTIVE_VIDEO_EVIDENCE', None)
+        environment['IMAGEALL_INTERACTIVE_CLOUD_EXTERNAL_EVIDENCE'] = str(evidence)
+        if args.cloud:
+            environment['IMAGEALL_INTERACTIVE_CLOUD'] = '1'
+        selector = 'ImageAllTests.LibraryVideoViewingTests/testInteractiveCloudOrExternalVideoWhenRequested'
     completion = 'Click Use Clip after entering the requested range and gain' if args.story_clip else f'Finish marker: {evidence / "finish"}'
     print(f'Synthetic viewer: {app}\n{completion}', flush=True)
     with (evidence / 'tests.log').open('w') as log:

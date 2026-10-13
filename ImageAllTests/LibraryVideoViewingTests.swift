@@ -75,6 +75,67 @@ final class LibraryVideoViewingTests: XCTestCase {
             .write(to: evidence.appendingPathComponent("frozen-review-result.json"))
     }
 
+    func testInteractiveCloudOrExternalVideoWhenRequested() async throws {
+        guard let path = ProcessInfo.processInfo.environment["IMAGEALL_INTERACTIVE_CLOUD_EXTERNAL_EVIDENCE"] else {
+            throw XCTSkip("Explicit synthetic cloud/external verification only")
+        }
+        let evidence = URL(fileURLWithPath: path, isDirectory: true)
+        let isCloud = ProcessInfo.processInfo.environment["IMAGEALL_INTERACTIVE_CLOUD"] == "1"
+        let source = evidence.appendingPathComponent("synthetic-current-video.mp4")
+        try FileManager.default.copyItem(at: syntheticVideo, to: source)
+        let assetID = UUID(), sourceID = UUID()
+        let provider = InteractiveControlledVideoProvider(url: source, isCloud: isCloud)
+        let opener = InteractiveSyntheticExternalOpener(assetID: assetID, url: source)
+        let service = FakeLibraryWorkspaceService(connectedSource: .init(id: sourceID, displayName: "Synthetic only", state: .active),
+            reconciledItems: [], startsConnected: true)
+        let model = LibraryWorkspaceModel(service: service, originalAssetOpener: opener,
+            videoPlaybackProvider: provider, idlePrewarmInstallEventMonitor: false)
+        let host = NSHostingView(rootView: LibraryVideoViewer(assetID: assetID, contentRevision: 1, model: model)
+            .frame(width: 960, height: 640))
+        let window = NSWindow(contentRect: NSRect(x: 50, y: 50, width: 960, height: 640),
+            styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.title = isCloud ? "ImageAll Fake Cloud Video" : "ImageAll Synthetic External Video"
+        window.contentView = host
+        NSApplication.shared.setActivationPolicy(.regular)
+        NSApplication.shared.finishLaunching()
+        window.makeKeyAndOrderFront(nil)
+        NSApplication.shared.activate(ignoringOtherApps: true)
+        defer { model.videoViewingSession.stop(); window.close() }
+        var samples: [[String: Any]] = []
+        let finish = evidence.appendingPathComponent("finish"), deadline = Date().addingTimeInterval(600)
+        while Date() < deadline, !FileManager.default.fileExists(atPath: finish.path) {
+            let session = model.videoViewingSession
+            samples.append(["state": String(describing: session.state), "rate": session.player.rate,
+                "hasItem": session.player.currentItem != nil, "active": NSApplication.shared.isActive,
+                "progress": session.cloudDownloadProgress ?? -1,
+                "downloads": provider.downloads, "cancellations": provider.cancellations,
+                "externalOpens": opener.openCount])
+            try JSONSerialization.data(withJSONObject: samples)
+                .write(to: evidence.appendingPathComponent("player-observations.json"), options: .atomic)
+            try await Task.sleep(for: .milliseconds(200))
+        }
+        XCTAssertTrue(FileManager.default.fileExists(atPath: finish.path))
+        XCTAssertTrue(samples.contains { ($0["rate"] as? Float ?? 0) > 0 })
+        if isCloud {
+            XCTAssertEqual(samples.first?["downloads"] as? Int, 0)
+            XCTAssertEqual(provider.downloads, 2)
+            XCTAssertEqual(provider.cancellations, 1)
+            XCTAssertEqual(provider.expectedRevisions, [1, 1])
+            XCTAssertEqual(Set(provider.grants).count, 2, "A retry requires a fresh explicit grant")
+            XCTAssertTrue(samples.contains { ($0["progress"] as? Double ?? 0) >= 0.4 && $0["hasItem"] as? Bool == false })
+            XCTAssertEqual(opener.openCount, 0)
+        } else {
+            XCTAssertEqual(opener.openCount, 1)
+            XCTAssertEqual(provider.downloads, 0)
+            let background = try XCTUnwrap(samples.firstIndex { $0["externalOpens"] as? Int == 1 && $0["active"] as? Bool == false })
+            XCTAssertEqual(samples[background]["hasItem"] as? Bool, false)
+            XCTAssertTrue(samples.dropFirst(background + 1).contains { $0["active"] as? Bool == true && $0["state"] as? String == "ready" && $0["rate"] as? Float == 0 }, "Return to the real app foreground; background AX actions do not prove focus")
+        }
+        model.videoViewingSession.stop()
+        XCTAssertNil(model.videoViewingSession.player.currentItem)
+    }
+
     func testInteractiveNativeVideoViewerWhenRequested() async throws {
         guard let path = ProcessInfo.processInfo.environment["IMAGEALL_INTERACTIVE_VIDEO_EVIDENCE"] else {
             throw XCTSkip("Explicit synthetic interactive verification only")
@@ -599,5 +660,49 @@ private struct InteractiveSyntheticVideoProvider: LibraryVideoPlaybackProviding 
     let url: URL
     func prepareVideoPlayback(assetID: UUID) async throws -> LibraryVideoPlaybackResource {
         LibraryVideoPlaybackResource(url: url)
+    }
+}
+
+@MainActor
+private final class InteractiveControlledVideoProvider: LibraryVideoPlaybackProviding {
+    let url: URL
+    var isCloud: Bool
+    var downloads = 0
+    var cancellations = 0
+    var expectedRevisions: [Int] = []
+    var grants: [String] = []
+    init(url: URL, isCloud: Bool) { self.url = url; self.isCloud = isCloud }
+    func prepareVideoPlayback(assetID: UUID) async throws -> LibraryVideoPlaybackResource {
+        if isCloud { throw PhotosLibraryError.cloudOnly }
+        return LibraryVideoPlaybackResource(url: url)
+    }
+    func downloadCloudVideoForPlayback(assetID: UUID, expectedRevision: Int, grant: PhotosCloudDownloadGrant,
+        onProgress: @escaping @Sendable (Double) -> Void) async throws -> LibraryVideoPlaybackResource {
+        downloads += 1
+        expectedRevisions.append(expectedRevision)
+        grants.append(String(describing: grant))
+        onProgress(0.4)
+        if downloads == 1 {
+            do { try await Task.sleep(for: .seconds(60)) }
+            catch { cancellations += 1; throw error }
+        }
+        try Task.checkCancellation()
+        isCloud = false
+        onProgress(1)
+        return LibraryVideoPlaybackResource(url: url)
+    }
+}
+
+@MainActor
+private final class InteractiveSyntheticExternalOpener: LibraryOriginalAssetOpening {
+    let assetID: UUID
+    let url: URL
+    var openCount = 0
+    init(assetID: UUID, url: URL) { self.assetID = assetID; self.url = url }
+    func openOriginalAsset(assetID: UUID) async throws {
+        guard assetID == self.assetID, FileManager.default.fileExists(atPath: url.path), NSWorkspace.shared.open(url) else {
+            throw LibraryOriginalAssetOpenError.unavailable
+        }
+        openCount += 1
     }
 }

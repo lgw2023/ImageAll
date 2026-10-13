@@ -4528,22 +4528,24 @@ final class LibraryWorkspaceModel: ObservableObject {
             librarySlimmingSelectionAnchorID = nil
         }
         refreshSelectedLibrarySlimmingMemberSources()
+        let unit = selectedMediaKind == .video ? "段" : "张"
+        let mediaName = selectedMediaKind == .video ? "视频" : "照片"
         if filteredClusters.isEmpty, !seedOnlyAssetIDs.isEmpty,
            result.pendingAnalysisAssetIDs.isEmpty
         {
             librarySlimmingStatusMessage =
-                "未发现相似项；已保留 \(seedOnlyAssetIDs.count) 张种子照片，可继续选择操作。"
+                "未发现相似项；已保留 \(seedOnlyAssetIDs.count) \(unit)种子\(mediaName)，可继续选择操作。"
         } else if filteredClusters.isEmpty, result.pendingAnalysisAssetIDs.isEmpty {
-            librarySlimmingStatusMessage = "已分析 \(result.analyzedAssetCount) 张，未发现相同或相似簇。"
+            librarySlimmingStatusMessage = "已分析 \(result.analyzedAssetCount) \(unit)，未发现相同或相似簇。"
         } else if filteredClusters.isEmpty {
             librarySlimmingStatusMessage =
-                "已分析 \(result.analyzedAssetCount) 张，暂无成簇结果；\(result.pendingAnalysisAssetIDs.count) 张因不可读取或格式问题待处理。"
+                "已分析 \(result.analyzedAssetCount) \(unit)，暂无成簇结果；\(result.pendingAnalysisAssetIDs.count) \(unit)因不可读取或格式问题待处理。"
         } else if result.pendingAnalysisAssetIDs.isEmpty {
             librarySlimmingStatusMessage =
-                "完成：\(filteredClusters.count) 个簇 · 已分析 \(result.analyzedAssetCount) 张。"
+                "完成：\(filteredClusters.count) 个簇 · 已分析 \(result.analyzedAssetCount) \(unit)。"
         } else {
             librarySlimmingStatusMessage =
-                "完成：\(filteredClusters.count) 个簇 · \(result.pendingAnalysisAssetIDs.count) 张因不可读取或格式问题待处理。"
+                "完成：\(filteredClusters.count) 个簇 · \(result.pendingAnalysisAssetIDs.count) \(unit)因不可读取或格式问题待处理。"
         }
         if let notice = result.photosOriginalVideoSummary?.caption {
             librarySlimmingStatusMessage = (librarySlimmingStatusMessage ?? "") + " " + notice

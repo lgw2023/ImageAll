@@ -9,6 +9,87 @@ import XCTest
 @testable import ImageAll
 
 final class LibrarySlimmingRecycleTests: XCTestCase {
+    @MainActor
+    func testInteractiveVideoSlimmingWhenRequested() async throws {
+        guard let path = ProcessInfo.processInfo.environment["IMAGEALL_INTERACTIVE_SLIMMING_EVIDENCE"] else {
+            throw XCTSkip("Explicit synthetic slimming verification only")
+        }
+        let evidence = URL(fileURLWithPath: path, isDirectory: true)
+        let env = try RecycleTestEnv(label: "interactive-video-slimming")
+        defer { env.cleanup() }
+        let source = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+            .deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("docs/evidence/time-story-phase-1-20260918/synthetic-silent.mp4")
+        let bytes = try Data(contentsOf: source)
+        let favorite = try env.seedAsset(relativePath: "01-favorite.mp4", contents: bytes)
+        let copy = try env.seedAsset(relativePath: "02-copy.mp4", contents: bytes)
+        for asset in [favorite, copy] { try env.prepareOriginalVideoEvidence(assetID: asset.assetID) }
+        try await env.database.pool.write { db in
+            try db.execute(sql: "UPDATE asset SET duration_ms = 2567, width = 160, height = 90")
+            try db.execute(sql: "INSERT INTO asset_favorite_state (asset_id, desired_value, photos_observed_value, sync_status, intent_revision, requested_at_ms, updated_at_ms) VALUES (?, 1, NULL, 'localOnly', 1, 1, 1)", arguments: [favorite.assetID.uuidString.lowercased()])
+        }
+        let catalog = GRDBAssetCatalogQueryRepository(database: env.database)
+        let items = try catalog.fetchAssetPage(.init(filter: .init(), sort: .fileNameAscending, cursor: nil, limit: 50)).items
+        let workspace = FakeLibraryWorkspaceService(
+            connectedSource: LibrarySourceSummary(id: env.sourceID, displayName: "Synthetic recycle only", state: .active),
+            reconciledItems: items, initialItems: items, startsConnected: true, hasPendingCatalogReconcileJobs: false)
+        workspace.mapFixtureDatabase = env.database
+        let scanner = LibrarySlimmingScanService(database: env.database,
+            identicalScan: IdenticalDuplicateClusterService(database: env.database), fingerprintCompletion: nil,
+            featureLoader: DictionarySlimmingFeatureLoader(vectors: [:]),
+            embeddingLoader: DictionarySlimmingEmbeddingLoader(vectors: [:]))
+        let recycle = env.makeRecycleService(clock: SystemJobClock())
+        let model = LibraryWorkspaceModel(service: workspace, librarySlimming: scanner,
+            librarySlimmingRecycle: recycle,
+            videoPlaybackProvider: SlimmingSyntheticVideoProvider(urls: [favorite.assetID: favorite.fileURL, copy.assetID: copy.fileURL]), idlePrewarmInstallEventMonitor: false)
+        await model.start()
+        await model.setMediaKind(.video)
+        let host = NSHostingView(rootView: LibraryWorkspaceView(model: model, loadsSharedPhoneProjections: false,
+            initialSelection: .librarySlimming).environmentObject(ToolbarDisplayModeSettingsModel())
+            .frame(width: 1400, height: 900))
+        let window = NSWindow(contentRect: NSRect(x: 50, y: 50, width: 1400, height: 900),
+            styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.title = "ImageAll Synthetic Video Slimming"
+        window.contentView = host
+        NSApplication.shared.setActivationPolicy(.regular)
+        NSApplication.shared.finishLaunching()
+        window.makeKeyAndOrderFront(nil)
+        NSApplication.shared.activate(ignoringOtherApps: true)
+        defer { model.videoViewingSession.stop(); window.close() }
+        var samples: [[String: Any]] = []
+        let finish = evidence.appendingPathComponent("finish"), deadline = Date().addingTimeInterval(600)
+        while Date() < deadline, !FileManager.default.fileExists(atPath: finish.path) {
+            samples.append(["groups": model.librarySlimmingIdenticalGroupCount,
+                "preview": model.librarySlimmingPreviewAssetID?.uuidString ?? "",
+                "rate": model.videoViewingSession.player.rate,
+                "playerAsset": model.videoViewingSession.identity?.assetID.uuidString ?? "",
+                "recycled": try recycle.listRecycledEntries().count,
+                "favoriteExists": FileManager.default.fileExists(atPath: favorite.fileURL.path),
+                "copyExists": FileManager.default.fileExists(atPath: copy.fileURL.path),
+                "message": model.librarySlimmingStatusMessage ?? ""])
+            try JSONSerialization.data(withJSONObject: samples)
+                .write(to: evidence.appendingPathComponent("slimming-observations.json"), options: .atomic)
+            try await Task.sleep(for: .milliseconds(200))
+        }
+        XCTAssertTrue(FileManager.default.fileExists(atPath: finish.path))
+        XCTAssertTrue(samples.contains { $0["groups"] as? Int == 1 })
+        XCTAssertTrue(samples.contains { ($0["rate"] as? Float ?? 0) > 0 })
+        for id in [favorite.assetID, copy.assetID] {
+            XCTAssertTrue(samples.contains { $0["preview"] as? String == id.uuidString })
+        }
+        XCTAssertTrue(samples.contains { $0["recycled"] as? Int == 1 && $0["copyExists"] as? Bool == false })
+        XCTAssertTrue(samples.allSatisfy { $0["favoriteExists"] as? Bool == true })
+        XCTAssertTrue(try recycle.listRecycledEntries().isEmpty)
+        for asset in [favorite, copy] { XCTAssertEqual(try Data(contentsOf: asset.fileURL), bytes) }
+        XCTAssertNil(model.videoViewingSession.player.currentItem)
+        let frame = try await AVAssetImageGenerator(asset: AVURLAsset(url: copy.fileURL)).image(at: .zero)
+        XCTAssertGreaterThan(frame.image.width, 0)
+        try JSONSerialization.data(withJSONObject: ["favoriteID": favorite.assetID.uuidString,
+            "copyID": copy.assetID.uuidString, "restoredSHA256": SHA256.hash(data: Data(contentsOf: copy.fileURL)).map { String(format: "%02x", $0) }.joined()])
+            .write(to: evidence.appendingPathComponent("slimming-result.json"))
+    }
+
     func testMigrationReservationsExcludePlansAndBlockStalePhysicalCleanup() throws {
         let env = try RecycleTestEnv(label: #function)
         defer { env.cleanup() }
@@ -4183,5 +4264,14 @@ private final class RecyclePhotosVideoOriginalReader: PhotosOriginalVideoContent
         if cloudIDs.contains(localIdentifier) { throw PhotosLibraryError.cloudOnly }
         return PhotosOriginalVideoDigest(sha256: Data(SHA256.hash(data: bytes)), byteCount: Int64(bytes.count),
             resourceIdentity: "\(localIdentifier)-\(identitySuffix)", hasAdjustments: editedIDs.contains(localIdentifier))
+    }
+}
+
+@MainActor
+private struct SlimmingSyntheticVideoProvider: LibraryVideoPlaybackProviding {
+    let urls: [UUID: URL]
+    func prepareVideoPlayback(assetID: UUID) async throws -> LibraryVideoPlaybackResource {
+        guard let url = urls[assetID] else { throw LibraryOriginalAssetOpenError.unavailable }
+        return LibraryVideoPlaybackResource(url: url)
     }
 }

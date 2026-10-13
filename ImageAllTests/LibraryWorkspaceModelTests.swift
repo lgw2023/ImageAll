@@ -12519,6 +12519,7 @@ final class LibraryWorkspaceModelTests: XCTestCase {
         guard let path = ProcessInfo.processInfo.environment["IMAGEALL_INTERACTIVE_METADATA_FEED_EVIDENCE"] else {
             throw XCTSkip("Explicit synthetic metadata/feed verification only")
         }
+        let isModels = ProcessInfo.processInfo.environment["IMAGEALL_INTERACTIVE_MODELS"] == "1"
         let isFeed = ProcessInfo.processInfo.environment["IMAGEALL_INTERACTIVE_FEED"] == "1"
         let evidence = URL(fileURLWithPath: path, isDirectory: true)
         let fixture = try SimilarityTestSupport.Environment(label: "interactive-video-metadata-feed")
@@ -12553,7 +12554,9 @@ final class LibraryWorkspaceModelTests: XCTestCase {
             initialItems: items,
             startsConnected: true, hasPendingCatalogReconcileJobs: false)
         service.mapFixtureDatabase = fixture.database
+        let unavailableClient = FakeLocalModelSuggestionClient(result: .success([]), standardCapability: .unavailable)
         let model = LibraryWorkspaceModel(service: service, contextualTagFeed: feed,
+            localModelSuggestions: isModels ? Self.makeStandardRuntime(client: unavailableClient) : nil,
             videoPlaybackProvider: GallerySyntheticVideoProvider(url: source),
             contextualTagFeedScopePreferences: ContextualTagFeedScopePreferences(keyPrefix: "tests.video-feed.\(UUID())"),
             idlePrewarmInstallEventMonitor: false)
@@ -12577,7 +12580,7 @@ final class LibraryWorkspaceModelTests: XCTestCase {
         let finish = evidence.appendingPathComponent("finish"), deadline = Date().addingTimeInterval(600)
         while Date() < deadline, !FileManager.default.fileExists(atPath: finish.path) {
             let aggregate = try XCTUnwrap(tags.selectionAggregate(tagIDs: [tag.id], assetIDs: [video.assetID, missing.assetID]).first)
-            samples.append(["inspector": model.inspectorDetail?.assetID.uuidString ?? "",
+            samples.append(["modelState": String(describing: model.localModelSuggestionState), "inspector": model.inspectorDetail?.assetID.uuidString ?? "",
                 "items": model.items.map { $0.assetID.uuidString },
                 "sort": String(describing: model.sort), "orientation": model.videoOrientationFilter.rawValue,
                 "duration": model.videoDurationFilter.rawValue,
@@ -12591,7 +12594,13 @@ final class LibraryWorkspaceModelTests: XCTestCase {
             try await Task.sleep(for: .milliseconds(200))
         }
         XCTAssertTrue(FileManager.default.fileExists(atPath: finish.path))
-        if isFeed {
+        if isModels {
+            XCTAssertTrue(samples.contains { ($0["modelState"] as? String)?.contains("personalUnavailable") == true })
+            XCTAssertTrue(samples.contains { ($0["modelState"] as? String)?.contains("serviceUnavailable") == true })
+            XCTAssertEqual(unavailableClient.callCount, 0)
+            XCTAssertEqual(service.mutateTagCallCount, 0)
+            XCTAssertEqual(try feed.pendingCount(), 0)
+        } else if isFeed {
             let playing = samples.filter { ($0["rate"] as? Float ?? 0) > 0 }
             XCTAssertTrue(playing.contains { $0["playerAsset"] as? String == video.assetID.uuidString })
             XCTAssertTrue(playing.allSatisfy { Set($0["feedSelection"] as? [String] ?? []) == Set([video.assetID.uuidString, missing.assetID.uuidString]) }, "Playback must not change candidate selection")
@@ -12696,6 +12705,7 @@ final class LibraryWorkspaceModelTests: XCTestCase {
         guard let path = ProcessInfo.processInfo.environment["IMAGEALL_INTERACTIVE_GALLERY_EVIDENCE"] else {
             throw XCTSkip("Explicit synthetic gallery verification only")
         }
+        let isBatch = ProcessInfo.processInfo.environment["IMAGEALL_INTERACTIVE_BATCH_REVIEW"] == "1"
         let isReview = ProcessInfo.processInfo.environment["IMAGEALL_INTERACTIVE_REVIEW"] == "1"
         let isAnalysis = ProcessInfo.processInfo.environment["IMAGEALL_INTERACTIVE_ANALYSIS"] == "1"
         let isCandidates = ProcessInfo.processInfo.environment["IMAGEALL_INTERACTIVE_CANDIDATES"] == "1"
@@ -12734,7 +12744,7 @@ final class LibraryWorkspaceModelTests: XCTestCase {
         await waitForCatalogScanToFinish(model)
         await model.setMediaKind(.video)
         if isReview { await model.enterReviewQueue(tagID: tag.id, displayName: tag.displayName) }
-        let host = NSHostingView(rootView: LibraryWorkspaceView(model: model, loadsSharedPhoneProjections: false)
+        let host = NSHostingView(rootView: LibraryWorkspaceView(model: model, loadsSharedPhoneProjections: false, initialSelection: .all)
             .environmentObject(ToolbarDisplayModeSettingsModel()).frame(width: 1400, height: 900))
         let window = NSWindow(contentRect: NSRect(x: 50, y: 50, width: 1400, height: 900),
             styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
@@ -12749,7 +12759,7 @@ final class LibraryWorkspaceModelTests: XCTestCase {
         var samples: [[String: Any]] = []
         let finish = evidence.appendingPathComponent("finish"), deadline = Date().addingTimeInterval(300)
         while Date() < deadline, !FileManager.default.fileExists(atPath: finish.path) {
-            samples.append(["selected": model.primarySelectedAssetID?.uuidString ?? "", "single": model.isSinglePhotoPresented,
+            samples.append(["selectedCount": model.selectedAssetIDs.count, "mutationCount": service.mutateTagCallCount, "selected": model.primarySelectedAssetID?.uuidString ?? "", "single": model.isSinglePhotoPresented,
                 "firstDecision": String(describing: try? service.fetchInspectorDetail(assetID: first.assetID).tags.first { $0.tagID == tag.id }?.decision),
                 "secondDecision": String(describing: try? service.fetchInspectorDetail(assetID: second.assetID).tags.first { $0.tagID == tag.id }?.decision),
                 "time": model.videoViewingSession.player.currentTime().seconds.isFinite ? model.videoViewingSession.player.currentTime().seconds : -1,
@@ -12795,6 +12805,14 @@ final class LibraryWorkspaceModelTests: XCTestCase {
             } }, "An actual analysis-frame button must seek the paused player")
             try JSONSerialization.data(withJSONObject: ["timesMs": times, "features": features])
                 .write(to: evidence.appendingPathComponent("analysis-result.json"))
+            return
+        }
+        if isBatch {
+            XCTAssertTrue(samples.contains { $0["selectedCount"] as? Int == 2 })
+            XCTAssertTrue(samples.contains { ($0["firstDecision"] as? String)?.contains("accepted") == true
+                && ($0["secondDecision"] as? String)?.contains("accepted") == true && $0["mutationCount"] as? Int == 1 })
+            XCTAssertEqual(try service.selectionAggregate(tagIDs: [tag.id], assetIDs: [first.assetID, second.assetID]).first?.unknownCount, 2)
+            XCTAssertEqual(model.reviewQueueItems.count, 2)
             return
         }
         XCTAssertTrue(samples.contains { ($0["rate"] as? Float ?? 0) > 0 })

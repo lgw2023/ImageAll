@@ -16,9 +16,9 @@ struct LibrarySlimmingClusterPresentation: Identifiable, Equatable, Sendable {
 
     var memberCountCaption: String {
         if isHistoricalProcessedRecord {
-            return "原 \(originalMemberCount) 张 · 现 \(memberAssetIDs.count) 张可查看"
+            return "原 \(originalMemberCount) 项 · 现 \(memberAssetIDs.count) 项可查看"
         }
-        return "\(memberAssetIDs.count) 张"
+        return "\(memberAssetIDs.count) \(mediaKind == .video ? "段" : "张")"
     }
 
     var kindTitle: String {
@@ -518,7 +518,8 @@ struct LibrarySlimmingWorkspaceView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .navigationTitle("图库瘦身")
-        .accessibilityLabel("图库瘦身工作台")
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("librarySlimmingWorkspace")
         .focusable()
         .focused($keyboardFocused)
         .focusEffectDisabled()
@@ -840,7 +841,7 @@ struct LibrarySlimmingWorkspaceView: View {
                     .accessibilityLabel(showsAnalysisNavigator ? "隐藏分析记录" : "显示分析记录")
                     .persistentHelp(
                         showsAnalysisNavigator
-                            ? "隐藏分析记录与结果分组栏，让照片网格使用全部宽度。"
+                            ? "隐藏分析记录与结果分组栏，让媒体网格使用全部宽度。"
                             : "显示分析记录与结果分组栏。"
                     )
                 }
@@ -2440,7 +2441,7 @@ private struct LibrarySlimmingQuickLookView: View {
 
                 HStack {
                     navigationButton(
-                        title: "上一张",
+                        title: model.selectedMediaKind == .video ? "上一段" : "上一张",
                         systemImage: "chevron.left",
                         isEnabled: navigation.canMovePrevious
                     ) {
@@ -2448,7 +2449,7 @@ private struct LibrarySlimmingQuickLookView: View {
                     }
                     Spacer()
                     navigationButton(
-                        title: "下一张",
+                        title: model.selectedMediaKind == .video ? "下一段" : "下一张",
                         systemImage: "chevron.right",
                         isEnabled: navigation.canMoveNext
                     ) {
@@ -2474,6 +2475,7 @@ private struct LibrarySlimmingQuickLookView: View {
                 }
             }
         }
+        .accessibilityElement(children: .contain)
         .accessibilityIdentifier("librarySlimmingQuickLook")
         .accessibilityLabel(model.selectedMediaKind == .video
             ? "图库瘦身视频预览" : "图库瘦身大图预览，当前缩放 \(zoomPercentage)%")
@@ -2976,13 +2978,21 @@ private struct SlimmingThumbnailCell: View {
             }
             .overlay(alignment: .topLeading) {
                 if model.selectedMediaKind == .video {
-                    Image(systemName: "play.fill")
-                        .font(.caption.weight(.bold))
-                        .foregroundStyle(.white)
-                        .padding(7)
-                        .background(.black.opacity(0.68), in: Circle())
-                        .padding(7)
-                        .accessibilityLabel("视频代表缩略图")
+                    Button {
+                        model.selectLibrarySlimmingMember(assetID, additive: false)
+                        model.toggleLibrarySlimmingPreview()
+                    } label: {
+                        Image(systemName: "play.fill")
+                            .font(.caption.weight(.bold))
+                            .foregroundStyle(.white)
+                            .padding(7)
+                            .background(.black.opacity(0.68), in: Circle())
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(isPendingRecycle)
+                    .padding(7)
+                    .accessibilityLabel("播放视频")
+                    .accessibilityIdentifier("slimmingVideoPreview-\(assetID.uuidString)")
                 }
             }
             .overlay(alignment: .topTrailing) {
@@ -3337,6 +3347,8 @@ struct LibrarySlimmingIdenticalCleanupConfirmationSheet: View {
             .padding(.vertical, 16)
         }
         .frame(width: 820, height: 720)
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("slimmingIdenticalCleanupConfirmation")
     }
 
     private var header: some View {
