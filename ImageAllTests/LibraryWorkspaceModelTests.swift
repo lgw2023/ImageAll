@@ -12515,6 +12515,82 @@ final class LibraryWorkspaceModelTests: XCTestCase {
 
     }
 
+    func testInteractiveVideoMapWhenRequested() async throws {
+        guard let path = ProcessInfo.processInfo.environment["IMAGEALL_INTERACTIVE_MAP_EVIDENCE"] else {
+            throw XCTSkip("Explicit synthetic map verification only")
+        }
+        let evidence = URL(fileURLWithPath: path, isDirectory: true)
+        let fixture = try SimilarityTestSupport.Environment(label: "interactive-video-map")
+        defer { fixture.cleanup() }
+        let source = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("docs/evidence/time-story-phase-1-20260918/synthetic-silent.mp4")
+        let video = try fixture.seedAsset(relativePath: "01-map-video.mp4", contents: Data(contentsOf: source),
+            mediaType: "public.mpeg-4", mediaCreatedAtMs: 1718440200000, mediaKind: .video, durationMs: 2567)
+        let photo = try fixture.seedAsset(relativePath: "02-map-photo.png",
+            contents: Data(base64Encoded: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aF1sAAAAASUVORK5CYII=")!, mediaType: "public.png")
+        let missing = try fixture.seedAsset(relativePath: "03-no-gps.mp4", contents: Data(contentsOf: source),
+            mediaType: "public.mpeg-4", mediaKind: .video, durationMs: 2567)
+        try await fixture.database.pool.write { db in
+            for id in [video.assetID, photo.assetID] {
+                try db.execute(sql: "INSERT INTO asset_location (asset_id, latitude, longitude, source_kind, updated_at_ms) VALUES (?, 35, 139, 'embeddedGPS', 1)",
+                    arguments: [id.uuidString.lowercased()])
+            }
+            try db.execute(sql: "UPDATE asset SET width = 160, height = 90 WHERE media_kind = 'video'")
+        }
+        let catalog = GRDBAssetCatalogQueryRepository(database: fixture.database)
+        let items = try catalog.fetchAssetPage(.init(filter: .init(), sort: .fileNameAscending, cursor: nil, limit: 50)).items
+        let service = FakeLibraryWorkspaceService(
+            connectedSource: LibrarySourceSummary(id: fixture.sourceID, displayName: "Synthetic map only", state: .active),
+            reconciledItems: items, initialItems: items, startsConnected: true, hasPendingCatalogReconcileJobs: false)
+        service.mapFixtureDatabase = fixture.database
+        let model = LibraryWorkspaceModel(service: service, videoPlaybackProvider: GallerySyntheticVideoProvider(url: source),
+            idlePrewarmInstallEventMonitor: false)
+        await model.start()
+        let host = NSHostingView(rootView: LibraryWorkspaceView(model: model, loadsSharedPhoneProjections: false, initialSelection: .worldMap)
+            .environmentObject(ToolbarDisplayModeSettingsModel()).frame(width: 1400, height: 900))
+        let window = NSWindow(contentRect: NSRect(x: 50, y: 50, width: 1400, height: 900),
+            styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.title = "ImageAll Synthetic Video Map"
+        window.contentView = host
+        NSApplication.shared.setActivationPolicy(.regular)
+        NSApplication.shared.finishLaunching()
+        window.makeKeyAndOrderFront(nil)
+        NSApplication.shared.activate(ignoringOtherApps: true)
+        defer { model.videoViewingSession.stop(); window.close() }
+        var samples: [[String: Any]] = []
+        let finish = evidence.appendingPathComponent("finish"), deadline = Date().addingTimeInterval(600)
+        while Date() < deadline, !FileManager.default.fileExists(atPath: finish.path) {
+            samples.append(["galleryScope": model.worldMapGalleryScope?.selectionQuery.effectiveMediaScope.rawValue ?? "",
+                "items": model.items.map { $0.assetID.uuidString },
+                "playerAsset": model.videoViewingSession.identity?.assetID.uuidString ?? "",
+                "backfillStarts": service.worldMapLocationBackfillStartCalls.count,
+                "rate": model.videoViewingSession.player.rate, "state": String(describing: model.videoViewingSession.state)])
+            try JSONSerialization.data(withJSONObject: ["samples": samples, "mapQueries": service.mapFixtureObservations])
+                .write(to: evidence.appendingPathComponent("map-observations.json"), options: .atomic)
+            try await Task.sleep(for: .milliseconds(200))
+        }
+        XCTAssertTrue(FileManager.default.fileExists(atPath: finish.path))
+        for scope in [WorldMapMediaScope.photos, .videos, .all] {
+            XCTAssertTrue(service.mapFixtureObservations.contains { $0["scope"] == scope.rawValue && $0["kind"] == "snapshot" })
+        }
+        XCTAssertTrue(samples.contains { ($0["rate"] as? Float ?? 0) > 0 && $0["playerAsset"] as? String == video.assetID.uuidString
+            && $0["galleryScope"] as? String == "" }, "Playback must occur in the map preview")
+        XCTAssertEqual(service.worldMapLocationBackfillStartCalls, [fixture.sourceID])
+        XCTAssertEqual(samples.first?["backfillStarts"] as? Int, 0)
+        XCTAssertTrue(samples.contains { $0["galleryScope"] as? String == "videos" && $0["items"] as? [String] == [video.assetID.uuidString] })
+        XCTAssertTrue(samples.contains { $0["galleryScope"] as? String == "all" && Set($0["items"] as? [String] ?? []) == Set([photo.assetID.uuidString, video.assetID.uuidString]) })
+        XCTAssertNil(model.videoViewingSession.player.currentItem, "Closing the map preview must release playback")
+        let map = GRDBWorldMapCatalogRepository(database: fixture.database)
+        let all = try map.fetchSnapshot(query: .init(bounds: nil, mediaScope: .all))
+        XCTAssertEqual(all.locatedPhotoCount, 2)
+        XCTAssertEqual(all.unlocatedPhotoCount, 1)
+        XCTAssertNil(try catalog.fetchInspectorDetail(assetID: missing.assetID).mediaCreatedAtMs)
+        try JSONSerialization.data(withJSONObject: ["videoID": video.assetID.uuidString, "photoID": photo.assetID.uuidString,
+            "unlocatedID": missing.assetID.uuidString, "located": all.locatedPhotoCount, "unlocated": all.unlocatedPhotoCount])
+            .write(to: evidence.appendingPathComponent("map-result.json"))
+    }
+
     func testInteractiveVideoGalleryWhenRequested() async throws {
         guard let path = ProcessInfo.processInfo.environment["IMAGEALL_INTERACTIVE_GALLERY_EVIDENCE"] else {
             throw XCTSkip("Explicit synthetic gallery verification only")
@@ -17729,6 +17805,27 @@ private final class RecordingContextualTagFeedPort: ContextualTagFeedPort, @unch
 }
 
 final class FakeLibraryWorkspaceService: LibraryWorkspacePort, @unchecked Sendable {
+    // Set before starting the synthetic UI; only this fixture delegates to real catalog queries.
+    var mapFixtureDatabase: CatalogDatabase?
+    private var storedMapFixtureObservations: [[String: String]] = []
+    var mapFixtureObservations: [[String: String]] { lock.withLock { storedMapFixtureObservations } }
+
+    func fetchWorldMapSnapshot(query: WorldMapCatalogQuery) throws -> WorldMapCatalogSnapshot {
+        guard let database = mapFixtureDatabase else { return .empty }
+        let snapshot = try GRDBWorldMapCatalogRepository(database: database).fetchSnapshot(query: query)
+        lock.withLock { storedMapFixtureObservations.append(["kind": "snapshot", "scope": query.effectiveMediaScope.rawValue,
+            "located": String(snapshot.locatedPhotoCount), "unlocated": String(snapshot.unlocatedPhotoCount)]) }
+        return snapshot
+    }
+
+    func fetchWorldMapSelection(query: WorldMapCatalogSelectionQuery) throws -> WorldMapCatalogSelection {
+        guard let database = mapFixtureDatabase else { return .empty }
+        let selection = try GRDBWorldMapCatalogRepository(database: database).fetchSelection(query: query)
+        lock.withLock { storedMapFixtureObservations.append(["kind": "selection", "scope": query.effectiveMediaScope.rawValue,
+            "count": String(selection.totalPhotoCount)]) }
+        return selection
+    }
+
     private let lock = NSLock()
     private let connectedSource: LibrarySourceSummary
     private let reconciledItems: [AssetGridItemProjection]
@@ -18517,6 +18614,9 @@ final class FakeLibraryWorkspaceService: LibraryWorkspacePort, @unchecked Sendab
 
     func fetchWorldMapLocationBackfillSnapshots(mediaScope: WorldMapMediaScope) throws -> [WorldMapLocationBackfillSnapshot] {
         XCTAssertEqual(mediaScope, .all)
+        if let database = mapFixtureDatabase {
+            return try GRDBWorldMapLocationBackfillRepository(database: database).fetchSnapshots(mediaScope: mediaScope)
+        }
         return []
     }
 
@@ -18606,6 +18706,11 @@ final class FakeLibraryWorkspaceService: LibraryWorkspacePort, @unchecked Sendab
         sort: AssetPageSort,
         cursor: AssetPageCursor?
     ) throws -> AssetPageResult {
+        if let database = mapFixtureDatabase {
+            lock.withLock { storedLastFilter = filter; storedLastSort = sort }
+            return try GRDBAssetCatalogQueryRepository(database: database).fetchAssetPage(
+                .init(filter: filter, sort: sort, cursor: cursor, limit: 50))
+        }
         if let blockedSearchText, filter.searchText == blockedSearchText {
             lock.withLock { storedHasStartedBlockedAssetPageFetch = true }
             assetPageFetchGate.wait()
@@ -18940,6 +19045,9 @@ final class FakeLibraryWorkspaceService: LibraryWorkspacePort, @unchecked Sendab
     }
 
     func fetchInspectorDetail(assetID: UUID) throws -> AssetInspectorDetail {
+        if let database = mapFixtureDatabase {
+            return try GRDBAssetCatalogQueryRepository(database: database).fetchInspectorDetail(assetID: assetID)
+        }
         let shouldBlock = lock.withLock { () -> Bool in
             storedInspectorDetailFetchCallCount += 1
             guard remainingBlockedInspectorDetailFetches > 0 else { return false }

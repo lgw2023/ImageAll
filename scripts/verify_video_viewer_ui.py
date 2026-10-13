@@ -27,7 +27,10 @@ def main():
     parser.add_argument('--analysis', action='store_true', help='With --gallery: analyze current video, reuse or rebuild frames, click a timestamp, then finish')
     parser.add_argument('--candidates', action='store_true', help='With --gallery --analysis: analyze both videos and compare content candidates')
     parser.add_argument('--review-evidence', action='store_true', help='Operate frozen evidence produced by the real synthetic training/review chain')
+    parser.add_argument('--map', action='store_true', help='Operate the real map with a synthetic database: three media scopes, video preview and gallery navigation')
     args = parser.parse_args()
+    if args.map and any((args.gallery, args.review, args.analysis, args.candidates, args.review_evidence, args.story_clip, args.story_workspace, args.with_audio, args.require_focus)):
+        parser.error('--map is a standalone mode')
     if args.review_evidence and (args.gallery or args.story_clip or args.story_workspace or args.with_audio or args.require_focus):
         parser.error('--review-evidence is a standalone mode')
     if args.candidates and not args.analysis:
@@ -68,6 +71,8 @@ def main():
         'CFBundleExecutable': executable.name, 'CFBundleName': 'VideoUITestRunner',
         'CFBundlePackageType': 'APPL', 'CFBundleVersion': '1', 'NSHighResolutionCapable': True,
     }))
+    if args.map:
+        shutil.copytree(host / 'Resources/WorldMap', app / 'Contents/Resources/WorldMap')
     subprocess.run(['/usr/bin/codesign', '--force', '--sign', '-', str(app)], check=True)
     temporary = evidence / 'tmp'
     temporary.mkdir()
@@ -107,6 +112,10 @@ def main():
         environment.pop('IMAGEALL_INTERACTIVE_VIDEO_EVIDENCE', None)
         environment['IMAGEALL_INTERACTIVE_REVIEW_EVIDENCE'] = str(evidence)
         selector = 'ImageAllTests.IdenticalDuplicateDetectionTests/testRealVideoFeaturesTrainPredictAndResolveFrozenReviewEvidence'
+    if args.map:
+        environment.pop('IMAGEALL_INTERACTIVE_VIDEO_EVIDENCE', None)
+        environment['IMAGEALL_INTERACTIVE_MAP_EVIDENCE'] = str(evidence)
+        selector = 'ImageAllTests.LibraryWorkspaceModelTests/testInteractiveVideoMapWhenRequested'
     completion = 'Click Use Clip after entering the requested range and gain' if args.story_clip else f'Finish marker: {evidence / "finish"}'
     print(f'Synthetic viewer: {app}\n{completion}', flush=True)
     with (evidence / 'tests.log').open('w') as log:

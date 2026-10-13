@@ -1608,6 +1608,7 @@ private struct WorldMapPhotoCard: View {
                 WorldMapPhotoThumbnail(asset: asset, model: model)
             }
             .buttonStyle(.plain)
+            .accessibilityLabel("打开\(asset.mediaKind == .video ? "视频" : "照片")：\(asset.fileName ?? "未命名媒体")")
             MediaFavoriteButton(
                 state: model.favoriteState(for: asset.assetID),
                 isVisible: isHovered
@@ -1620,8 +1621,8 @@ private struct WorldMapPhotoCard: View {
         .task(id: asset.assetID) {
             await model.ensureFavoriteStatesLoaded(assetIDs: [asset.assetID])
         }
-        .help(asset.fileName ?? "打开照片预览")
-        .accessibilityLabel(asset.fileName ?? "打开照片预览")
+        .help(asset.fileName ?? "打开媒体预览")
+        .accessibilityElement(children: .contain)
     }
 }
 

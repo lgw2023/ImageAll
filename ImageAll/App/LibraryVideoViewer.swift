@@ -393,6 +393,9 @@ struct LibraryVideoViewer: View {
                 }
             }
             HStack {
+                Button("播放／暂停", systemImage: "playpause.fill") { session.togglePlayback() }
+                    .disabled(session.identity != identity || session.state != .ready)
+                    .accessibilityIdentifier("libraryVideoTogglePlayback")
                 Picker("播放速度", selection: Binding(get: { session.speed }, set: { session.setSpeed($0) })) {
                     Text("0.5×").tag(Float(0.5))
                     Text("1×").tag(Float(1))

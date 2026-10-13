@@ -12644,7 +12644,7 @@ extension LibraryWorkspaceModel {
 #endif
 }
 
-private enum LibrarySidebarSelection: Hashable {
+enum LibrarySidebarSelection: Hashable {
     case galleryOverview
     case worldMap
     case worldMapGallery
@@ -13458,6 +13458,13 @@ struct LibraryWorkspaceView: View {
 
     @ObservedObject var model: LibraryWorkspaceModel
     var loadsSharedPhoneProjections = true
+
+    init(model: LibraryWorkspaceModel, loadsSharedPhoneProjections: Bool = true,
+         initialSelection: LibrarySidebarSelection? = nil) {
+        self.model = model
+        self.loadsSharedPhoneProjections = loadsSharedPhoneProjections
+        if let initialSelection { _selection = State(initialValue: initialSelection) }
+    }
     @State private var selection: LibrarySidebarSelection? = .all
     @State private var sharedPhoneProjections: [RemoteLocalLibrarySyncStore.Projection] = []
     @State private var sharedPhoneDeviceNames: [UUID: String] = [:]
@@ -15863,7 +15870,7 @@ struct LibraryWorkspaceView: View {
             }
             .buttonStyle(.borderedProminent)
             .tint(Color(red: 0.590, green: 0.690, blue: 0.625))
-            .persistentHelp("回到原来的地图镜头和已选照片塔。")
+            .persistentHelp("回到原来的地图镜头和媒体范围。")
             Button("离开地点范围") {
                 worldMapGalleryScope = nil
                 selection = .all
@@ -16293,7 +16300,8 @@ struct LibraryWorkspaceView: View {
                         .allowsHitTesting(false)
                     }
                 }
-                .accessibilityLabel("\(model.selectedMediaKind.displayName)网格")
+                .accessibilityLabel(model.worldMapGalleryScope?.selectionQuery.effectiveMediaScope == .all
+                    ? "照片与视频网格" : "\(model.selectedMediaKind.displayName)网格")
                 .onAppear {
                     updateGridMetrics(containerSize: proxy.size)
                     contentFocused = true
