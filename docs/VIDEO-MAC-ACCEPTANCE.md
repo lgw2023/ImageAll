@@ -100,3 +100,13 @@ fake云端专项使用`--cloud`：首次点击获取后取消确认，再次确�
 缺模型专项使用`--metadata --models`：显示检查器，选IMG_0002点“个人标签”，应说明没有样本匹配模型；选IMG_0003点“标准场景”，应说明本地服务不可用且人工标签不受影响，再创建finish。断言没有推理调用、没有标签修改，`models-ui-1`已通过。
 
 批量审核专项使用`--gallery --review --batch-review`：显式从视频审核队列开始，点“全选已加载”→“属于”→“撤销”，再创建finish；要求两个视频在同一次变更中接受并恢复为unknown，队列恢复两项。临时fake端口只验证控件到事务调用，持久性引用真实DB审核/撤销测试。
+
+## 2026-10-14 当前最短剩余复跑
+
+代码候选为`33e900ec`，纯提交产品在`/Volumes/SSD1/.codex-builds/video-completion-20261014/committed-mac/Products`。该产品已通过71项回归和同产物批量审核，不需要重新跑未变化的整套图库/多帧/故事UI。
+
+1. 用同一包装器、上述products及全新的evidence目录启动`--slimming`，按前文完成整页可恢复回收/恢复。工具若仍报告SkyComputerUseService native pipe closed，保留FAIL，需工具修复或人工实际操作；不要改用永久清理。
+2. 新目录启动`--external`，由人实际将合成App切回前台后创建finish，确认测试通过。外部播放器只使用该目录的`synthetic-current-video.mp4`。
+3. 在正常开发签名环境用Xcode打开`/Volumes/SSD1/ImageAll/ImageAll.xcodeproj`构建；当前默认签名曾报errSecInternalComponent。不得把ad hoc测试产物当作开发签名或发布安装已完成。
+
+完成两条UI及默认构建后再更新矩阵/目标。真实数据、真实iCloud、付费模型与发布安装继续单列NOT_RUN。

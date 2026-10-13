@@ -10,8 +10,8 @@
 - 指定 `/var/folders/.../imageall-mac-video-handoff-20261013-ht5xaiqu/MAC-VIDEO-COMPLETION-NEXT-SESSION.md` 已不存在，限定临时目录及 Codex 目录搜索未找到副本。本轮以用户 2026-10-14 的完整交接消息及仓库记录恢复；不声称读取了缺失文件。
 - 历史基线 `ac6ab717` 完整构建及 58/58 回归 PASS；之后图库、审核、多帧、冻结证据和混合故事实际 UI 各自 PASS，不能相加为当前版本统一验收。
 - 已完成本地提交 `ce4a7525`（地图/播放入口）与 `19a57034`（元数据/推流审核）。地图三范围、播放与地点图库、缺失元数据、筛选排序及推流确认/撤销/忽略均有本轮分片通过证据。fake 云端确认/取消/重试/播放也已通过；尚不代表同一最终版本。
-- 当前剩余：瘦身确认/回收恢复整页路线、外部打开已到 QuickTime 播放，真实前台返回仍待验。瘦身已实际播放/切换，但确认弹窗触发 UI 工具服务崩溃，保留失败记录。最后执行最终源码构建与定向回归、准确矩阵和本地提交。
-- P5 与 P6 已通过且不受修改影响的路线仅做最终版本关联核对，不重复建设。真实资料、iCloud、付费模型、发布安装保持 NOT_RUN。
+- 当前剩余：瘦身确认/回收恢复整页路线、外部播放器返回真实前台后暂停，以及默认开发签名构建。纯提交 `33e900ec` 已完成 ad hoc Xcode构建、71/71回归及同产物批量审核UI；瘦身确认触发CUA服务崩溃，真实前台返回未观察到，默认签名报errSecInternalComponent，均未算通过。
+- P5 与 P6 已通过且不受修改影响的路线已由33e900ec的对应回归完成源码版本关联，不重复建设。真实资料、iCloud、付费模型、发布安装保持 NOT_RUN。
 
 ## 当前有效范围调整（2026-09-28）
 
@@ -38,15 +38,15 @@
 | 阶段 | 工程状态 | 已有证据与剩余 |
 |---|---|---|
 | P0 | VERIFIED（静态） | 2026-10-14 有界核查完成，主分支与旧验证树差异已保存；不代表当前功能验收 |
-| P1 | IN_PROGRESS | 共用播放器/图库整理/审核实际 UI 已分轮通过；普通外部播放、瘦身整页与部分生命周期待收口 |
-| P2 | IN_PROGRESS | 时间/GPS/技术信息、补读、查询/地图及云状态已有实现与合成证据；本轮地图操作、详情缺失/筛选排序、回填入口和fake云端操作已分片通过，最终版本待绑定 |
-| P3 | IN_PROGRESS | 视频域训练/建议/审核/持久人工事实与撤销已分层通过；智能推流、批量审核及缺模型UI已分片通过，最终版本待绑定 |
+| P1 | IN_PROGRESS | 共用播放器/图库整理/审核实际 UI 已分轮通过；外部打开与QuickTime播放已验；瘦身确认/恢复整页和真实前台返回受工具限制，待收口 |
+| P2 | VERIFIED（合成） | 时间/GPS/技术信息、补读、查询/地图及云状态已有实现与合成证据；本轮地图操作、详情缺失/筛选排序、回填入口和fake云端操作已分片通过，已纳入33e900ec定向回归 |
+| P3 | VERIFIED（分层合成） | 视频域训练/建议/审核/持久人工事实与撤销已分层通过；智能推流、批量审核及缺模型UI已分片通过，33e900ec同产物批量UI及回归通过 |
 | P4 | VERIFIED（最小合成） | 完整字节证据、分组、保护及合成回收恢复通过；完整 UI 比较路线待补 |
-| P5 | IMPLEMENTED | 实际多帧/内容候选/冻结审核证据及时间跳转 UI 已通过；最终版本关联待核对 |
-| P6 | IMPLEMENTED | 混合选材/片段/原声/调序/保存重开/实际导出/QuickTime 已通过；最终版本关联待核对 |
-| P7 | IN_PROGRESS | ac6ab717 的构建及 58/58 回归为历史基线；当前最终版本和全部 Mac 必需条款尚未验收 |
+| P5 | VERIFIED（合成工程） | 实际多帧/内容候选/冻结审核证据及时间跳转 UI 已通过；33e900ec对应回归通过 |
+| P6 | VERIFIED（合成工程） | 混合选材/片段/原声/调序/保存重开/实际导出/QuickTime 已通过；33e900ec对应回归通过；不含发布安装 |
+| P7 | IN_PROGRESS | 33e900ec纯提交ad hoc构建及71/71回归通过；两条实际UI与默认开发签名仍未通过，未达到目标完成 |
 
-下一动作：补齐顶部剩余操作，再做最终版本验证。下方逐次记录保持原貌，其“下一步”仅代表当次历史状态。
+下一动作：在CUA服务恢复或人工操作条件下完成两条剩余UI；解决默认签名环境后重跑正常Xcode构建。已通过的33e900ec回归不重复铺开。下方逐次记录保持原貌，其“下一步”仅代表当次历史状态。
 
 ## 历史启动能力矩阵（已过时，仅保留审计；现状见顶部与完成矩阵）
 
@@ -963,3 +963,15 @@
 - `remaining-mac-regression.log` **12/12 PASS**：完整原件/代表帧与混合组隔离、favorite/Photos编辑保护、真实合成文件回收恢复、计划变化拒绝、预览边界、云端修订及取消重试、缺模型门禁与批量审核撤销。选择清单在`remaining-mac-regression-selection.json`。该回归产品对应`batch-foreground-build.log`；后续审核按钮变更由`batch-selection-build.log`及batch-review-ui-3覆盖。
 - 当前源与batch-review-ui-3产物SHA记录为`remaining-ui-source-artifact-sha256.json`，完整未提交差异保存在同目录；仍不是纯HEAD最终验收。
 - 瘦身确认弹窗在`slimming-ui-4`仍触发CUA原生服务Array.remove崩溃。外部播放器路线在`external-ui-3`仍未记录真实前台恢复；尝试的测试宿主激活按钮无效，已从最终测试源移除，保留失败日志。两个实际运行缺口保持未通过，目标active。
+
+## 2026-10-14 纯提交工程验证与最终剩余项
+
+- 本轮本地代码提交：`ce4a7525`地图，`19a57034`元数据/推流，`33e900ec195dab67e3cfa2efbe064ebba22e2dd0`瘦身播放/批量入口与合成验证。无push。
+- 新的隔离验证树：`/Volumes/SSD1/.codex/worktrees/video-mac-final-verification/ImageAll`，detached于33e900ec；tracked源码无变化。仅新增指向只读Runtime种子的依赖链接，不使用旧脏验证树。当前用户提供的AGENTS优先于该提交内旧的App替换表述；没有替换日常App。
+- `committed-mac-build.log`：默认开发签名FAIL，`libXCTestSwiftSupport.dylib` / `libXCTestBundleInject.dylib`报告`errSecInternalComponent`。没有修改钥匙串、签名配置或项目文件。
+- `committed-mac-adhoc-build.log`：相同Xcode项目/源码，仅命令行`CODE_SIGN_IDENTITY=- CODE_SIGN_ENTITLEMENTS=`覆盖，**TEST BUILD SUCCEEDED**。此产物仅用于合成验证，不是发布安装证据。
+- `committed-mac-tests.log`：**71/71 PASS，0失败、0跳过**，选择清单`committed-mac-tests-selection.json`，覆盖原58项基线及本轮必要回归；直接XCTest bundle，不启动生产Photos宿主。
+- `committed-batch-ui/tests.log`：同产物实际“全选已加载→接受2视频→撤销”PASS。`committed-slimming-ui`：同产物分析→两项播放→切换PASS，但打开清理确认再次导致SkyComputerUseService崩溃，仅回收事件断言失败；排除了并行源码改动的影响。
+- `committed-mac-verification.json`绑定源码SHA、App dylib SHA、XCTest SHA、测试清单SHA及128个Helper关键文件逐个校验。源码与依赖种子均未被验证修改。
+- **未完成门禁**：①瘦身确认/可恢复回收/恢复实际整页操作；②外部播放器返回真实前台后自动重建且暂停；③默认开发签名构建。前两项不得用业务回归或后台AX动作冒充。当前无待确认的真实媒体写入请求。
+- 真实Photos/受保护媒体、真实iCloud、实体设备、付费模型、安装发布均NOT_RUN；它们不阻止其他工程交付。目标保持active，不标complete。
