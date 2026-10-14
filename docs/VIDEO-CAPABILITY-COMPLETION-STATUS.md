@@ -991,3 +991,10 @@
 - 连续三个目标轮次均遇到相同的两条UI操作缺口及默认开发签名失败；最新HEAD为`cc120021`，未出现新的通过证据，目标转为blocked，完整Mac验收范围不变。
 - 本轮发现Finder原型启动器仍存活；进程采样明确停在首次日志文件open()、尚未exec XCTest，读取界面为AppleEvent超时。仅向本任务精确匹配的临时启动器发送SIGTERM并确认PID消失，没有终止其他App或用户进程。证据为`blocked-audit.json`和`external-finder-1/launch-sample.txt`，不再将无日志等同于无进程。
 - 续接条件：人工或恢复后的工具完成合成瘦身确认/可恢复回收/恢复及真实前后台播放路线；默认开发签名环境恢复后重跑正常构建。现有71/71回归、合成UI记录和失败日志均保留，不以其替代未完成门禁。没有真实数据操作、发布安装或push。
+
+## 2026-10-14 恢复后签名最小复核
+
+- 目标恢复后的正常构建`resumed-normal-build-1.log`仍以65退出，在Helper签名处报`errSecInternalComponent`；未改签名配置。
+- 使用同一Xcode解析出的签名身份签署独立临时C程序（未启动、无OpenMontage依赖），同样失败。`signing-probe-resumed-2/result.json`保存结果：该错误并非只出现在Helper包结构上。
+- 只读Security API查询默认钥匙串成功，状态7；按本机SDK的SecKeychain.h定义为已解锁、可读写。此检查未确定签名私钥的具体访问失败原因，不把默认钥匙串解锁等同于代码签名可用。未修改私钥访问控制、证书、钥匙串或工程配置。
+- 两条真实UI路线没有新增通过证据。恢复后目标保持active，完整验收要求不变。
