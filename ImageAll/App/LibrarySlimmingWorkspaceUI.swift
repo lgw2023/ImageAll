@@ -665,6 +665,7 @@ struct LibrarySlimmingWorkspaceView: View {
             if let report = model.librarySlimmingIdenticalCleanupPostDeleteReport {
                 LibrarySlimmingIdenticalCleanupVerificationSheet(
                     report: report,
+                    mediaKind: model.selectedMediaKind,
                     onDismiss: {
                         model.dismissLibrarySlimmingIdenticalCleanupPostDeleteReport()
                     }
@@ -3657,6 +3658,8 @@ private struct CleanupMetricCard: View {
 
 private struct LibrarySlimmingIdenticalCleanupVerificationSheet: View {
     let report: LibrarySlimmingIdenticalCleanupPostDeleteReport
+    let mediaKind: MediaKind
+    private var countUnit: String { mediaKind == .video ? "段" : "张" }
     let onDismiss: () -> Void
     @Environment(\.dismiss) private var dismiss
 
@@ -3731,8 +3734,8 @@ private struct LibrarySlimmingIdenticalCleanupVerificationSheet: View {
                 Text("组重复媒体已完成去重")
                     .font(.title3.weight(.medium))
                 Text(
-                    "目标是保留全部红心资产；没有红心时每组保留 1 张，"
-                        + "共 \(verification.targetRetainedAssetCount.formatted()) 张。"
+                    "目标是保留全部红心资产；没有红心时每组保留 1 \(countUnit)，"
+                        + "共 \(verification.targetRetainedAssetCount.formatted()) \(countUnit)。"
                 )
                     .font(.caption)
                     .foregroundStyle(.secondary)
@@ -3769,8 +3772,8 @@ private struct LibrarySlimmingIdenticalCleanupVerificationSheet: View {
 
             if verification.isComplete {
                 Label(
-                    "核验完成：实际读取 \(verification.observedAssetCount.formatted()) 张，"
-                        + "确认已清理 \(verification.recycledRedundantAssetCount.formatted()) 张；"
+                    "核验完成：实际读取 \(verification.observedAssetCount.formatted()) \(countUnit)，"
+                        + "确认已清理 \(verification.recycledRedundantAssetCount.formatted()) \(countUnit)；"
                         + "处理范围内没有仍处于可用状态的计划删除项。",
                     systemImage: "checkmark.circle.fill"
                 )
@@ -3782,11 +3785,11 @@ private struct LibrarySlimmingIdenticalCleanupVerificationSheet: View {
                         .font(.callout.weight(.semibold))
                         .foregroundStyle(.orange)
                     Text(
-                        "本次实际读取 \(verification.observedAssetCount.formatted()) 张；"
-                            + "确认已清理 \(verification.recycledRedundantAssetCount.formatted()) 张；"
-                            + "当前实际可用 \(verification.currentAvailableAssetCount.formatted()) 张；"
+                        "本次实际读取 \(verification.observedAssetCount.formatted()) \(countUnit)；"
+                            + "确认已清理 \(verification.recycledRedundantAssetCount.formatted()) \(countUnit)；"
+                            + "当前实际可用 \(verification.currentAvailableAssetCount.formatted()) \(countUnit)；"
                             + "其中仍可用的冗余媒体 \(verification.remainingRedundantAssetCount.formatted()) 个；"
-                            + "状态无法确认 \(verification.unresolvedAssetCount.formatted()) 张。"
+                            + "状态无法确认 \(verification.unresolvedAssetCount.formatted()) \(countUnit)。"
                     )
                     .font(.callout)
                     .foregroundStyle(.secondary)

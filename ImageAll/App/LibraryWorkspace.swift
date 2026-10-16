@@ -3865,6 +3865,7 @@ final class LibraryWorkspaceModel: ObservableObject {
         recycle: any LibrarySlimmingRecyclePort,
         removalMode: LibrarySlimmingRemovalMode
     ) async {
+        let countUnit = selectedMediaKind == .video ? "段" : "张"
         do {
             let verification = try await Self.offMain {
                 try recycle.verifyIdenticalCleanup(plan: plan)
@@ -3873,17 +3874,17 @@ final class LibraryWorkspaceModel: ObservableObject {
             var parts = [
                 "已完成去重 \(verification.verifiedGroupCount)/\(verification.targetGroupCount) 组",
                 removalMode == .releaseSourceSpace
-                    ? "已从活动图库永久移除 \(verification.recycledRedundantAssetCount) 张"
-                    : "已移入回收站 \(verification.recycledRedundantAssetCount) 张",
+                    ? "已从活动图库永久移除 \(verification.recycledRedundantAssetCount) \(countUnit)"
+                    : "已移入回收站 \(verification.recycledRedundantAssetCount) \(countUnit)",
             ]
             if verification.unresolvedGroupCount > 0 {
                 parts.append("尚未完成 \(verification.unresolvedGroupCount) 组")
             }
             if verification.remainingRedundantAssetCount > 0 {
-                parts.append("仍有冗余 \(verification.remainingRedundantAssetCount) 张")
+                parts.append("仍有冗余 \(verification.remainingRedundantAssetCount) \(countUnit)")
             }
             if verification.unresolvedAssetCount > 0 {
-                parts.append("状态待确认 \(verification.unresolvedAssetCount) 张")
+                parts.append("状态待确认 \(verification.unresolvedAssetCount) \(countUnit)")
             }
             let message = parts.joined(separator: " · ")
             librarySlimmingStatusMessage = message

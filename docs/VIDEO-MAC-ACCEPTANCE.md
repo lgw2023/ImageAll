@@ -101,7 +101,7 @@ fake云端专项使用`--cloud`：首次点击获取后取消确认，再次确�
 
 批量审核专项使用`--gallery --review --batch-review`：显式从视频审核队列开始，点“全选已加载”→“属于”→“撤销”，再创建finish；要求两个视频在同一次变更中接受并恢复为unknown，队列恢复两项。临时fake端口只验证控件到事务调用，持久性引用真实DB审核/撤销测试。
 
-## 2026-10-14 当前最短剩余复跑
+## 2026-10-14 历史最短剩余复跑（2026-10-16 已完成）
 
 代码候选为`33e900ec`，纯提交产品在`/Volumes/SSD1/.codex-builds/video-completion-20261014/committed-mac/Products`。该产品已通过71项回归和同产物批量审核，不需要重新跑未变化的整套图库/多帧/故事UI。
 
@@ -110,3 +110,19 @@ fake云端专项使用`--cloud`：首次点击获取后取消确认，再次确�
 3. 在正常开发签名环境用Xcode打开`/Volumes/SSD1/ImageAll/ImageAll.xcodeproj`构建；当前默认签名的build-for-testing及正常build均报errSecInternalComponent。不得把ad hoc测试产物当作开发签名或发布安装已完成。
 
 完成两条UI及默认构建后再更新矩阵/目标。真实数据、真实iCloud、付费模型与发布安装继续单列NOT_RUN。
+
+## 2026-10-16 验收完成与原生宿主复跑
+
+本轮[验收报告](VIDEO-MAC-ACCEPTANCE-RESULT-20261016.md)记录当前项目正常签名构建、最终71/71回归、真实焦点外部播放及合成瘦身回收恢复的通过证据。此前三项剩余门禁已关闭；以上历史失败与路径说明保留。最终回收数量文案已改为视频“段”、照片“张”。
+
+直接XCTest窗口需要分发真实AppKit事件，才能处理人工鼠标与焦点。原生准备脚本会把测试bundle、App dylib、package frameworks和合成视频复制到唯一内部临时目录，不执行生产入口、不启动测试。示例：
+
+```sh
+python3 scripts/prepare_native_video_acceptance.py external \
+  --products /Volumes/SSD1/.codex-builds/video-completion-20261016/mac/Products \
+  --source /Volumes/SSD1/ImageAll
+```
+
+用CUA或人工打开输出的app路径；先实际在其前台播放，再打开系统播放器并实际返回前台保持暂停。检查采样包含完整序列后创建输出证据根的finish。瘦身使用同命令的slimming模式，按本文前述两项播放/比较、可恢复回收、UI恢复流程操作，再创建finish。确认面板若使CUA服务崩溃，由用户在该合成面板点击“可恢复回收”，工具恢复后继续操作回收站；不改用永久清理。
+
+准备脚本复制指定的本地构建产品与仓库合成素材，所有fixture、数据库和日志在其新建的临时根中。`IMAGEALL_SYNTHETIC_VIDEO_FIXTURE`仅为测试宿主传入内部合成副本；普通包装器继续使用仓库内已有合成素材。

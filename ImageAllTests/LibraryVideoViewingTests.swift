@@ -8,8 +8,21 @@ import SwiftUI
 
 @MainActor
 final class LibraryVideoViewingTests: XCTestCase {
+    static func processPendingAppKitEvents() {
+        // Direct XCTest runs an async run loop rather than NSApplication.run().
+        // Dispatch real queued AppKit events so manual focus and mouse actions
+        // reach this synthetic window; do not synthesize lifecycle notifications.
+        while let event = NSApplication.shared.nextEvent(matching: .any,
+            until: .distantPast, inMode: .default, dequeue: true) {
+            NSApplication.shared.sendEvent(event)
+        }
+    }
+
     private var syntheticVideo: URL {
-        URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+        if let path = ProcessInfo.processInfo.environment["IMAGEALL_SYNTHETIC_VIDEO_FIXTURE"] {
+            return URL(fileURLWithPath: path)
+        }
+        return URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
             .appendingPathComponent("docs/evidence/time-story-phase-1-20260918/synthetic-silent.mp4")
     }
 
@@ -105,9 +118,15 @@ final class LibraryVideoViewingTests: XCTestCase {
         var samples: [[String: Any]] = []
         let finish = evidence.appendingPathComponent("finish"), deadline = Date().addingTimeInterval(600)
         while Date() < deadline, !FileManager.default.fileExists(atPath: finish.path) {
+            Self.processPendingAppKitEvents()
             let session = model.videoViewingSession
             samples.append(["state": String(describing: session.state), "rate": session.player.rate,
                 "hasItem": session.player.currentItem != nil, "active": NSApplication.shared.isActive,
+                "windowKey": window.isKeyWindow,
+                "frontmostPID": NSWorkspace.shared.frontmostApplication?.processIdentifier ?? -1,
+                "processPID": ProcessInfo.processInfo.processIdentifier,
+                "runningActive": NSRunningApplication.current.isActive,
+                "activationPolicy": NSApplication.shared.activationPolicy().rawValue,
                 "progress": session.cloudDownloadProgress ?? -1,
                 "downloads": provider.downloads, "cancellations": provider.cancellations,
                 "externalOpens": opener.openCount])

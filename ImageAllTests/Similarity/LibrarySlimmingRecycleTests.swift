@@ -17,7 +17,8 @@ final class LibrarySlimmingRecycleTests: XCTestCase {
         let evidence = URL(fileURLWithPath: path, isDirectory: true)
         let env = try RecycleTestEnv(label: "interactive-video-slimming")
         defer { env.cleanup() }
-        let source = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+        let source = ProcessInfo.processInfo.environment["IMAGEALL_SYNTHETIC_VIDEO_FIXTURE"]
+            .map { URL(fileURLWithPath: $0) } ?? URL(fileURLWithPath: #filePath).deletingLastPathComponent()
             .deletingLastPathComponent().deletingLastPathComponent()
             .appendingPathComponent("docs/evidence/time-story-phase-1-20260918/synthetic-silent.mp4")
         let bytes = try Data(contentsOf: source)
@@ -60,6 +61,7 @@ final class LibrarySlimmingRecycleTests: XCTestCase {
         var samples: [[String: Any]] = []
         let finish = evidence.appendingPathComponent("finish"), deadline = Date().addingTimeInterval(600)
         while Date() < deadline, !FileManager.default.fileExists(atPath: finish.path) {
+            LibraryVideoViewingTests.processPendingAppKitEvents()
             samples.append(["groups": model.librarySlimmingIdenticalGroupCount,
                 "preview": model.librarySlimmingPreviewAssetID?.uuidString ?? "",
                 "rate": model.videoViewingSession.player.rate,
