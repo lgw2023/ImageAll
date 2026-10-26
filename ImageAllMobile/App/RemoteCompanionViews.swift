@@ -74,13 +74,16 @@ struct RemoteCompanionRootView: View {
             }
             Button("取消", role: .cancel) {}
         } message: {
-            Text("之后需要重新扫码。Mac 的设备列表会保留撤销记录，可在 Mac 设置中移除。")
+            Text("之后可通过 USB 确认 Mac 身份或重新扫码。不会清除手机已选照片和本地整理信息；Mac 的旧设备记录需在 Mac 设置中另行移除。")
         }
     }
 
     private var connectedTabs: some View {
         VStack(spacing: 0) {
             RemoteConnectionHealthBanner(health: model.connectionHealth)
+            if model.usbSelected {
+                USBPhoneConnectionSection(model: model).padding(.horizontal)
+            }
 
             TabView(selection: $selectedTab) {
                 NavigationStack {
@@ -144,6 +147,7 @@ struct RemoteCompanionRootView: View {
 
     private var connectionView: some View {
         Form {
+            Section("USB 有线连接") { USBPhoneConnectionSection(model: model) }
             if let publicBaseURL = model.publicBaseURL {
                 Section("公网 Host") {
                     LabeledContent("入口", value: publicBaseURL)
@@ -4452,5 +4456,61 @@ private func inspectorTagColor(_ decision: RemoteInspectorTagDecision) -> Color 
     case .unknown: .secondary
     case .accepted: .green
     case .rejected: .red
+    }
+}
+
+struct USBPhoneConnectionSection: View {
+    @ObservedObject var model: RemoteCompanionModel
+    @State private var replacementConsent: ImageAllUSBPairingConsent?
+    @State private var isReplacementPresented = false
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Label(model.usbStatus, systemImage: "cable.connector").font(.footnote)
+            if let offer = model.usbPendingOffer {
+                Text("请求连接：\(offer.hostDisplayName)")
+                Text("Mac ID：\(offer.hostID.uuidString)").font(.caption).textSelection(.enabled)
+                Text("证书指纹：\(offer.certificateFingerprintSHA256)")
+                    .font(.caption).textSelection(.enabled)
+                Text("请在 \(Date(timeIntervalSince1970: Double(offer.expiresAtMs) / 1000).formatted(date: .omitted, time: .standard)) 前确认；过期后在 Mac 重新发起连接。")
+                    .font(.caption).foregroundStyle(.secondary)
+                if model.usbPairingConflict != nil {
+                    Text("旧配对 Mac ID：\(model.savedPairingHostID)")
+                        .font(.caption).textSelection(.enabled)
+                    Text("旧配对指纹：\(model.savedPairingFingerprint)")
+                        .font(.caption).textSelection(.enabled)
+                    Text("请与 Mac“设置 → 设备与导入”中的身份核对。重新配对保留已选照片及本地整理信息，旧 Mac 需另行配对才能连接。")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+                HStack {
+                    if model.usbPairingConflict != nil {
+                        Button("重新配对此 Mac…") {
+                            replacementConsent = .init(offer: offer, transportID: model.transportGeneration)
+                            isReplacementPresented = true
+                        }
+                    } else {
+                        Button("确认通过 USB 连接此 Mac") { model.approveUSB() }
+                    }
+                    Button("拒绝") { model.rejectUSB() }
+                }
+            } else if !model.usbSelected {
+                Button("开启 USB 有线连接") { model.enableUSB() }
+            } else {
+                Button("重新等待 USB 连接") { model.enableUSB() }.disabled(model.isConnected)
+                Button("改用网络连接") { model.useNetworkConnection() }
+            }
+            Text("USB 传输需要手机 App 保持前台。首次确认后沿用安全配对；拔线即暂停，已接收进度保留。")
+                .font(.caption).foregroundStyle(.secondary)
+        }
+        // A Form row can activate every automatic-style button in the row.
+        // Each action here must respond only to its own hit target.
+        .buttonStyle(.borderless)
+        .alert("清除旧配对并连接此 Mac？", isPresented: $isReplacementPresented, presenting: replacementConsent) { consent in
+            Button("清除旧配对并连接") {
+                model.replaceUSBPairing(confirming: consent)
+            }
+            Button("取消", role: .cancel) {}
+        } message: { consent in
+            Text("将与 \(consent.offer.hostDisplayName) 建立新配对。请先核对 Mac ID 和证书指纹。此操作只清除本机旧连接凭据，保留已选照片和本地整理信息。")
+        }
     }
 }

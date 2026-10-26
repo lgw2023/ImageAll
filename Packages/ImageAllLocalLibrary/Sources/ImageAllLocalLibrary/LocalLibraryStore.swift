@@ -825,6 +825,37 @@ public actor LocalLibraryStore {
                                    revision: Int64(try requiredIdentity("share_scope_revision")) ?? 0)
     }
 
+    /// Resolve retained identities from local metadata; never query old Photos assets.
+    public func localIdentifiers(for ids: Set<UUID>, expected: LocalShareSelectionVersion) throws -> Set<String> {
+        guard try shareSelectionVersion() == expected else { throw LocalLibraryError.sharePlanExpired }
+        let matched = try rows("SELECT id,local_identifier FROM assets WHERE source_epoch=?", [expected.sourceEpoch.uuidString])
+            .filter { row in row[0].flatMap(UUID.init(uuidString:)).map(ids.contains) ?? false }
+        guard matched.count == ids.count else { throw LocalLibraryError.sharePlanExpired }
+        return Set(matched.compactMap { $0[1] })
+    }
+
+    /// A new migration scope may replace selection, but never discard unsent edits.
+    public func replaceSharedSelection(localIdentifiers: Set<String>, expected: LocalShareSelectionVersion) throws -> Int {
+        try transaction {
+            guard try shareSelectionVersion() == expected, expected.revision < Int64.max,
+                  !localIdentifiers.isEmpty else { throw LocalLibraryError.sharePlanExpired }
+            guard try pendingSharedOperations().isEmpty, try pendingSharedSnapshot() == nil else {
+                throw LocalLibraryError.migrationSyncPending
+            }
+            let matched = try rows("SELECT id,local_identifier FROM assets WHERE source_epoch=?", [expected.sourceEpoch.uuidString])
+                .filter { localIdentifiers.contains($0[1] ?? "") }
+            guard matched.count == localIdentifiers.count else { throw LocalLibraryError.sharePlanExpired }
+            try execute("DELETE FROM shared_assets")
+            for row in matched {
+                let id = row[0] ?? ""
+                try execute("INSERT INTO shared_assets(asset_id) VALUES(?)", [id])
+                try execute("DELETE FROM private_collection_names WHERE collection_id IN (SELECT collection_id FROM memberships WHERE asset_id=?)", [id])
+            }
+            try execute("UPDATE identity SET value=? WHERE key='share_scope_revision'", [String(expected.revision + 1)])
+        }
+        return localIdentifiers.count
+    }
+
     /// Adds exactly a confirmed set in one scope transition; existing selections are retained.
     public func addSharedSelection(localIdentifiers: Set<String>, expected: LocalShareSelectionVersion) throws -> Int {
         var added = 0
@@ -878,10 +909,17 @@ public actor LocalLibraryStore {
             }
     }
 
-    public func validateSharedSnapshotScope(_ snapshot: LocalSharedSnapshot, visibleIdentifiers: Set<String>) throws {
+    /// Constant-size read for a transfer chunk; never enumerates selections or writes facts.
+    public func validateSharedSnapshotIdentity(_ snapshot: LocalSharedSnapshot) throws {
         guard snapshot.installID == (try installID()), snapshot.sourceEpoch == (try sourceEpoch()),
-              snapshot.scopeRevision == Int64(try requiredIdentity("share_scope_revision")),
-              Set(snapshot.assets.map(\.localIdentifier)).isSubset(of: visibleIdentifiers) else {
+              snapshot.scopeRevision == Int64(try requiredIdentity("share_scope_revision")) else {
+            throw LocalLibraryError.syncIdentityChanged
+        }
+    }
+
+    public func validateSharedSnapshotScope(_ snapshot: LocalSharedSnapshot, visibleIdentifiers: Set<String>) throws {
+        try validateSharedSnapshotIdentity(snapshot)
+        guard Set(snapshot.assets.map(\.localIdentifier)).isSubset(of: visibleIdentifiers) else {
             throw LocalLibraryError.syncIdentityChanged
         }
     }

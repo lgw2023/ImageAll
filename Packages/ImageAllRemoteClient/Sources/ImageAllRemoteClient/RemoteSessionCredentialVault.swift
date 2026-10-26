@@ -49,6 +49,14 @@ public struct RemoteSessionCredentialVault {
         self.secureStore = secureStore
     }
 
+    #if DEBUG
+    /// Explicit synthetic fixture for UI acceptance in an isolated Simulator.
+    /// Production initialization always uses the Keychain initializer above.
+    public static func syntheticInMemory() -> Self {
+        Self(secureStore: SyntheticRemoteCredentialStore())
+    }
+    #endif
+
     public func loadRefreshToken() throws -> String? {
         guard let data = try secureStore.load() else { return nil }
         guard let refreshToken = String(data: data, encoding: .utf8) else {
@@ -94,6 +102,15 @@ public struct RemoteSessionCredentialVault {
         }
     }
 }
+
+#if DEBUG
+private final class SyntheticRemoteCredentialStore: RemoteSecureCredentialStoring {
+    private var value: Data?
+    func load() throws -> Data? { value }
+    func save(_ data: Data) throws { value = data }
+    func delete() throws { value = nil }
+}
+#endif
 
 private final class RemoteKeychainCredentialStore: RemoteSecureCredentialStoring {
     private enum Operation: String {

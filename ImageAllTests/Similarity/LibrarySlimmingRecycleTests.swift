@@ -45,7 +45,7 @@ final class LibrarySlimmingRecycleTests: XCTestCase {
             videoPlaybackProvider: SlimmingSyntheticVideoProvider(urls: [favorite.assetID: favorite.fileURL, copy.assetID: copy.fileURL]), idlePrewarmInstallEventMonitor: false)
         await model.start()
         await model.setMediaKind(.video)
-        let host = NSHostingView(rootView: LibraryWorkspaceView(model: model, loadsSharedPhoneProjections: false,
+        let host = NSHostingView(rootView: LibraryWorkspaceView(model: model,
             initialSelection: .librarySlimming).environmentObject(ToolbarDisplayModeSettingsModel())
             .frame(width: 1400, height: 900))
         let window = NSWindow(contentRect: NSRect(x: 50, y: 50, width: 1400, height: 900),

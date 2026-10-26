@@ -64,6 +64,7 @@ actor RemoteCatalogFacade {
     func capabilities(
         supportsLocalLibrarySnapshot: Bool = false,
         supportsMigrationTransfer: Bool = false,
+        supportsMigrationHandoff: Bool = false,
         supportsRevisionedVideoRanges: Bool = false
     ) -> RemoteCapabilities {
         RemoteCapabilities(
@@ -93,7 +94,8 @@ actor RemoteCatalogFacade {
             videoQueryVersion: 1,
             worldMapMediaScopeVersion: 1,
             worldMapBackfillMediaScopeVersion: 1,
-            migrationAlbumCatalogVersion: supportsMigrationTransfer ? 1 : nil
+            migrationAlbumCatalogVersion: supportsMigrationTransfer ? 1 : nil,
+            migrationHandoffVersion: supportsMigrationHandoff ? 1 : nil
         )
     }
 

@@ -1,9 +1,60 @@
 import CoreGraphics
+import ImageIO
 import UniformTypeIdentifiers
 import XCTest
 @testable import ImageAll
 
 final class MediaDecodeCascadeTests: XCTestCase {
+    func testCameraRAWPrefersEmbeddedPreviewAndPreservesOrientation() throws {
+        struct Preview: LibRawPreviewDecoding {
+            let jpeg: Data
+            func probe(path: String) -> (width: Int, height: Int)? { nil }
+            func probe(bytes: Data) -> (width: Int, height: Int)? { nil }
+            func decodeThumbJPEG(path: String) -> Data? { jpeg }
+            func decodeThumbJPEG(bytes: Data) -> Data? { jpeg }
+        }
+        let context = try XCTUnwrap(CGContext(data: nil, width: 80, height: 40,
+            bitsPerComponent: 8, bytesPerRow: 320, space: CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue))
+        let image = try XCTUnwrap(context.makeImage())
+        func encoded(_ uti: UTType, orientation: Int?) throws -> Data {
+            let data = NSMutableData()
+            let destination = try XCTUnwrap(CGImageDestinationCreateWithData(data, uti.identifier as CFString, 1, nil))
+            var properties: [CFString: Any] = [:]
+            if let orientation { properties[kCGImagePropertyOrientation] = orientation }
+            CGImageDestinationAddImage(destination, image, properties as CFDictionary)
+            XCTAssertTrue(CGImageDestinationFinalize(destination))
+            return data as Data
+        }
+        let rawContainer = try encoded(.tiff, orientation: 6)
+        let jpeg = try encoded(.jpeg, orientation: nil)
+        let cascade = MediaDecodeCascade(libRaw: Preview(jpeg: jpeg))
+        let prepared = try cascade.preparedImageIOSource(sourceBytes: rawContainer,
+            expectedMediaType: ApprovedSourceMediaTypes.fujiRawIdentifier, embeddedRAWOnly: true)
+        XCTAssertEqual(prepared.stage, .libRaw)
+        let result = try DerivedImageRenderer(cascade: cascade).render(sourceBytes: rawContainer,
+            variant: .gridOriginal, expectedMediaType: ApprovedSourceMediaTypes.fujiRawIdentifier)
+        XCTAssertEqual(result.pixelWidth, 40)
+        XCTAssertEqual(result.pixelHeight, 80)
+    }
+
+    func testLargeRawContainerWithoutEmbeddedPreviewDoesNotDecodeFullImage() throws {
+        let bytes: Data = try autoreleasepool {
+            let context = try XCTUnwrap(CGContext(data: nil, width: 4096, height: 3072,
+                bitsPerComponent: 8, bytesPerRow: 4096 * 4, space: CGColorSpaceCreateDeviceRGB(),
+                bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue))
+            let data = NSMutableData()
+            let destination = try XCTUnwrap(CGImageDestinationCreateWithData(data, UTType.tiff.identifier as CFString, 1, nil))
+            CGImageDestinationAddImage(destination, try XCTUnwrap(context.makeImage()), nil)
+            XCTAssertTrue(CGImageDestinationFinalize(destination))
+            return data as Data
+        }
+        XCTAssertThrowsError(try DerivedImageRenderer().render(sourceBytes: bytes,
+            variant: .gridRegular, expectedMediaType: ApprovedSourceMediaTypes.fujiRawIdentifier)) {
+            XCTAssertEqual($0 as? DerivedImageError, .derivedDecodeFailed)
+        }
+    }
+
     func testApprovedTypesIncludeRasterRawAndSupportedVectorImagesButNotPDFDocuments() {
         XCTAssertTrue(ApprovedSourceMediaTypes.contains(ApprovedSourceMediaTypes.fujiRawIdentifier))
         XCTAssertTrue(ApprovedSourceMediaTypes.contains(ApprovedSourceMediaTypes.adobeRawIdentifier))

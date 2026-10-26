@@ -49,6 +49,7 @@ public struct ImageAllMigrationStreamRecord: Codable, Sendable, Equatable {
               receipt.manifestSHA256 == (try Self.manifestSHA256(header: header, items: items)) else {
             throw ImageAllMigrationArchiveError.invalidManifest
         }
+        try header.validateRetainedSelection(mediaIDs: Set(items.map(\.mediaID)))
         let catalog = try ImageAllMigrationArchive.validatedAlbumCatalog(header)
         for item in items {
             try ImageAllMigrationArchive.validateAlbumMemberships(item.appleAlbums ?? [], catalog: catalog)
@@ -120,6 +121,33 @@ public struct ImageAllMigrationStreamRecord: Codable, Sendable, Equatable {
         return record
     }
 
+    /// Enumerates only existing planning metadata. Unlike the export lease,
+    /// this path never creates locks/directories or repairs receiver resources.
+    public static func visitExisting(in parent: URL, visit: (Self) throws -> Void) throws {
+        guard FileManager.default.fileExists(atPath: parent.path) else { return }
+        let values = try parent.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey])
+        guard values.isDirectory == true, values.isSymbolicLink != true else {
+            throw ImageAllMigrationArchiveError.unsafeResourcePath
+        }
+        let roots = try FileManager.default.contentsOfDirectory(at: parent, includingPropertiesForKeys: nil)
+            .filter { $0.lastPathComponent.hasPrefix(".staging-") }
+        guard roots.count <= 256 else { throw ImageAllMigrationArchiveError.invalidManifest }
+        for root in roots.sorted(by: { $0.lastPathComponent < $1.lastPathComponent }) {
+            try Task.checkCancellation()
+            let suffix = root.lastPathComponent.dropFirst(".staging-".count)
+            guard suffix.count == 64, suffix.allSatisfy({ "0123456789abcdef".contains($0) }) else {
+                throw ImageAllMigrationArchiveError.unsafeResourcePath
+            }
+            let value = try root.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey])
+            guard value.isDirectory == true, value.isSymbolicLink != true else {
+                throw ImageAllMigrationArchiveError.unsafeResourcePath
+            }
+            // An unsealed interrupted export has no stream record.
+            guard FileManager.default.fileExists(atPath: root.appendingPathComponent(filename).path) else { continue }
+            try autoreleasepool { try visit(read(in: root)) }
+        }
+    }
+
     private static func validateRootAndManifest(_ root: URL, expected: String) throws {
         let values = try root.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey])
         let manifest = root.appendingPathComponent(ImageAllMigrationArchive.manifestFilename)
@@ -131,7 +159,7 @@ public struct ImageAllMigrationStreamRecord: Codable, Sendable, Equatable {
         let handle = try FileHandle(forReadingFrom: manifest)
         defer { try? handle.close() }
         var digest = SHA256()
-        while let bytes = try handle.read(upToCount: 64 * 1_024), !bytes.isEmpty {
+        while let bytes = try ImageAllMigrationFileIO.read(handle, upToCount: 64 * 1_024), !bytes.isEmpty {
             try Task.checkCancellation()
             digest.update(data: bytes)
         }

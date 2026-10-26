@@ -35,3 +35,7 @@ Vendor/LibRaw/
 Vendor/OpenMontage/Runtime/
 Vendor/OpenMontage/runtime-manifest.json
 Vendor/OpenMontage/runtime-version
+
+# Python bytecode from local tooling
+__pycache__/
+*.py[cod]

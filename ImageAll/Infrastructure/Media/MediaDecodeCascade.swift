@@ -197,9 +197,19 @@ struct MediaDecodeCascade: Sendable {
         sourceBytes: Data,
         expectedMediaType: String?,
         maximumPixelSize: Int = 2_048,
+        embeddedRAWOnly: Bool = false,
         libRawSpy: (any LibRawPreviewDecoding)? = nil
     ) throws -> (source: CGImageSource, type: String, stage: MediaDecodeStage) {
         let rawDecoder = libRawSpy ?? libRaw
+        let expectsRaw = expectedMediaType.map(ApprovedSourceMediaTypes.isCameraRaw) ?? false
+            || looksLikeRawBytes(sourceBytes)
+        // RAW grid/preview rendering must not expand the sensor image. LibRaw's
+        // unpack_thumb extracts the embedded preview without dcraw_process.
+        if embeddedRAWOnly, expectsRaw, let jpeg = rawDecoder.decodeThumbJPEG(bytes: sourceBytes),
+           let source = embeddedPreviewSource(jpeg: jpeg, original: sourceBytes),
+           let type = CGImageSourceGetType(source) as String? {
+            return (source, type, .libRaw)
+        }
         if let source = CGImageSourceCreateWithData(sourceBytes as CFData, nil),
            let type = CGImageSourceGetType(source) as String?
         {
@@ -224,8 +234,9 @@ struct MediaDecodeCascade: Sendable {
             return (source, expectedMediaType, .appKitVector)
         }
 
-        let expectsRaw = expectedMediaType.map(ApprovedSourceMediaTypes.isCameraRaw) ?? false
-            || looksLikeRawBytes(sourceBytes)
+        // Browsing may not materialize full sensor pixels. Other existing
+        // consumers (e.g. versioned perceptual hashing) retain their contract.
+        if embeddedRAWOnly { throw DerivedImageError.derivedDecodeFailed }
         guard expectsRaw else {
             throw DerivedImageError.derivedDecodeFailed
         }
@@ -243,6 +254,25 @@ struct MediaDecodeCascade: Sendable {
             return (source, type, .libRaw)
         }
         throw DerivedImageError.derivedDecodeFailed
+    }
+
+    private func embeddedPreviewSource(jpeg: Data, original: Data) -> CGImageSource? {
+        let options = [kCGImageSourceShouldCache: false] as CFDictionary
+        guard let preview = CGImageSourceCreateWithData(jpeg as CFData, options),
+              CGImageSourceGetType(preview) as String? == UTType.jpeg.identifier else { return nil }
+        let previewProperties = CGImageSourceCopyPropertiesAtIndex(preview, 0, nil) as? [CFString: Any]
+        if previewProperties?[kCGImagePropertyOrientation] != nil { return preview }
+        // Some camera previews omit EXIF orientation. Transfer only that field
+        // from the RAW container without decoding pixels or changing originals.
+        guard let raw = CGImageSourceCreateWithData(original as CFData, options),
+              let properties = CGImageSourceCopyPropertiesAtIndex(raw, 0, nil) as? [CFString: Any],
+              let orientation = properties[kCGImagePropertyOrientation] as? NSNumber,
+              orientation.intValue != 1 else { return preview }
+        let data = NSMutableData()
+        guard let destination = CGImageDestinationCreateWithData(data, UTType.jpeg.identifier as CFString, 1, nil),
+              CGImageDestinationCopyImageSource(destination, preview,
+                  [kCGImageDestinationOrientation: orientation] as CFDictionary, nil) else { return nil }
+        return CGImageSourceCreateWithData(data, options)
     }
 
     private func rasterizedVectorImageSource(

@@ -539,7 +539,7 @@ struct PhotosLibraryConnectionService: Sendable {
         try database.pool.read { db in
             try Row.fetchAll(
                 db,
-                sql: "SELECT id, kind, display_name, state FROM source ORDER BY created_at_ms, id"
+                sql: "SELECT id, kind, display_name, state, EXISTS(SELECT 1 FROM phone_library_source p WHERE p.source_id = source.id) AS phone_import FROM source ORDER BY created_at_ms, id"
             ).compactMap { row in
                 guard let id = UUID(uuidString: row["id"]),
                       let kind = SourceKind(rawValue: row["kind"]),
@@ -549,7 +549,8 @@ struct PhotosLibraryConnectionService: Sendable {
                     id: id,
                     kind: kind,
                     displayName: row["display_name"],
-                    state: state
+                    state: state,
+                    isPhoneImport: row["phone_import"]
                 )
             }
         }

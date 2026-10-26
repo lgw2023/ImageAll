@@ -133,6 +133,7 @@ struct GRDBDerivedImageCacheRepository: Sendable {
                     a.content_revision,
                     a.relative_path,
                     a.file_name,
+                    EXISTS(SELECT 1 FROM phone_library_asset p WHERE p.asset_id = a.id) AS is_phone_archive,
                     a.media_kind,
                     a.media_type,
                     a.duration_ms,
@@ -571,6 +572,7 @@ struct GRDBDerivedImageCacheRepository: Sendable {
                 a.content_revision,
                 a.relative_path,
                 a.file_name,
+                    EXISTS(SELECT 1 FROM phone_library_asset p WHERE p.asset_id = a.id) AS is_phone_archive,
                 a.media_kind,
                 a.media_type,
                 a.duration_ms,
@@ -702,7 +704,9 @@ struct GRDBDerivedImageCacheRepository: Sendable {
             sourceID: UUID(uuidString: row["source_id"])!,
             contentRevision: row["content_revision"],
             relativePath: relativePath,
-            fileName: fileName,
+            // Imported display names are provenance, not archive storage names.
+            // Only manifest-bound assets may resolve the physical leaf this way.
+            fileName: (row["is_phone_archive"] as Bool) ? (RelativePathRules.fileName(from: relativePath) ?? fileName) : fileName,
             mediaKind: MediaKind(rawValue: row["media_kind"]) ?? .image,
             mediaType: row["media_type"],
             durationMs: row["duration_ms"],

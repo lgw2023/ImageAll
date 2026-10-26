@@ -80,6 +80,17 @@ protocol OpenMontageStoryTasking: Sendable {
     func latestTask(projectID: UUID) async throws -> OpenMontageStoryTaskSnapshot?
     func requestCancellation(taskID: String) async throws -> OpenMontageStoryTaskSnapshot
     func verifiedResult(taskID: String) async throws -> OpenMontageVerifiedResult
+    func retryFrozenTask(taskID: String) async throws -> OpenMontageStoryTaskSnapshot
+    func diagnosticReport(taskID: String?) async throws -> Data
+}
+
+extension OpenMontageStoryTasking {
+    func retryFrozenTask(taskID: String) async throws -> OpenMontageStoryTaskSnapshot {
+        throw OpenMontageTaskError.executorIncompatible("此制作组件不支持冻结任务重试。")
+    }
+    func diagnosticReport(taskID: String?) async throws -> Data {
+        throw OpenMontageTaskError.executorIncompatible("此制作组件不支持诊断导出。")
+    }
 }
 
 enum OpenMontageTaskError: LocalizedError, Equatable, Sendable {
@@ -592,6 +603,116 @@ actor FileOpenMontageStoryTaskClient: OpenMontageStoryTasking {
         }
     }
 
+    /// Explicit retry of a confirmed failed/cancelled local render. Never reload source media.
+    func retryFrozenTask(taskID: String) async throws -> OpenMontageStoryTaskSnapshot {
+        try Self.validateTaskID(taskID)
+        return try await withRootAsync { root in
+            // Use a fresh client view: a cached terminal result cannot authorize changed disk state.
+            observed[taskID] = nil
+            let previous = try await readTask(taskID: taskID, root: root)
+            guard previous.phase == .failed || previous.phase == .cancelled else {
+                throw OpenMontageTaskError.protocolViolation("仅已确认失败或取消的本地制作可重试；状态未知时请先检查连接。")
+            }
+            _ = try Self.readCapability(root: root, now: now())
+            guard try !Self.hasUnfinishedPublishedTask(under: root) else { throw OpenMontageTaskError.taskAlreadyActive }
+            let heartbeat = try Self.decode(HeartbeatDocument.self, at: root.appendingPathComponent("executor/heartbeat.json"))
+            guard heartbeat.activeTaskID == nil else { throw OpenMontageTaskError.taskAlreadyActive }
+            let oldRoot = try Self.taskRoot(taskID: taskID, root: root)
+            let source = oldRoot.appendingPathComponent("submission")
+            let task = try Self.decode(TaskDocument.self, at: source.appendingPathComponent("task.json"))
+            let original = try Self.decode(CompletionDocument.self, at: source.appendingPathComponent("complete.json"))
+            guard task.storyPackage.schemaSHA256 == Self.storySchemaSHA256 else {
+                throw OpenMontageTaskError.executorIncompatible("旧任务格式不受当前执行器支持，请从项目重新制作。")
+            }
+            let paths = Set(original.files.map(\.path))
+            guard paths.count == original.files.count, paths == (try Self.submissionRegularFiles(at: source)) else {
+                throw OpenMontageTaskError.protocolViolation("冻结任务的文件清单不一致，不能重试。")
+            }
+            let manifest = original.files.sorted { $0.path < $1.path }.map { "\($0.sha256)  \($0.sizeBytes)  \($0.path)\n" }.joined()
+            guard Self.sha256(Data(manifest.utf8)) == original.manifestSHA256 else {
+                throw OpenMontageTaskError.protocolViolation("冻结任务的清单摘要不一致，不能重试。")
+            }
+            let newID = "imageall-\(UUID().uuidString.lowercased())"
+            let destinationRoot = try Self.taskRoot(taskID: newID, root: root)
+            let destination = destinationRoot.appendingPathComponent("submission")
+            try Self.ensureDirectory(destination, under: root, create: true)
+            var published = false
+            defer { if !published { try? FileManager.default.removeItem(at: destinationRoot) } }
+            for entry in original.files {
+                try Task.checkCancellation()
+                let input = try Self.resolveSafeExistingFile(entry.path, under: source)
+                guard try input.resourceValues(forKeys: [.fileSizeKey]).fileSize == entry.sizeBytes,
+                      try OpenMontageTaskFileValidation.sha256(input) == entry.sha256 else {
+                    throw OpenMontageTaskError.protocolViolation("冻结素材已改变，不能重试。")
+                }
+                if entry.path == "task.json" { continue } // The retry publishes a fresh identity once.
+                let output = destination.appendingPathComponent(entry.path)
+                try Self.ensureDirectory(output.deletingLastPathComponent(), under: destination, create: true)
+                try FileManager.default.copyItem(at: input, to: output)
+                guard try OpenMontageTaskFileValidation.sha256(output) == entry.sha256 else {
+                    throw OpenMontageTaskError.protocolViolation("冻结素材复制校验失败。")
+                }
+            }
+            let timestamp = Self.timestamp(now())
+            let nextTask = TaskDocument(documentType: task.documentType, protocolVersion: task.protocolVersion,
+                taskType: task.taskType, taskID: newID, projectID: task.projectID, projectRevision: task.projectRevision,
+                submittedBy: task.submittedBy, submittedAt: timestamp, storyPackage: task.storyPackage)
+            try Self.atomicWrite(Self.encode(nextTask), to: destination.appendingPathComponent("task.json"))
+            let entries = try original.files.sorted { $0.path < $1.path }.map { entry -> CompletionDocument.FileEntry in
+                let url = try Self.resolveSafeExistingFile(entry.path, under: destination)
+                return .init(path: entry.path, sizeBytes: try url.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0,
+                             sha256: try OpenMontageTaskFileValidation.sha256(url))
+            }
+            let nextManifest = entries.map { "\($0.sha256)  \($0.sizeBytes)  \($0.path)\n" }.joined()
+            let complete = CompletionDocument(documentType: original.documentType, protocolVersion: original.protocolVersion,
+                producer: original.producer, deliveryID: newID, taskID: newID, projectID: original.projectID,
+                projectRevision: original.projectRevision, status: "complete", storyPackage: original.storyPackage,
+                completedAt: timestamp, hashAlgorithm: "sha256", files: entries,
+                manifestSHA256: Self.sha256(Data(nextManifest.utf8)))
+            try Self.atomicWrite(Self.encode(["retryOfTaskID": taskID, "createdAt": timestamp]),
+                                 to: destinationRoot.appendingPathComponent("retry.json"))
+            try Task.checkCancellation()
+            try Self.atomicWrite(Self.encode(complete), to: destination.appendingPathComponent("complete.json"))
+            published = true
+            return try await readTask(taskID: newID, root: root)
+        }
+    }
+
+    func diagnosticReport(taskID: String?) async throws -> Data {
+        if let taskID { try Self.validateTaskID(taskID) }
+        let connection = await capability()
+        var report: [String: String] = ["format": "imageall-openmontage-diagnostic-v1",
+            "generatedAt": Self.timestamp(now()), "connection": connection.state.rawValue,
+            "expectedProtocolSHA256": Self.protocolSchemaSHA256, "expectedStorySHA256": Self.storySchemaSHA256]
+        // Do not copy capability detail or raw errors: upstream validators can include the entire request.
+        if let version = connection.executorVersion, version.count <= 40,
+           version.allSatisfy({ $0.isASCII && ($0.isNumber || $0 == ".") }) { report["executorVersion"] = version }
+        try? withRoot { root in
+            if let observed = try? Self.decode(CapabilityDocument.self, at: root.appendingPathComponent("executor/capabilities.json")),
+               observed.taskProtocolSchemaSHA256.count == 64,
+               observed.taskProtocolSchemaSHA256.allSatisfy({ $0.isHexDigit }) {
+                report["observedProtocolSHA256"] = observed.taskProtocolSchemaSHA256
+            }
+        }
+        if let taskID {
+            report["taskID"] = taskID
+            try withRoot { root in
+                let taskRoot = try Self.taskRoot(taskID: taskID, root: root)
+                if let state = try? Self.decode(StatusDocument.self, at: taskRoot.appendingPathComponent("state/status.json")) {
+                    let allowedStates = ["accepted", "validating", "queued", "running", "cancelling", "succeeded", "failed", "cancelled", "rejected", "interrupted"]
+                    report["taskState"] = allowedStates.contains(state.state) ? state.state : "unknown"
+                    let stages = ["intake", "validation", "preparation", "rendering", "verification", "publication", "terminal"]
+                    report["stage"] = stages.contains(state.stage) ? state.stage : "unknown"
+                    report["eventSequence"] = String(state.eventSequence)
+                    report["terminal"] = String(state.terminal)
+                    if let code = state.error?.code, code.count <= 80,
+                       code.allSatisfy({ $0.isASCII && ($0.isUppercase || $0 == "_") }) { report["errorCode"] = code }
+                } else { report["taskState"] = "unreadable-or-not-yet-accepted" }
+            }
+        }
+        return try Self.encode(report)
+    }
+
     func latestTask(projectID: UUID) async throws -> OpenMontageStoryTaskSnapshot? {
         let expectedProjectID = StoryRenderPackageExporter.packageProjectID(for: projectID)
         return try await withRootAsync { root in
@@ -759,7 +880,10 @@ actor FileOpenMontageStoryTaskClient: OpenMontageStoryTasking {
               status.taskID == taskID,
               status.projectID == story.projectID,
               status.projectRevision == story.projectRevision,
-              status.submissionDigestSHA256 == completion.manifestSHA256,
+              (status.submissionDigestSHA256 == completion.manifestSHA256
+                || (status.state == "rejected" && status.terminal && status.stage == "terminal"
+                    && status.error?.stage == "intake" && status.error?.retryable == false
+                    && status.submissionDigestSHA256 == String(repeating: "0", count: 64))),
               (status.terminal == Self.isTerminalState(status.state))
         else { throw OpenMontageTaskError.protocolViolation("执行器状态身份或终态标记无效。") }
         if let cached = observed[taskID] {
@@ -1164,6 +1288,9 @@ actor FileOpenMontageStoryTaskClient: OpenMontageStoryTasking {
     ) -> String? {
         switch phase {
         case .failed:
+            if errorCode == "COMPLETION_INVALID" {
+                return "执行器拒绝了任务提交记录，尚未开始渲染。请更新本地执行器后重新制作。"
+            }
             if errorCode == "RESULT_VERIFICATION_FAILED" {
                 return "成片未通过执行器检查。请查看本地任务记录；原生制作仍可使用。"
             }

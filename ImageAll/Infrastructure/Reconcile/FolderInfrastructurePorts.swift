@@ -84,6 +84,7 @@ struct FolderSourceDirtyTrigger: Sendable {
                 sql: """
                 UPDATE source SET dirty_epoch = dirty_epoch + ?, updated_at_ms = ?
                 WHERE id = ? AND kind = 'folder' AND state = 'active'
+                      AND id NOT IN (SELECT source_id FROM phone_library_source)
                 """,
                 arguments: [delta, clock.nowMs, sourceIDString]
             )
@@ -102,6 +103,7 @@ struct FolderSourceDirtyTrigger: Sendable {
                 SELECT EXISTS(
                     SELECT 1 FROM source
                     WHERE id = ? AND kind = 'folder' AND state = 'active'
+                      AND id NOT IN (SELECT source_id FROM phone_library_source)
                 )
                 """,
                 arguments: [sourceID.uuidString.lowercased()]
@@ -396,7 +398,26 @@ final class FolderSourceMonitoringCoordinator: @unchecked Sendable {
     func synchronize(enqueueInitialReconciles: Bool = true) throws {
         operationLock.lock()
         defer { operationLock.unlock() }
-        let sources = try repository.fetchAllFolderSources().filter { $0.state != .disabled }
+        let allSources = try repository.fetchAllFolderSources().filter { $0.state != .disabled }
+        var sources: [StoredFolderSourceRecord] = []
+        for source in allSources {
+            if try repository.isManagedPhoneSource(source.id) {
+                // Restore only root access on volume events. Never watch/enumerate archive contents.
+                let state: SourceState
+                do {
+                    let resolved = try bookmarkPort.resolveBookmark(source.bookmark)
+                    guard bookmarkPort.startAccessing(resolved.url) else { throw StartFailure(sourceState: .authorizationRequired) }
+                    defer { bookmarkPort.stopAccessing(resolved.url) }
+                    guard case .valid = rootValidator.validateRoot(at: resolved.url) else { throw StartFailure(sourceState: .unavailable) }
+                    if resolved.isStale {
+                        try repository.replaceStaleBookmark(sourceID: source.id,
+                            bookmark: bookmarkPort.createReadOnlyBookmark(for: resolved.url), nowMs: clock.nowMs)
+                    }
+                    state = .active
+                } catch { state = (error as? StartFailure)?.sourceState ?? .unavailable }
+                if try repository.updateObservedAccessState(sourceID: source.id, state: state, nowMs: clock.nowMs) { notifyChange() }
+            } else { sources.append(source) }
+        }
         let activeIDs = Set(sources.filter { $0.state == .active }.map(\.id))
         let removedSessions = lock.withLock { () -> [Session] in
             let removed = sessions.compactMap { activeIDs.contains($0.key) ? nil : $0.value }

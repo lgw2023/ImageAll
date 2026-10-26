@@ -1394,6 +1394,8 @@ struct LibraryThumbnailMemoryCache {
     }
 
     private let capacity: Int
+    private let byteCapacity: Int
+    private(set) var totalBytes = 0
     private var dataByAssetID: [UUID: Data] = [:]
     private var versionsByAssetID: [UUID: Int] = [:]
     private var latestGenerationByAssetID: [UUID: UInt64] = [:]
@@ -1401,9 +1403,10 @@ struct LibraryThumbnailMemoryCache {
     private var orderHead = 0
     private var nextGeneration: UInt64 = 0
 
-    init(capacity: Int) {
-        precondition(capacity > 0)
+    init(capacity: Int, byteCapacity: Int = 64 * 1_024 * 1_024) {
+        precondition(capacity > 0 && byteCapacity > 0)
         self.capacity = capacity
+        self.byteCapacity = byteCapacity
         dataByAssetID.reserveCapacity(capacity)
         versionsByAssetID.reserveCapacity(capacity)
         latestGenerationByAssetID.reserveCapacity(capacity)
@@ -1428,6 +1431,15 @@ struct LibraryThumbnailMemoryCache {
         guard !data.isEmpty else { return false }
         if dataByAssetID[assetID] == data { return false }
 
+        // Oversized values remain usable by the caller, but must not retain an
+        // obsolete cached version or evict every other thumbnail.
+        guard data.count <= byteCapacity else {
+            let removed = removeValue(for: assetID)
+            compactOrderIfNeeded()
+            return removed
+        }
+        totalBytes -= dataByAssetID[assetID]?.count ?? 0
+        totalBytes += data.count
         nextGeneration &+= 1
         dataByAssetID[assetID] = data
         versionsByAssetID[assetID, default: 0] &+= 1
@@ -1440,6 +1452,7 @@ struct LibraryThumbnailMemoryCache {
     }
 
     mutating func removeAll() {
+        totalBytes = 0
         dataByAssetID.removeAll(keepingCapacity: true)
         versionsByAssetID.removeAll(keepingCapacity: true)
         latestGenerationByAssetID.removeAll(keepingCapacity: true)
@@ -1454,16 +1467,23 @@ struct LibraryThumbnailMemoryCache {
     }
 
     private mutating func evictIfNeeded() {
-        while dataByAssetID.count > capacity, orderHead < order.count {
+        while dataByAssetID.count > capacity || totalBytes > byteCapacity, orderHead < order.count {
             let candidate = order[orderHead]
             orderHead += 1
             guard latestGenerationByAssetID[candidate.assetID] == candidate.generation else {
                 continue
             }
-            dataByAssetID.removeValue(forKey: candidate.assetID)
-            versionsByAssetID.removeValue(forKey: candidate.assetID)
-            latestGenerationByAssetID.removeValue(forKey: candidate.assetID)
+            removeValue(for: candidate.assetID)
         }
+    }
+
+    @discardableResult
+    private mutating func removeValue(for assetID: UUID) -> Bool {
+        let removed = dataByAssetID.removeValue(forKey: assetID)
+        totalBytes -= removed?.count ?? 0
+        versionsByAssetID.removeValue(forKey: assetID)
+        latestGenerationByAssetID.removeValue(forKey: assetID)
+        return removed != nil
     }
 
     private mutating func compactOrderIfNeeded() {
@@ -2004,6 +2024,16 @@ final class LibraryWorkspaceModel: ObservableObject {
     func makeTimeStoryWorkspaceModel(for tag: TagListItem) -> TimeStoryWorkspaceModel? {
         guard let timeStoryRuntime else { return nil }
         return TimeStoryWorkspaceModel(runtime: timeStoryRuntime, tag: tag)
+    }
+
+    func loadTimeStoryHome() async throws -> ([TimeStoryProjectSummary], [StoryStyleTemplate]) {
+        guard let timeStoryRuntime else { throw TimeStoryError.projectNotFound }
+        let store = timeStoryRuntime.store
+        return try await Task.detached(priority: .userInitiated) {
+            let templates = StoryStyleCatalog(directory: store.rootDirectory.deletingLastPathComponent()
+                .appendingPathComponent("StyleTemplates/v1"))
+            return (try store.list(), try templates.load())
+        }.value
     }
 
     var selectedTrainingRun: TrainingRunRecord? {
@@ -5420,6 +5450,16 @@ final class LibraryWorkspaceModel: ObservableObject {
         return selectedMediaKind == .image ? "全部照片" : "全部视频"
     }
 
+    private func phoneFolderTitle(sourceID: UUID, path: String) -> String {
+        for branch in sourceFolderBranches.values {
+            if case let .loaded(page, _) = branch,
+               let folder = page.folders.first(where: { $0.sourceID == sourceID && $0.relativePath == path }) {
+                return folder.name
+            }
+        }
+        return path == "collections" ? "集合" : "相簿"
+    }
+
     var folderBreadcrumb: [LibraryFolderBreadcrumbItem] {
         guard let scope = selectedFolderScope,
               let source = sources.first(where: { $0.id == scope.sourceID })
@@ -5442,7 +5482,7 @@ final class LibraryWorkspaceModel: ObservableObject {
                 LibraryFolderBreadcrumbItem(
                     sourceID: scope.sourceID,
                     relativePath: accumulated,
-                    title: String(component)
+                    title: source.isPhoneImport ? phoneFolderTitle(sourceID: scope.sourceID, path: accumulated) : String(component)
                 )
             )
         }
@@ -9821,6 +9861,11 @@ final class LibraryWorkspaceModel: ObservableObject {
         }
     }
 
+    func reloadPublishedPhoneLibrary() async {
+        await reload(runPendingJobs: false)
+        await refreshFolderNavigation()
+    }
+
     func refreshFolderNavigation() async {
         sourceFolderCacheRevision &+= 1
         sourceFolderBranches = [:]
@@ -12659,7 +12704,6 @@ enum LibrarySidebarSelection: Hashable {
     case trainingWorkspace
     case timeStory
     case librarySlimming
-    case phoneSource(UUID)
     case phoneArchive
     case source(UUID)
     case folder(AssetFolderScope)
@@ -12672,6 +12716,8 @@ private struct LibrarySourceFolderOutline: View {
     @Binding var selection: LibrarySidebarSelection?
     @Binding var expandedFolderScopes: Set<AssetFolderScope>
 
+    private var isPhoneImport: Bool { model.sources.first { $0.id == sourceID }?.isPhoneImport == true }
+
     @ViewBuilder
     var body: some View {
         switch model.sourceFolderChildren(
@@ -12682,7 +12728,7 @@ private struct LibrarySourceFolderOutline: View {
             HStack(spacing: 8) {
                 ProgressView()
                     .controlSize(.small)
-                Text("正在载入子文件夹…")
+                Text(isPhoneImport ? "正在载入相簿…" : "正在载入子文件夹…")
                     .foregroundStyle(.secondary)
             }
             .task {
@@ -12692,7 +12738,7 @@ private struct LibrarySourceFolderOutline: View {
                 )
             }
         case .failed:
-            Button("重新载入子文件夹") {
+            Button(isPhoneImport ? "重新载入相簿" : "重新载入子文件夹") {
                 Task {
                     await model.loadSourceFolderChildren(
                         sourceID: sourceID,
@@ -12715,7 +12761,7 @@ private struct LibrarySourceFolderOutline: View {
                 }
             }
             if page.folders.isEmpty {
-                Text("没有已索引的子文件夹")
+                Text(isPhoneImport ? "没有子相簿或集合" : "没有已索引的子文件夹")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -12764,10 +12810,11 @@ private struct LibrarySourceFolderOutline: View {
     }
 
     private func folderLabel(_ folder: LibrarySourceFolder) -> some View {
-        Label(folder.name, systemImage: "folder")
+        Label(folder.name, systemImage: isPhoneImport ? "rectangle.stack" : "folder")
+            .accessibilityIdentifier("sourceFolder-\(folder.id)")
             .lineLimit(1)
             .contentShape(Rectangle())
-            .persistentHelp("只显示“\(folder.relativePath)”目录及其所有子目录中的媒体。")
+            .persistentHelp(isPhoneImport ? "查看“\(folder.name)”及其子相簿中的照片和视频。" : "只显示“\(folder.relativePath)”目录及其所有子目录中的媒体。")
     }
 
     private func expansionBinding(for scope: AssetFolderScope) -> Binding<Bool> {
@@ -13460,18 +13507,11 @@ struct LibraryWorkspaceView: View {
     ]
 
     @ObservedObject var model: LibraryWorkspaceModel
-    var loadsSharedPhoneProjections = true
-
-    init(model: LibraryWorkspaceModel, loadsSharedPhoneProjections: Bool = true,
-         initialSelection: LibrarySidebarSelection? = nil) {
+    init(model: LibraryWorkspaceModel, initialSelection: LibrarySidebarSelection? = nil) {
         self.model = model
-        self.loadsSharedPhoneProjections = loadsSharedPhoneProjections
         if let initialSelection { _selection = State(initialValue: initialSelection) }
     }
-    @State private var selection: LibrarySidebarSelection? = .all
-    @State private var sharedPhoneProjections: [RemoteLocalLibrarySyncStore.Projection] = []
-    @State private var sharedPhoneDeviceNames: [UUID: String] = [:]
-    @State private var sharedPhoneLoadError: String?
+    @State private var selection: LibrarySidebarSelection? = .galleryOverview
     @State private var worldMapNavigationState = WorldMapNavigationState.empty
     @State private var worldMapGalleryScope: WorldMapGalleryScope?
     @State private var searchText = ""
@@ -13487,6 +13527,11 @@ struct LibraryWorkspaceView: View {
     @State private var timeStoryTag: TagListItem?
     @State private var showStorySubjectPicker = false
     @State private var storyWorkspaces: [UUID: TimeStoryWorkspaceModel] = [:]
+    @State private var storyHomeProjects: [TimeStoryProjectSummary] = []
+    @State private var storyHomeTemplates = StoryStyleTemplate.builtins
+    @State private var storyHomeLoading = false
+    @State private var storyHomeError: String?
+    @State private var pendingStoryHomeTemplate: StoryStyleTemplate?
     @State private var tagGroupPendingRename: TagGroupListItem?
     @State private var renamedTagGroupName = ""
     @State private var tagGroupPendingDelete: TagGroupListItem?
@@ -13494,6 +13539,7 @@ struct LibraryWorkspaceView: View {
     @State private var newTagGroupName = ""
     @State private var tagDropTargetGroupID: UUID?
     @State private var showPhotosConnectionExplanation = false
+    @State private var phoneLibraryError: String?
     @State private var showPreviewCachePanel = false
     @State private var showPreviewCacheClearConfirmation = false
     @State private var showPhotosOriginalStorageClearConfirmation = false
@@ -13523,7 +13569,11 @@ struct LibraryWorkspaceView: View {
     @State private var tagInsertionOffset: Int?
     @State private var isMarqueeSelecting = false
     @State private var gridScrollTargetID: UUID?
-    @State private var layoutState = LibraryWorkspaceLayoutState()
+    @State private var layoutState: LibraryWorkspaceLayoutState = {
+        var state = LibraryWorkspaceLayoutState()
+        state.setInspectorPresented(false)
+        return state
+    }()
     @FocusState private var newTagFieldFocused: Bool
     @FocusState private var contentFocused: Bool
     @FocusState private var commandSearchFieldFocused: Bool
@@ -13725,7 +13775,6 @@ struct LibraryWorkspaceView: View {
     }
 
     private var isPhoneSourceSelected: Bool {
-        if case .phoneSource = selection { return true }
         if selection == .phoneArchive { return true }
         return false
     }
@@ -13760,9 +13809,6 @@ struct LibraryWorkspaceView: View {
         } else if selection == .librarySlimming {
             content
                 .navigationTitle("图库瘦身")
-        } else if case .phoneSource = selection {
-            content
-                .navigationTitle("iPhone 分享目录")
         } else if selection == .phoneArchive {
             content
                 .navigationTitle("Mac 已入库归档")
@@ -14091,6 +14137,24 @@ struct LibraryWorkspaceView: View {
         ) { _ in
             model.stopVideoHoverPlayback()
         }
+        .onReceive(NotificationCenter.default.publisher(for: .phoneNativeLibraryChanged)) { _ in
+            phoneLibraryError = PhoneNativeLibraryProcess.lastError
+            Task { await model.reloadPublishedPhoneLibrary() }
+        }
+        .alert("手机来源暂未就绪", isPresented: Binding(
+            get: { phoneLibraryError != nil }, set: { if !$0 { phoneLibraryError = nil } }
+        )) {
+            Button("好", role: .cancel) { phoneLibraryError = nil }
+        } message: {
+            Text(phoneLibraryError ?? "")
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .phoneNativeLibraryOpen)) { notification in
+            guard let sourceID = notification.object as? UUID else { return }
+            Task {
+                await model.reloadPublishedPhoneLibrary()
+                selection = .source(sourceID)
+            }
+        }
         .onDisappear {
             model.stopVideoHoverPlayback()
         }
@@ -14253,7 +14317,6 @@ struct LibraryWorkspaceView: View {
             }
         }
         .task { await model.start() }
-        .task { await refreshSharedPhoneProjections() }
         .onChange(of: searchText) { _, _ in
             model.noteUserInteractionForIdlePrewarm()
         }
@@ -14261,11 +14324,6 @@ struct LibraryWorkspaceView: View {
             model.noteUserInteractionForIdlePrewarm()
             if newValue == .timeStory {
                 layoutState.setInspectorPresented(false)
-                return
-            }
-            if case .phoneSource = newValue {
-                layoutState.setInspectorPresented(false)
-                Task { await refreshSharedPhoneProjections() }
                 return
             }
             if newValue == .phoneArchive {
@@ -14293,8 +14351,6 @@ struct LibraryWorkspaceView: View {
                 .trainingWorkspace
             case .librarySlimming:
                 .librarySlimming
-            case .phoneSource:
-                .all // handled above by the dedicated phone directory branch
             case .phoneArchive:
                 .all // handled above by the dedicated Mac archive branch
             case let .source(sourceID):
@@ -14711,32 +14767,6 @@ struct LibraryWorkspaceView: View {
                 .contextMenu {
                     allSourceActionItems
                 }
-            }
-            Section("来自 iPhone") {
-                Label("Mac 已入库归档", systemImage: "archivebox")
-                    .tag(LibrarySidebarSelection.phoneArchive)
-                ForEach(sharedPhoneProjections) { projection in
-                    HStack {
-                        Label(
-                            sharedPhoneDeviceNames[projection.deviceID] ?? "未配对设备的历史目录",
-                            systemImage: "iphone.gen3"
-                        )
-                        Spacer()
-                        Text("\(projection.assets.count)")
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-                    }
-                    .tag(LibrarySidebarSelection.phoneSource(projection.deviceID))
-                }
-                if sharedPhoneProjections.isEmpty {
-                    Text(sharedPhoneLoadError ?? "尚未收到分享目录")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-                Button("刷新手机目录", systemImage: "arrow.clockwise") {
-                    Task { await refreshSharedPhoneProjections() }
-                }
-                .buttonStyle(.plain)
             }
             Section("标签") {
                 ForEach(model.tagGroupSections) { section in
@@ -15455,8 +15485,8 @@ struct LibraryWorkspaceView: View {
     private func sourceRow(_ source: LibrarySourceSummary) -> some View {
         HStack(spacing: 8) {
             Label(
-                source.displayName,
-                systemImage: source.kind == .photos ? "photo.on.rectangle" : sourceIcon(source.state)
+                source.isPhoneImport ? "\(source.displayName) · 已导入 Mac" : source.displayName,
+                systemImage: source.isPhoneImport ? "iphone.gen3" : (source.kind == .photos ? "photo.on.rectangle" : sourceIcon(source.state))
             )
                 .lineLimit(1)
             Spacer(minLength: 4)
@@ -15470,12 +15500,16 @@ struct LibraryWorkspaceView: View {
             }
         }
         .accessibilityElement(children: .combine)
-        .persistentHelp(sourceHelpText(source.state) + "；拖拽可调整来源顺序")
+        .accessibilityIdentifier("librarySource-\(source.id.uuidString)")
+        .persistentHelp(source.isPhoneImport
+            ? "浏览已导入 Mac 的照片、视频和相簿，无需连接手机；原件只读。"
+            : sourceHelpText(source.state) + "；拖拽可调整来源顺序")
         .contextMenu {
             Button("在图库中查看") {
                 selection = .source(source.id)
             }
             .persistentHelp("切换图库，只显示“\(source.displayName)”来源中的照片。")
+            if !source.isPhoneImport {
             Button(source.kind == .photos ? "立即同步" : "立即重扫") {
                 selection = .source(source.id)
                 Task {
@@ -15493,6 +15527,8 @@ struct LibraryWorkspaceView: View {
                     ? "同步“\(source.displayName)”的最新 Apple Photos 变化。"
                     : "重新扫描“\(source.displayName)”并更新照片索引。"
             )
+
+            }
 
             Button("预热缩略图缓存") {
                 model.prewarmSourceThumbnails(sourceID: source.id)
@@ -15538,7 +15574,7 @@ struct LibraryWorkspaceView: View {
                 }
                 .disabled(model.isBusy)
                 .persistentHelp("保留旧图库历史，并把当前系统照片图库连接为新来源。")
-            } else {
+            } else if !source.isPhoneImport {
                 Button(source.kind == .photos && source.state == .disabled ? "重新启用…" : "重新授权…") {
                     if source.kind == .photos && source.state == .disabled {
                         photosSourcePendingReactivation = source
@@ -15560,7 +15596,7 @@ struct LibraryWorkspaceView: View {
                 )
             }
 
-            if source.kind == .folder && source.state == .active {
+            if source.kind == .folder && source.state == .active && !source.isPhoneImport {
                 Button("更新回收权限…") {
                     Task { await model.refreshFolderMutationAuthorization(source.id) }
                 }
@@ -15583,7 +15619,7 @@ struct LibraryWorkspaceView: View {
             Button("删除来源…", role: .destructive) {
                 sourcePendingDeletion = source
             }
-            .disabled(model.isBusy)
+            .disabled(model.isBusy || source.isPhoneImport)
             .persistentHelp("从 ImageAll 删除来源及其照片记录、预览和原图缓存；不会修改或删除原照片。")
         }
     }
@@ -15672,8 +15708,6 @@ struct LibraryWorkspaceView: View {
     private var content: some View {
         if selection == .timeStory {
             storyWorkspaceContent
-        } else if case let .phoneSource(deviceID) = selection {
-            phoneLibraryContent(deviceID: deviceID)
         } else if selection == .phoneArchive {
             PhoneArchiveGalleryView()
         } else if selection == .galleryOverview {
@@ -15715,39 +15749,6 @@ struct LibraryWorkspaceView: View {
         }
     }
 
-    @ViewBuilder
-    private func phoneLibraryContent(deviceID: UUID) -> some View {
-        if let projection = sharedPhoneProjections.first(where: { $0.deviceID == deviceID }) {
-            RemotePhoneLibraryView(
-                projection: projection,
-                deviceName: sharedPhoneDeviceNames[deviceID]
-            )
-            .id(deviceID)
-        } else {
-            ContentUnavailableView(
-                sharedPhoneLoadError ?? "手机分享目录暂不可用",
-                systemImage: "iphone.gen3"
-            )
-        }
-    }
-
-    private func refreshSharedPhoneProjections() async {
-        guard loadsSharedPhoneProjections else { return }
-        do {
-            let projections = try await RemoteHostProcessHolder.sharedPhoneProjections()
-            let devices = await RemoteHostProcessHolder.pairedDevices()
-            sharedPhoneProjections = projections
-            sharedPhoneDeviceNames = Dictionary(uniqueKeysWithValues: devices.map {
-                ($0.deviceID, $0.deviceName)
-            })
-            sharedPhoneLoadError = nil
-        } catch {
-            sharedPhoneProjections = []
-            sharedPhoneDeviceNames = [:]
-            sharedPhoneLoadError = "读取手机分享目录失败：\(error.localizedDescription)"
-        }
-    }
-
     private func openStoryWorkspace(_ tag: TagListItem) {
         if storyWorkspaces[tag.id] == nil {
             storyWorkspaces[tag.id] = model.makeTimeStoryWorkspaceModel(for: tag)
@@ -15760,6 +15761,10 @@ struct LibraryWorkspaceView: View {
         VStack(spacing: 0) {
             HStack {
                 Label("时光故事", systemImage: "film.stack").font(.headline)
+                if timeStoryTag != nil {
+                    Button("返回首页", systemImage: "square.grid.2x2") { timeStoryTag = nil }
+                        .accessibilityIdentifier("timeStoryHomeButton")
+                }
                 Button { showStorySubjectPicker.toggle() } label: {
                     HStack(spacing: 6) {
                         Text(timeStoryTag?.displayName ?? "选择故事主体")
@@ -15775,7 +15780,15 @@ struct LibraryWorkspaceView: View {
                         toggleCollapsed: model.toggleTagGroupCollapsed,
                         onSelect: { tag in
                             showStorySubjectPicker = false
+                            if pendingStoryHomeTemplate != nil, storyWorkspaces[tag.id]?.isInputLocked == true {
+                                storyHomeError = "这个主体仍有任务进行中，暂不能套用模板。请稍后重试。"
+                                return
+                            }
                             openStoryWorkspace(tag)
+                            if let template = pendingStoryHomeTemplate {
+                                storyWorkspaces[tag.id]?.selectHomeStyle(template)
+                                pendingStoryHomeTemplate = nil
+                            }
                         }
                     )
                 }
@@ -15787,12 +15800,51 @@ struct LibraryWorkspaceView: View {
             if let tag = timeStoryTag, let story = storyWorkspaces[tag.id] {
                 TimeStoryWorkspaceView(model: story).id(tag.id)
             } else {
-                ContentUnavailableView("选择一个主体，开始编排故事", systemImage: "film.stack",
-                    description: Text("从上方选择人物、地点或其他标签；也可以从图库标签的菜单进入。随后按缩略图挑选照片，拖入镜头编排区。"))
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                TimeStoryHomeView(
+                    projects: storyHomeProjects, templates: storyHomeTemplates,
+                    drafts: storyWorkspaces.values.compactMap { $0.project },
+                    isLoading: storyHomeLoading, error: storyHomeError,
+                    pendingTemplate: pendingStoryHomeTemplate,
+                    onCreate: { pendingStoryHomeTemplate = nil; showStorySubjectPicker = true },
+                    onOpen: { saved in Task { await openStoryHomeProject(saved) } },
+                    onResume: { draft in
+                        timeStoryTag = TagListItem(id: draft.subjectTagID, displayName: draft.subjectTagDisplayName, state: .active)
+                    },
+                    onTemplate: { template in pendingStoryHomeTemplate = template; showStorySubjectPicker = true },
+                    onRefresh: { Task { await refreshStoryHome() } }
+                )
+                .task { await refreshStoryHome() }
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+    }
+
+    private func refreshStoryHome() async {
+        storyHomeLoading = true
+        defer { storyHomeLoading = false }
+        do {
+            (storyHomeProjects, storyHomeTemplates) = try await model.loadTimeStoryHome()
+            storyHomeError = nil
+        } catch { storyHomeError = error.localizedDescription }
+    }
+
+    private func openStoryHomeProject(_ saved: TimeStoryProjectSummary) async {
+        guard !storyHomeLoading else { return }
+        storyHomeLoading = true
+        defer { storyHomeLoading = false }
+        let tag = TagListItem(id: saved.subjectTagID, displayName: saved.subjectTagDisplayName, state: .active)
+        guard let workspace = storyWorkspaces[tag.id] ?? model.makeTimeStoryWorkspaceModel(for: tag) else {
+            storyHomeError = "故事工作区暂不可用。"; return
+        }
+        if workspace.project?.id != saved.id {
+            guard !workspace.isInputLocked else {
+                storyHomeError = "这个主体仍有任务进行中，请从当前草稿入口继续。"; return
+            }
+            await workspace.openSavedProject(saved.id)
+        }
+        guard workspace.project?.id == saved.id else { storyHomeError = workspace.message; return }
+        storyWorkspaces[tag.id] = workspace
+        timeStoryTag = tag
     }
 
     @ViewBuilder

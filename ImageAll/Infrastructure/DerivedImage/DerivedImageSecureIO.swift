@@ -94,7 +94,15 @@ enum DerivedImageSecureIO {
     }
 
     static func readAllBytes(from fd: Int32) throws -> Data {
+        // Growing an initially empty Data repeatedly retains large allocation
+        // regions on macOS during burst reads. Reserve from the open handle,
+        // not a path lookup; still read to EOF so callers detect changed facts.
+        let facts = try fstatRegularFile(fd: fd)
+        guard let capacity = Int(exactly: facts.sizeBytes), capacity >= 0 else {
+            throw DerivedImageSecureIOError.ioFailure
+        }
         var data = Data()
+        data.reserveCapacity(capacity)
         var buffer = [UInt8](repeating: 0, count: 65_536)
         while true {
             let readCount = buffer.withUnsafeMutableBytes { raw in

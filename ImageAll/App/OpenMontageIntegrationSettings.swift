@@ -3,7 +3,19 @@ import SwiftUI
 
 @MainActor
 enum OpenMontageIntegrationControl {
+    // A root has one startup/upgrade operation. Concurrent UI entry points join it.
+    private static var starts: [String: Task<String, Error>] = [:]
+
     static func start(provider: any OpenMontageTaskRootProviding) async throws -> String {
+        let key = try provider.resolveTaskRoot().standardizedFileURL.path
+        if let existing = starts[key] { return try await existing.value }
+        let operation = Task { try await launch(provider: provider) }
+        starts[key] = operation
+        defer { starts[key] = nil }
+        return try await operation.value
+    }
+
+    private static func launch(provider: any OpenMontageTaskRootProviding) async throws -> String {
         guard OpenMontageConfiguration.enabled() else { throw configurationError("OpenMontage 已停用，请先在设置中启用。") }
         let root = try provider.resolveTaskRoot()
         guard provider.startAccessing(root) else { throw OpenMontageTaskError.taskRootAuthorizationRequired }
@@ -33,7 +45,10 @@ enum OpenMontageIntegrationControl {
                 if report["success"] as? Bool == false { throw configurationError(report["message"] as? String ?? "启动失败") }
                 let capability = await OpenMontageTaskDirectoryInspector(rootProvider: provider).capability()
                 if capability.state == .ready { return report["message"] as? String ?? "本地制作已启动并连接" }
-                if capability.state == .dependenciesUnavailable { throw configurationError(capability.detail) }
+                if capability.state == .dependenciesUnavailable || capability.state == .incompatible
+                    || capability.state == .authorizationRequired {
+                    throw configurationError(capability.detail)
+                }
             }
         }
         throw configurationError("启动超时，请查看任务目录中的 launcher.log。")

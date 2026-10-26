@@ -200,6 +200,88 @@ struct AVFoundationVideoAnalysisSampler {
     }
 }
 
+/// Bounds transient original reads and decoder working sets, not cache hits or
+/// request submission. Shared across services so parallel consumers cannot each
+/// spend the same budget. ADR-108 supersedes ADR-058 for expensive generation.
+actor DerivedImageGenerationBudget {
+    static let shared = DerivedImageGenerationBudget(capacity: 256 * 1_024 * 1_024)
+    private let capacity: Int64
+    private var used: Int64 = 0
+    private struct Waiter {
+        let id: UUID
+        let cost: Int64
+        let continuation: CheckedContinuation<Void, Error>
+    }
+    private var waiters: [Waiter] = []
+    var waitingRequestCount: Int { waiters.count }
+
+    init(capacity: Int64) {
+        precondition(capacity > 0)
+        self.capacity = capacity
+    }
+
+    static func estimatedBytes(kind: MediaKind, mediaType: String, fileBytes: Int64) -> Int64 {
+        let mib: Int64 = 1_024 * 1_024
+        if kind == .video { return 128 * mib }
+        // RAW decoder fallbacks may materialize the sensor image; run alone.
+        if ApprovedSourceMediaTypes.isCameraRaw(mediaType) { return 256 * mib }
+        return min(256 * mib, max(0, min(fileBytes, 112 * mib)) * 2 + 32 * mib)
+    }
+
+    nonisolated func run<T: Sendable>(
+        estimatedBytes: Int64,
+        _ operation: @Sendable () throws -> T
+    ) async throws -> T {
+        let cost = min(capacity, max(1, estimatedBytes))
+        try await acquire(cost)
+        do {
+            try Task.checkCancellation()
+            // Drain Foundation/ImageIO/AVFoundation temporaries before releasing
+            // the lease. The encoded result is the only object that escapes.
+            let value = try autoreleasepool(invoking: operation)
+            await release(cost)
+            return value
+        } catch {
+            await release(cost)
+            throw error
+        }
+    }
+
+    private func acquire(_ cost: Int64) async throws {
+        try Task.checkCancellation()
+        if waiters.isEmpty && used + cost <= capacity {
+            used += cost
+            return
+        }
+        let id = UUID()
+        try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { continuation in
+                waiters.append(Waiter(id: id, cost: cost, continuation: continuation))
+            }
+        } onCancel: {
+            Task { await self.cancel(id) }
+        }
+    }
+
+    private func cancel(_ id: UUID) {
+        guard let index = waiters.firstIndex(where: { $0.id == id }) else { return }
+        waiters.remove(at: index).continuation.resume(throwing: CancellationError())
+        drain()
+    }
+
+    private func release(_ cost: Int64) {
+        used -= cost
+        drain()
+    }
+
+    private func drain() {
+        while let first = waiters.first, used + first.cost <= capacity {
+            used += first.cost
+            waiters.removeFirst().continuation.resume()
+        }
+    }
+}
+
 actor DerivedImageInFlightCoordinator {
     private var tasks: [DerivedImageCacheKey: Task<DerivedImagePayload, Error>] = [:]
 
@@ -1363,7 +1445,7 @@ final class DerivedImageCacheService: DerivedImageCachePort, DownloadedPreviewCa
 
         let artifact: DerivedImageEncodedArtifact
         do {
-            let generateFromSource = {
+            let generateFromSource: @Sendable () throws -> DerivedImageEncodedArtifact = {
                 try self.sourceAccess.withActiveSourceRootURL(sourceID: context.sourceID) { rootURL in
                     switch context.mediaKind {
                     case .image:
@@ -1431,11 +1513,18 @@ final class DerivedImageCacheService: DerivedImageCachePort, DownloadedPreviewCa
                     }
                 }
             }
-            if let interactiveIOGate {
-                artifact = try interactiveIOGate.withBackgroundWork(generateFromSource)
-            } else {
-                artifact = try generateFromSource()
+            artifact = try await DerivedImageGenerationBudget.shared.run(
+                estimatedBytes: DerivedImageGenerationBudget.estimatedBytes(
+                    kind: context.mediaKind, mediaType: context.mediaType,
+                    fileBytes: context.fingerprintSizeBytes)
+            ) {
+                if let interactiveIOGate {
+                    return try interactiveIOGate.withBackgroundWork(generateFromSource)
+                }
+                return try generateFromSource()
             }
+        } catch is CancellationError {
+            throw CancellationError()
         } catch let error as FolderReconcileHandlerError {
             switch error {
             case .authorizationRequired:

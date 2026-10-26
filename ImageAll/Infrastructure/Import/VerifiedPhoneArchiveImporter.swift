@@ -7,11 +7,13 @@ import os
 
 enum PhoneArchiveImportError: LocalizedError, Equatable {
     case incompleteArchive
+    case invalidArchiveDirectory
     case migrationIdentityConflict
     case targetChanged
     case publishedCopyChanged
     case missingImportJournal
     case targetOverlapsMacLibrary
+    case targetIsPhotosLibrary
     case targetIsolationIndeterminate
     case factScopeMismatch
     case staleFactSnapshot
@@ -31,11 +33,13 @@ enum PhoneArchiveImportError: LocalizedError, Equatable {
     var errorDescription: String? {
         switch self {
         case .incompleteArchive: "归档缺少必需资源，不能入库。"
+        case .invalidArchiveDirectory: "所选目录不是手机导出的完整照片包。USB 导入请先在手机“待分享”点击“导入所选照片与信息到 Mac”，接收完成后再在 Mac 导入对应批次。"
         case .migrationIdentityConflict: "迁移身份或已有手机资产身份冲突，需要先对账。"
         case .targetChanged: "此迁移 ID 已绑定另一目标位置。"
         case .publishedCopyChanged: "Mac 已发布的归档副本与入库记录不一致。"
         case .missingImportJournal: "归档导入记录丢失，不能返回完成回执。"
-        case .targetOverlapsMacLibrary: "保存目录与 Mac 已授权的图库来源重叠，请选择独立目录。"
+        case .targetOverlapsMacLibrary: "接收目录是已有来源目录、其内部目录或父目录，请选择与来源分离的独立目录。"
+        case .targetIsPhotosLibrary: "Photos Library 包及其内部目录不能作为照片接收位置，请选择普通文件夹。"
         case .targetIsolationIndeterminate: "无法确认保存目录与 Mac 图库来源隔离，请检查来源磁盘授权。"
         case .factScopeMismatch: "整理信息快照与所选归档批次的来源或资产集合不一致。"
         case .staleFactSnapshot: "整理信息快照早于已导入版本，请从手机重新导出。"
@@ -63,6 +67,9 @@ struct PhoneArchiveImportReceipt: Sendable, Equatable {
     let resourceCount: Int
     let verifiedBytes: Int64
     let replayed: Bool
+    // Same-operation target proof only. Never encoded into a durable receipt.
+    fileprivate(set) var publicationVerification: ImageAllMigrationVerification? = nil
+    fileprivate(set) var sourceVerification: ImageAllMigrationVerification? = nil
 }
 
 struct PhoneArchiveFactReceipt: Sendable, Equatable {
@@ -355,9 +362,9 @@ struct PhoneArchiveVerifiedPreview: Sendable {
 }
 
 /// Imports a verified phone package into dedicated catalog bindings. The
-/// existing one-source Asset row remains untouched; archive resources are
-/// owned by this migration until a deliberate MediaItem/Replica projection
-/// exposes them in the unified gallery.
+/// migration ledger owns every archive resource. PhoneNativeLibraryPublisher
+/// projects verified batches into the normal source/asset gallery without
+/// duplicating originals or replacing this authoritative archive evidence.
 struct VerifiedPhoneArchiveImporter: Sendable {
     let database: CatalogDatabase
 
@@ -767,10 +774,13 @@ struct VerifiedPhoneArchiveImporter: Sendable {
     /// integrity check, not a source-sync or migration-complete receipt.
     func auditImportedArchive(
         migrationID: UUID, archiveRoot: URL,
+        priorVerification: ImageAllMigrationVerification? = nil,
+        reuseVerifiedContents: Bool = false,
+        onVerifiedArchive: ((ImageAllMigrationVerification) -> Void)? = nil,
         onVerifiedItem: ((ImageAllMigrationItem) -> Void)? = nil
     ) throws -> PhoneArchiveIntegrityReport {
         let (header, verification) = try ImageAllMigrationArchive.readVerifiedHeader(
-            at: archiveRoot
+            at: archiveRoot, priorVerification: priorVerification
         )
         guard header.migrationID == migrationID, verification.isComplete else {
             throw PhoneArchiveImportError.incompleteArchive
@@ -831,7 +841,8 @@ struct VerifiedPhoneArchiveImporter: Sendable {
             }
             var seen = Set<UUID>()
             _ = try ImageAllMigrationArchive.visitVerifiedRecords(
-                at: archiveRoot,
+                at: archiveRoot, priorVerification: verification,
+                reuseVerifiedContents: reuseVerifiedContents,
                 onHeader: { record in
                     guard record == header else {
                         throw PhoneArchiveImportError.catalogDiverged
@@ -922,6 +933,7 @@ struct VerifiedPhoneArchiveImporter: Sendable {
                   catalogReplicas == verification.itemCount else {
                 throw PhoneArchiveImportError.catalogDiverged
             }
+            onVerifiedArchive?(verification)
             return PhoneArchiveIntegrityReport(
                 migrationID: migrationID, manifestSHA256: savedManifest,
                 itemCount: savedItems, resourceCount: savedResources,
@@ -1055,7 +1067,27 @@ struct VerifiedPhoneArchiveImporter: Sendable {
         }
     }
 
+    static func validateIncomingArchiveDirectory(_ incoming: URL) throws {
+        let resolved = incoming.standardizedFileURL.resolvingSymlinksInPath()
+        guard !resolved.pathComponents.contains(where: {
+            $0.lowercased().hasSuffix(".photoslibrary")
+        }),
+        let directory = try? incoming.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey]),
+        directory.isDirectory == true, directory.isSymbolicLink != true,
+        let manifest = try? incoming.appendingPathComponent(ImageAllMigrationArchive.manifestFilename)
+            .resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey]),
+        manifest.isRegularFile == true, manifest.isSymbolicLink != true else {
+            throw PhoneArchiveImportError.invalidArchiveDirectory
+        }
+    }
+
     func validateTargetDirectory(_ targetParent: URL) throws {
+        let resolvedTarget = targetParent.standardizedFileURL.resolvingSymlinksInPath()
+        guard !resolvedTarget.pathComponents.contains(where: {
+            $0.lowercased().hasSuffix(".photoslibrary")
+        }) else {
+            throw PhoneArchiveImportError.targetIsPhotosLibrary
+        }
         let values = try targetParent.resourceValues(
             forKeys: [.isDirectoryKey, .isSymbolicLinkKey]
         )
@@ -1067,7 +1099,7 @@ struct VerifiedPhoneArchiveImporter: Sendable {
                 sourceRepository: GRDBFolderSourceAuthorizationRepository(database: database),
                 bookmarkPort: FoundationSecurityScopedBookmarkAdapter(),
                 relationshipChecker: FoundationFolderRootRelationshipChecker()
-            ).validate(parentDirectoryURL: targetParent)
+            ).validate(parentDirectoryURL: targetParent, includeManagedPhoneSources: false)
         } catch PortableCatalogExportError.destinationOverlapsSource {
             throw PhoneArchiveImportError.targetOverlapsMacLibrary
         } catch {
@@ -1077,6 +1109,7 @@ struct VerifiedPhoneArchiveImporter: Sendable {
 
     func reconcileFacts(
         from url: URL, migrationID: UUID, archiveRoot: URL? = nil,
+        existingArchiveVerification: ImageAllMigrationVerification? = nil,
         afterFactPublication: (() throws -> Void)? = nil
     ) throws -> PhoneArchiveFactReceipt {
         let read = try ImageAllMigrationFacts.readWithDigest(at: url)
@@ -1095,7 +1128,18 @@ struct VerifiedPhoneArchiveImporter: Sendable {
         guard archive.lastPathComponent == "ImageAll-Archive-\(id)" else {
             throw PhoneArchiveImportError.targetChanged
         }
-        let before = try ImageAllMigrationArchive.verify(at: archive)
+        let before: ImageAllMigrationVerification
+        if let existingArchiveVerification {
+            // Only reconcile facts already covered by this content proof. A
+            // later/new snapshot still follows the independent full-audit path.
+            try existingArchiveVerification.validateStorageIdentity(at: archive)
+            guard let latest = try ImageAllMigrationFacts.latestPublishedURL(in: archive),
+                  latest.standardizedFileURL == url.standardizedFileURL,
+                  try ImageAllMigrationFacts.readWithDigest(at: latest).sha256 == read.sha256 else {
+                throw PhoneArchiveImportError.validationStale
+            }
+            before = existingArchiveVerification
+        } else { before = try ImageAllMigrationArchive.verify(at: archive) }
         guard before.manifestSHA256 == expected.manifestSHA256,
               before.itemCount == expected.itemCount,
               before.resourceCount == expected.resourceCount,
@@ -1114,11 +1158,16 @@ struct VerifiedPhoneArchiveImporter: Sendable {
             }
         }
         _ = try ImageAllMigrationFacts.publish(from: url, into: archive)
-        let after = try ImageAllMigrationArchive.verify(at: archive)
+        let after: ImageAllMigrationVerification
+        if existingArchiveVerification != nil {
+            try before.validateStorageIdentity(at: archive)
+            after = before
+        } else { after = try ImageAllMigrationArchive.verify(at: archive) }
         guard after.hasSameMedia(as: before), after.factsSHA256 != nil else {
             throw PhoneArchiveImportError.publishedCopyChanged
         }
         try afterFactPublication?()
+        if existingArchiveVerification != nil { try after.validateStorageIdentity(at: archive) }
         return try database.pool.write { db in
             guard let batch = try Row.fetchOne(
                 db, sql: "SELECT * FROM migration_import WHERE id = ? AND state = 'catalogCommitted'",
@@ -1213,6 +1262,7 @@ struct VerifiedPhoneArchiveImporter: Sendable {
                     snapshot.snapshotSequence, snapshot.factWatermark, digest,
                     Int64(Date().timeIntervalSince1970 * 1_000), id,
                 ])
+            if existingArchiveVerification != nil { try after.validateStorageIdentity(at: archive) }
             return PhoneArchiveFactReceipt(
                 migrationID: migrationID, itemCount: count,
                 snapshotSequence: snapshot.snapshotSequence,
@@ -1275,15 +1325,15 @@ struct VerifiedPhoneArchiveImporter: Sendable {
         }
     }
 
-    func importedBatches() throws -> [PhoneArchiveImportedBatch] {
+    func importedBatches(includePrepared: Bool = false) throws -> [PhoneArchiveImportedBatch] {
         try database.pool.read { db in
             try Row.fetchAll(db, sql: """
                 SELECT id, archive_path, target_parent_path, target_bookmark,
                        item_count, resource_count, verified_bytes, updated_at_ms,
                        fact_snapshot_sequence, apple_album_coverage, apple_album_unavailable_reason
-                FROM migration_import WHERE state = 'catalogCommitted'
+                FROM migration_import WHERE state = 'catalogCommitted' OR (? AND state = 'prepared')
                 ORDER BY updated_at_ms DESC
-                """).compactMap { row in
+                """, arguments: [includePrepared]).compactMap { row in
                 guard let id = UUID(uuidString: row["id"]) else { return nil }
                 return PhoneArchiveImportedBatch(
                     id: id,
@@ -2804,18 +2854,55 @@ struct VerifiedPhoneArchiveImporter: Sendable {
 
     func importArchive(
         from incoming: URL, to targetParent: URL,
+        reuseVerifiedContents: Bool = false,
+        beforeCatalogCommit: (() throws -> Void)? = nil,
         afterPublication: (() throws -> Void)? = nil
     ) throws -> PhoneArchiveImportReceipt {
+        try importArchive(from: incoming, to: targetParent, recovering: nil,
+            reuseVerifiedContents: reuseVerifiedContents, beforeCatalogCommit: beforeCatalogCommit, afterPublication: afterPublication)
+    }
+
+    /// Recover only an already journaled target. No receiver staging or directory scan.
+    func recoverPreparedArchive(migrationID: UUID, archiveRoot: URL,
+                                reuseVerifiedContents: Bool = false) throws -> PhoneArchiveImportReceipt? {
+        let parent: String? = try database.pool.read { db in
+            guard let row = try Row.fetchOne(db, sql: "SELECT state, archive_path, target_parent_path FROM migration_import WHERE id = ?",
+                arguments: [migrationID.uuidString.lowercased()]) else { throw PhoneArchiveImportError.missingImportJournal }
+            guard (row["state"] as String) == "prepared" else { return nil }
+            guard (row["archive_path"] as String) == archiveRoot.standardizedFileURL.path else {
+                throw PhoneArchiveImportError.targetChanged
+            }
+            return row["target_parent_path"]
+        }
+        guard let parent else { return nil }
+        return try importArchive(from: archiveRoot, to: URL(fileURLWithPath: parent),
+            recovering: migrationID, reuseVerifiedContents: reuseVerifiedContents,
+            beforeCatalogCommit: nil, afterPublication: nil)
+    }
+
+    private func importArchive(
+        from incoming: URL, to targetParent: URL, recovering: UUID?,
+        reuseVerifiedContents: Bool = false,
+        beforeCatalogCommit: (() throws -> Void)?, afterPublication: (() throws -> Void)?
+    ) throws -> PhoneArchiveImportReceipt {
+        let stagingLease = try ImageAllMigrationStagingLease.readingPackage(incoming)
+        defer { withExtendedLifetime(stagingLease) {} }
+        try Self.validateIncomingArchiveDirectory(incoming)
         let (header, verification) = try ImageAllMigrationArchive.readVerifiedHeader(at: incoming)
+        if let recovering, header.migrationID != recovering {
+            throw PhoneArchiveImportError.migrationIdentityConflict
+        }
         guard verification.isComplete else { throw PhoneArchiveImportError.incompleteArchive }
         let source = incoming.standardizedFileURL.resolvingSymlinksInPath()
         let target = targetParent.standardizedFileURL.resolvingSymlinksInPath()
         let receiverOwnedStage = source.lastPathComponent == "package"
             && source.deletingLastPathComponent().lastPathComponent
                 == ".imageall-transfer-\(header.migrationID.uuidString.lowercased())"
-            && source.deletingLastPathComponent().deletingLastPathComponent() == target
+            && source.deletingLastPathComponent().deletingLastPathComponent().path == target.path
+        let recoveringOwnTarget = recovering != nil && source == target.appendingPathComponent(
+            "ImageAll-Archive-\(header.migrationID.uuidString.lowercased())", isDirectory: true)
         guard source.path != target.path,
-              (!source.path.hasPrefix(target.path + "/") || receiverOwnedStage),
+              (!source.path.hasPrefix(target.path + "/") || receiverOwnedStage || recoveringOwnTarget),
               !target.path.hasPrefix(source.path + "/") else {
             throw ImageAllMigrationArchiveError.destinationOverlap
         }
@@ -2881,18 +2968,26 @@ struct VerifiedPhoneArchiveImporter: Sendable {
         try MigrationCleanupProtection.reserve(database: database, root: final,
             parentBookmark: targetBookmark, relativeComponent: final.lastPathComponent, purpose: "archive")
 
+        let targetVerification: ImageAllMigrationVerification
         if FileManager.default.fileExists(atPath: final.path) {
-            guard try ImageAllMigrationArchive.verify(at: final).hasSameMedia(as: verification) else {
+            if reuseVerifiedContents, recovering == header.migrationID, source.path == final.path {
+                // Prepared recovery already read this exact final object above.
+                try verification.validateStorageIdentity(at: final)
+                targetVerification = verification
+            } else { targetVerification = try ImageAllMigrationArchive.verify(at: final) }
+            guard targetVerification.hasSameMedia(as: verification) else {
                 throw PhoneArchiveImportError.publishedCopyChanged
             }
         } else {
             guard !alreadyCommitted else { throw PhoneArchiveImportError.publishedCopyChanged }
-            let published = try ImageAllMigrationArchive.publishVerifiedCopy(
-                from: incoming, to: parent
+            let published = try ImageAllMigrationArchive.publishVerifiedCopyWithVerification(
+                from: incoming, to: parent, sourceVerification: verification
             )
-            guard published.standardizedFileURL == final else {
+            guard published.archiveURL.standardizedFileURL == final,
+                  published.verification.hasSameMedia(as: verification) else {
                 throw PhoneArchiveImportError.publishedCopyChanged
             }
+            targetVerification = published.verification
         }
         // Track the directory itself after publication, so a rename/move does
         // not reduce protection to the original parent's fixed child name.
@@ -2901,6 +2996,7 @@ struct VerifiedPhoneArchiveImporter: Sendable {
                 includingResourceValuesForKeys: nil, relativeTo: nil),
             purpose: "archive", replaceBookmark: true)
         try afterPublication?()
+        try targetVerification.validateStorageIdentity(at: final)
 
         if alreadyCommitted {
             try recoverPublishedFactsIfNeeded(at: final, migrationID: header.migrationID)
@@ -2910,14 +3006,15 @@ struct VerifiedPhoneArchiveImporter: Sendable {
             return receipt(header: header, verification: verification, url: final, replayed: true)
         }
 
-        try database.pool.write { db in
+        let finalVerification = try database.pool.write { db in
             guard let state = try String.fetchOne(
                 db, sql: "SELECT state FROM migration_import WHERE id = ?", arguments: [id]
             ), state == "prepared" else {
                 throw PhoneArchiveImportError.missingImportJournal
             }
             let reread = try ImageAllMigrationArchive.visitVerifiedRecords(
-                at: final,
+                at: final, priorVerification: targetVerification,
+                reuseVerifiedContents: reuseVerifiedContents,
                 onHeader: { publishedHeader in
                     guard publishedHeader == header else {
                         throw PhoneArchiveImportError.publishedCopyChanged
@@ -2936,16 +3033,29 @@ struct VerifiedPhoneArchiveImporter: Sendable {
             guard reread.hasSameMedia(as: verification) else {
                 throw PhoneArchiveImportError.publishedCopyChanged
             }
+            try beforeCatalogCommit?()
+            try reread.validateStorageIdentity(at: final)
             try db.execute(sql: """
                 UPDATE migration_import SET state = 'catalogCommitted', updated_at_ms = ?
                 WHERE id = ? AND state = 'prepared'
                 """, arguments: [now, id])
+            return reread
         }
-        try recoverPublishedFactsIfNeeded(at: final, migrationID: header.migrationID)
+        try recoverPublishedFactsIfNeeded(at: final, migrationID: header.migrationID,
+            priorVerification: reuseVerifiedContents ? finalVerification : nil)
         try reconcileNewStagedFacts(
             from: incoming, into: final, migrationID: header.migrationID
         )
-        return receipt(header: header, verification: verification, url: final, replayed: false)
+        var result = receipt(header: header, verification: verification, url: final, replayed: false)
+        if reuseVerifiedContents { result.sourceVerification = verification }
+        // Fact reconciliation can advance the package after the transaction's
+        // final SHA. Reuse only a still-current proof; otherwise publication
+        // starts with its normal full verification. An explicitly stale proof
+        // supplied to the publisher is always rejected there.
+        if (try? finalVerification.validateStorageIdentity(at: final)) != nil {
+            result.publicationVerification = finalVerification
+        }
+        return result
     }
 
     private func reconcileNewStagedFacts(
@@ -2975,9 +3085,30 @@ struct VerifiedPhoneArchiveImporter: Sendable {
         }
     }
 
-    private func recoverPublishedFactsIfNeeded(at archive: URL, migrationID: UUID) throws {
+    /// Only for an unpublished restart. Reconcile a fact file that reached disk
+    /// before its catalog transaction; matching facts need no resource reads.
+    func recoverUnpublishedFacts(migrationID: UUID, archiveRoot: URL) throws {
+        try Self.validateIncomingArchiveDirectory(archiveRoot)
+        let saved = try database.pool.read { db -> (Int64, Int64, String?) in
+            guard let row = try Row.fetchOne(db, sql: "SELECT * FROM migration_import WHERE id = ? AND state = 'catalogCommitted'",
+                arguments: [migrationID.uuidString.lowercased()]),
+                  (row["archive_path"] as String) == archiveRoot.standardizedFileURL.path else {
+                throw PhoneArchiveImportError.missingImportJournal
+            }
+            return (row["fact_snapshot_sequence"], row["fact_watermark"], row["fact_snapshot_sha256"])
+        }
+        guard let latestURL = try ImageAllMigrationFacts.latestPublishedURL(in: archiveRoot) else { return }
+        let latest = try ImageAllMigrationFacts.readWithDigest(at: latestURL)
+        if latest.snapshot.snapshotSequence == saved.0 && latest.snapshot.factWatermark == saved.1
+            && latest.sha256 == saved.2 { return }
+        _ = try reconcileFacts(from: latestURL, migrationID: migrationID, archiveRoot: archiveRoot)
+    }
+
+    private func recoverPublishedFactsIfNeeded(at archive: URL, migrationID: UUID,
+                                              priorVerification: ImageAllMigrationVerification? = nil) throws {
         guard let latest = try ImageAllMigrationFacts.latestPublishedURL(in: archive) else { return }
-        _ = try reconcileFacts(from: latest, migrationID: migrationID, archiveRoot: archive)
+        _ = try reconcileFacts(from: latest, migrationID: migrationID, archiveRoot: archive,
+            existingArchiveVerification: priorVerification)
     }
 
     private func receipt(
@@ -3113,8 +3244,10 @@ enum PhoneArchiveImportProcessHolder {
         subsystem: "com.gwlee.ImageAll", category: "PhoneArchiveImport"
     )
 
-    static func attach(database: CatalogDatabase) {
+    static func attach(database: CatalogDatabase, resumeHostJobs: Bool = false) {
         self.database = database
+        PhoneNativeLibraryProcess.recover(database: database)
+        if resumeHostJobs { PhoneHostImportProcess.resumeConfigured() }
     }
 
     static func importer() -> VerifiedPhoneArchiveImporter? {

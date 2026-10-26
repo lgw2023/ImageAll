@@ -1,4 +1,5 @@
 import CryptoKit
+import Darwin
 import Foundation
 
 /// Portable domain manifest for a selected iPhone source scope. Media bytes live
@@ -16,12 +17,16 @@ public struct ImageAllMigrationHeader: Codable, Sendable, Equatable {
     /// Nil on archives created before Photos album capture existed.
     public let appleAlbumCoverage: ImageAllMigrationAppleAlbumCoverage?
     public let appleAlbumCatalog: [ImageAllMigrationAppleCollection]?
+    /// Explicit subset seal provenance. Missing IDs remain selected on the phone.
+    /// Completion describes declaredItemCount, never this larger retained selection.
+    public let retainedSelectionIDs: [UUID]?
 
     public init(
         migrationID: UUID, sourceDeviceID: UUID, sourceEpoch: UUID,
         scopeRevision: Int64, inventoryWatermark: Int64, declaredItemCount: Int,
         appleAlbumCoverage: ImageAllMigrationAppleAlbumCoverage? = nil,
-        appleAlbumCatalog: [ImageAllMigrationAppleCollection]? = nil
+        appleAlbumCatalog: [ImageAllMigrationAppleCollection]? = nil,
+        retainedSelectionIDs: [UUID]? = nil
     ) {
         recordType = "header"
         formatVersion = appleAlbumCatalog == nil ? 1 : 2
@@ -33,6 +38,15 @@ public struct ImageAllMigrationHeader: Codable, Sendable, Equatable {
         self.declaredItemCount = declaredItemCount
         self.appleAlbumCoverage = appleAlbumCoverage
         self.appleAlbumCatalog = appleAlbumCatalog
+        self.retainedSelectionIDs = retainedSelectionIDs
+    }
+
+    public func validateRetainedSelection(mediaIDs: Set<UUID>) throws {
+        guard let retainedSelectionIDs else { return }
+        let retained = Set(retainedSelectionIDs)
+        guard retained.count == retainedSelectionIDs.count,
+              retained.count > declaredItemCount, mediaIDs.count == declaredItemCount,
+              mediaIDs.isSubset(of: retained) else { throw ImageAllMigrationArchiveError.invalidManifest }
     }
 }
 
@@ -264,6 +278,34 @@ public enum ImageAllMigrationArchiveError: Error, Equatable, Sendable {
     case publicationFailed
 }
 
+/// In-memory object/version binding created by a full SHA pass; never serialized.
+fileprivate struct ArchiveFileVersion: Sendable, Equatable {
+    let device: Int64, inode: UInt64, size: Int64
+    let birthSeconds: Int, birthNanos: Int, modifiedSeconds: Int, modifiedNanos: Int
+    let changedSeconds: Int, changedNanos: Int
+    let mode: UInt16
+    // A same-parent directory rename may change only the directory's ctime.
+    // Child versions are compared without exemptions by the private copy path.
+    func matchesRenamedDirectory(_ other: Self) -> Bool {
+        device == other.device && inode == other.inode && size == other.size
+            && birthSeconds == other.birthSeconds && birthNanos == other.birthNanos
+            && modifiedSeconds == other.modifiedSeconds && modifiedNanos == other.modifiedNanos
+            && mode == other.mode && (mode & S_IFMT) == S_IFDIR
+    }
+    init(at url: URL) throws {
+        var value = stat()
+        guard lstat(url.path, &value) == 0,
+              (value.st_mode & S_IFMT) != S_IFLNK else {
+            throw ImageAllMigrationArchiveError.resourceChanged
+        }
+        device = Int64(value.st_dev); inode = value.st_ino; size = value.st_size
+        birthSeconds = value.st_birthtimespec.tv_sec; birthNanos = value.st_birthtimespec.tv_nsec
+        modifiedSeconds = value.st_mtimespec.tv_sec; modifiedNanos = value.st_mtimespec.tv_nsec
+        changedSeconds = value.st_ctimespec.tv_sec; changedNanos = value.st_ctimespec.tv_nsec
+        mode = value.st_mode
+    }
+}
+
 public struct ImageAllMigrationVerification: Sendable, Equatable {
     public let migrationID: UUID
     public let manifestSHA256: String
@@ -275,6 +317,53 @@ public struct ImageAllMigrationVerification: Sendable, Equatable {
     /// includes only assets with a missing required resource.
     public let unavailableResources: [ImageAllMigrationUnavailableResource]
     public let factsSHA256: String?
+    fileprivate let storageRoot: String
+    fileprivate let storageVersions: [String: ArchiveFileVersion]
+
+    // Independent verified copies have equal content but different object identities.
+    public static func == (lhs: Self, rhs: Self) -> Bool {
+        lhs.hasSameMedia(as: rhs) && lhs.factsSHA256 == rhs.factsSHA256
+    }
+    /// Rechecks object/version continuity after the full-byte verification. This
+    /// is not a new content verification and cannot replace a full SHA pass.
+    public func validateStorageIdentity(at root: URL) throws {
+        try validateStorage(at: root)
+    }
+    fileprivate func validateStorage(at root: URL) throws {
+        guard root.standardizedFileURL.path == storageRoot, !storageVersions.isEmpty else {
+            throw ImageAllMigrationArchiveError.resourceChanged
+        }
+        for (path, version) in storageVersions {
+            let url = path.isEmpty ? root : root.appendingPathComponent(path)
+            guard try ArchiveFileVersion(at: url) == version else {
+                throw ImageAllMigrationArchiveError.resourceChanged
+            }
+        }
+    }
+
+    /// Used only immediately after this module renames its verified staging
+    /// directory. It cannot rebind arbitrary caller-provided or persisted proof.
+    fileprivate func afterOwnedRename(from staging: URL, to final: URL) throws -> Self {
+        guard storageRoot == staging.standardizedFileURL.path,
+              staging.deletingLastPathComponent().standardizedFileURL == final.deletingLastPathComponent().standardizedFileURL,
+              !FileManager.default.fileExists(atPath: staging.path),
+              let oldRoot = storageVersions[""] else {
+            throw ImageAllMigrationArchiveError.resourceChanged
+        }
+        let newRoot = try ArchiveFileVersion(at: final)
+        guard oldRoot.matchesRenamedDirectory(newRoot) else {
+            throw ImageAllMigrationArchiveError.resourceChanged
+        }
+        var versions = storageVersions
+        versions[""] = newRoot
+        let rebound = Self(migrationID: migrationID, manifestSHA256: manifestSHA256,
+            itemCount: itemCount, resourceCount: resourceCount, verifiedBytes: verifiedBytes,
+            incompleteMediaIDs: incompleteMediaIDs, unavailableResources: unavailableResources,
+            factsSHA256: factsSHA256, storageRoot: final.standardizedFileURL.path,
+            storageVersions: versions)
+        try rebound.validateStorage(at: final)
+        return rebound
+    }
 
     /// Current Mac import persists every declared resource. Until partial
     /// resource imports have an explicit catalog contract, any unavailable
@@ -390,13 +479,36 @@ public enum ImageAllMigrationArchive {
     }
 
     public static func verify(at archiveRoot: URL) throws -> ImageAllMigrationVerification {
+        try inspect(at: archiveRoot, receivedResource: nil).1
+    }
+
+    // Receiver-only metadata inspection. Its transient result MUST NOT escape as
+    // a final verification: the handoff caller converts it to a custody receipt.
+    static func inspectReceived(at root: URL,
+        resource: @escaping (String, Int64, String) throws -> Void) throws -> (ImageAllMigrationHeader, ImageAllMigrationVerification) {
+        try inspect(at: root, receivedResource: resource)
+    }
+
+    private static func inspect(at archiveRoot: URL,
+        receivedResource: ((String, Int64, String) throws -> Void)?) throws -> (ImageAllMigrationHeader, ImageAllMigrationVerification) {
+        #if DEBUG
+        let diagnosticStart = ProcessInfo.processInfo.systemUptime
+        let diagnosticWall = Int64(Date().timeIntervalSince1970 * 1000)
+        var diagnosticReadSeconds = 0.0
+        var diagnosticBytes: Int64 = 0
+        defer { ImageAllMigrationArchiveDiagnostics.record(stage: "verify", root: archiveRoot,
+            started: diagnosticStart, wall: diagnosticWall,
+            resourceReadSeconds: diagnosticReadSeconds, resourceBytes: diagnosticBytes) }
+        #endif
         let manager = FileManager.default
         let root = archiveRoot.standardizedFileURL
         guard try root.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey]).isDirectory == true,
               try root.resourceValues(forKeys: [.isSymbolicLinkKey]).isSymbolicLink != true else {
             throw ImageAllMigrationArchiveError.unsafeResourcePath
         }
+        var storageVersions = ["": try ArchiveFileVersion(at: root)]
         let manifestURL = root.appendingPathComponent(manifestFilename)
+        storageVersions[manifestFilename] = try ArchiveFileVersion(at: manifestURL)
         guard try manifestURL.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey]).isRegularFile == true,
               try manifestURL.resourceValues(forKeys: [.isSymbolicLinkKey]).isSymbolicLink != true else {
             throw ImageAllMigrationArchiveError.invalidManifest
@@ -421,7 +533,7 @@ public enum ImageAllMigrationArchive {
         var albumOrdinals: [String: Set<Int64>] = [:]
         var folderMetadata: [String: (String?, String?)] = [:]
         let decoder = JSONDecoder()
-        while let block = try handle.read(upToCount: readBlockBytes), !block.isEmpty {
+        while let block = try ImageAllMigrationFileIO.read(handle, upToCount: readBlockBytes), !block.isEmpty {
             manifestHash.update(data: block)
             buffer.append(block)
             while let newline = buffer.firstIndex(of: 0x0A) {
@@ -523,7 +635,24 @@ public enum ImageAllMigrationArchive {
                             root: root, path: path, resourceID: resource.id,
                             manager: manager
                         )
-                        let actual = try hashFile(at: url)
+                        if storageVersions["resources"] == nil {
+                            storageVersions["resources"] = try ArchiveFileVersion(at: root.appendingPathComponent("resources"))
+                        }
+                        storageVersions[path] = try ArchiveFileVersion(at: url)
+                        #if DEBUG
+                        let diagnosticReadStart = ProcessInfo.processInfo.systemUptime
+                        #endif
+                        let actual: (bytes: Int64, sha256: String)
+                        if let receivedResource {
+                            try receivedResource(path, count, hash.lowercased())
+                            actual = (count, hash.lowercased())
+                        } else {
+                            actual = try hashFile(at: url)
+                        }
+                        #if DEBUG
+                        diagnosticReadSeconds += ProcessInfo.processInfo.systemUptime - diagnosticReadStart
+                        if receivedResource == nil { diagnosticBytes += actual.bytes }
+                        #endif
                         guard actual.bytes == count,
                               actual.sha256 == hash.lowercased(),
                               verifiedBytes <= Int64.max - count else {
@@ -559,6 +688,7 @@ public enum ImageAllMigrationArchive {
               header.declaredItemCount == itemCount else {
             throw ImageAllMigrationArchiveError.invalidManifest
         }
+        try header.validateRetainedSelection(mediaIDs: mediaIDs)
         let rootEntries = Set(try manager.contentsOfDirectory(atPath: root.path))
         var expectedRootEntries: Set<String> = paths.isEmpty
             ? [manifestFilename] : [manifestFilename, "resources"]
@@ -576,38 +706,62 @@ public enum ImageAllMigrationArchive {
                 throw ImageAllMigrationArchiveError.invalidManifest
             }
         }
+        let factsDirectory = root.appendingPathComponent(ImageAllMigrationFacts.sidecarDirectoryName)
+        if manager.fileExists(atPath: factsDirectory.path) {
+            storageVersions[ImageAllMigrationFacts.sidecarDirectoryName] = try ArchiveFileVersion(at: factsDirectory)
+            for name in try manager.contentsOfDirectory(atPath: factsDirectory.path) {
+                let path = ImageAllMigrationFacts.sidecarDirectoryName + "/" + name
+                storageVersions[path] = try ArchiveFileVersion(at: root.appendingPathComponent(path))
+            }
+        }
         let publishedFacts = try ImageAllMigrationFacts.inspectPublished(
             at: root, sourceDeviceID: header.sourceDeviceID,
             sourceEpoch: header.sourceEpoch, scopeRevision: header.scopeRevision,
             inventoryWatermark: header.inventoryWatermark,
             minimumFactWatermark: highestFactRevision, mediaIDs: mediaIDs
         )
-        return ImageAllMigrationVerification(
+        let verification = ImageAllMigrationVerification(
             migrationID: header.migrationID,
             manifestSHA256: hex(Data(manifestHash.finalize())),
             itemCount: itemCount, resourceCount: resourceCount,
             verifiedBytes: verifiedBytes, incompleteMediaIDs: incomplete,
             unavailableResources: unavailableResources,
-            factsSHA256: publishedFacts.sha256
+            factsSHA256: publishedFacts.sha256,
+            storageRoot: root.path, storageVersions: storageVersions
         )
+        try verification.validateStorage(at: root)
+        return (header, verification)
     }
 
     /// Streams a verified package into a caller-owned transaction. The second
     /// verification must succeed before that transaction is committed; it
-    /// catches a package changing while records are being consumed.
+    /// catches a package changing while records are being consumed. A prior result
+    /// can remove only the redundant preflight: it must still match this root and
+    /// object versions. ADR-121 explicitly permits reuseVerifiedContents to replace
+    /// the second pass with identity/version continuity during one operation.
     public static func visitVerifiedRecords(
         at archiveRoot: URL,
+        priorVerification: ImageAllMigrationVerification? = nil,
+        reuseVerifiedContents: Bool = false,
         onHeader: (ImageAllMigrationHeader) throws -> Void,
         onItem: (ImageAllMigrationItem) throws -> Void
     ) throws -> ImageAllMigrationVerification {
-        let before = try verify(at: archiveRoot)
+        // ADR-121: explicit same-operation reuse requires a genuine in-memory
+        // full-content proof; callers cannot fabricate or decode this binding.
+        guard !reuseVerifiedContents || priorVerification != nil else {
+            throw ImageAllMigrationArchiveError.resourceChanged
+        }
+        let before = try priorVerification ?? verify(at: archiveRoot)
+        try before.validateStorage(at: archiveRoot)
         let handle = try FileHandle(forReadingFrom: archiveRoot.appendingPathComponent(manifestFilename))
         defer { try? handle.close() }
         let decoder = JSONDecoder()
         var buffer = Data()
+        var consumedManifestHash = SHA256()
         var sawHeader = false
         var itemCount = 0
-        while let block = try handle.read(upToCount: readBlockBytes), !block.isEmpty {
+        while let block = try ImageAllMigrationFileIO.read(handle, upToCount: readBlockBytes), !block.isEmpty {
+            consumedManifestHash.update(data: block)
             buffer.append(block)
             while let newline = buffer.firstIndex(of: 0x0A) {
                 let line = buffer.prefix(upTo: newline)
@@ -636,20 +790,32 @@ public enum ImageAllMigrationArchive {
             }
         }
         guard sawHeader, buffer.isEmpty, itemCount == before.itemCount,
-              try verify(at: archiveRoot) == before else {
+              hex(Data(consumedManifestHash.finalize())) == before.manifestSHA256 else {
+            throw ImageAllMigrationArchiveError.resourceChanged
+        }
+        // Reuse proves continuity, not a new content read. Metadata consumed by
+        // callbacks is hashed above; ANY observed object/version change rejects.
+        if reuseVerifiedContents {
+            try before.validateStorage(at: archiveRoot)
+            return before
+        }
+        let after = try verify(at: archiveRoot)
+        guard after == before, after.storageVersions == before.storageVersions else {
             throw ImageAllMigrationArchiveError.resourceChanged
         }
         return before
     }
 
     public static func readVerifiedHeader(
-        at archiveRoot: URL
+        at archiveRoot: URL,
+        priorVerification: ImageAllMigrationVerification? = nil
     ) throws -> (ImageAllMigrationHeader, ImageAllMigrationVerification) {
-        let verification = try verify(at: archiveRoot)
+        let verification = try priorVerification ?? verify(at: archiveRoot)
+        try verification.validateStorage(at: archiveRoot)
         let handle = try FileHandle(forReadingFrom: archiveRoot.appendingPathComponent(manifestFilename))
         defer { try? handle.close() }
         var line = Data()
-        while let byte = try handle.read(upToCount: 1), !byte.isEmpty {
+        while let byte = try ImageAllMigrationFileIO.read(handle, upToCount: 1), !byte.isEmpty {
             if byte[0] == 0x0A { break }
             line.append(byte)
             guard line.count < maximumLineBytes else {
@@ -660,6 +826,7 @@ public enum ImageAllMigrationArchive {
         guard header.recordType == "header", header.migrationID == verification.migrationID else {
             throw ImageAllMigrationArchiveError.invalidManifest
         }
+        try verification.validateStorage(at: archiveRoot)
         return (header, verification)
     }
 
@@ -668,13 +835,32 @@ public enum ImageAllMigrationArchive {
     public static func publishVerifiedCopy(
         from archiveRoot: URL, to targetParent: URL
     ) throws -> URL {
+        try publishVerifiedCopyWithVerification(from: archiveRoot, to: targetParent).archiveURL
+    }
+
+    /// Returns the actual target-copy verification for a same-operation consumer.
+    /// Consumers still perform their final full-byte verification before commit.
+    public static func publishVerifiedCopyWithVerification(
+        from archiveRoot: URL, to targetParent: URL,
+        sourceVerification: ImageAllMigrationVerification? = nil
+    ) throws -> (archiveURL: URL, verification: ImageAllMigrationVerification) {
+        try publishVerifiedCopyWithVerification(from: archiveRoot, to: targetParent,
+            sourceVerification: sourceVerification, afterCopy: nil)
+    }
+
+    // Internal interruption seam; production callers cannot change the copy path.
+    static func publishVerifiedCopyWithVerification(
+        from archiveRoot: URL, to targetParent: URL,
+        sourceVerification: ImageAllMigrationVerification?, afterCopy: (() throws -> Void)?
+    ) throws -> (archiveURL: URL, verification: ImageAllMigrationVerification) {
         let source = archiveRoot.standardizedFileURL.resolvingSymlinksInPath()
         let target = targetParent.standardizedFileURL.resolvingSymlinksInPath()
-        let first = try verify(at: archiveRoot)
+        let first = try sourceVerification ?? verify(at: archiveRoot)
+        try first.validateStorage(at: archiveRoot)
         let receiverOwnedStage = source.lastPathComponent == "package"
             && source.deletingLastPathComponent().lastPathComponent
                 == ".imageall-transfer-\(first.migrationID.uuidString.lowercased())"
-            && source.deletingLastPathComponent().deletingLastPathComponent() == target
+            && source.deletingLastPathComponent().deletingLastPathComponent().path == target.path
         guard source.path != target.path,
               (!source.path.hasPrefix(target.path + "/") || receiverOwnedStage),
               !target.path.hasPrefix(source.path + "/") else {
@@ -704,13 +890,25 @@ public enum ImageAllMigrationArchive {
             throw ImageAllMigrationArchiveError.destinationCollision
         }
         do {
+            #if DEBUG
+            let copyStart = ProcessInfo.processInfo.systemUptime
+            let copyWall = Int64(Date().timeIntervalSince1970 * 1000)
+            #endif
             try manager.copyItem(at: archiveRoot, to: staging)
+            #if DEBUG
+            ImageAllMigrationArchiveDiagnostics.record(stage: "copy", root: staging,
+                started: copyStart, wall: copyWall)
+            #endif
+            try afterCopy?()
+            try first.validateStorage(at: archiveRoot)
             let copied = try verify(at: staging)
             guard copied == first else {
                 throw ImageAllMigrationArchiveError.resourceChanged
             }
+            try first.validateStorage(at: archiveRoot)
+            try copied.validateStorage(at: staging)
             try manager.moveItem(at: staging, to: final)
-            return final
+            return (final, try copied.afterOwnedRename(from: staging, to: final))
         } catch {
             try? manager.removeItem(at: staging)
             throw error
@@ -750,7 +948,7 @@ public enum ImageAllMigrationArchive {
         defer { try? handle.close() }
         var hasher = SHA256()
         var count: Int64 = 0
-        while let block = try handle.read(upToCount: readBlockBytes), !block.isEmpty {
+        while let block = try ImageAllMigrationFileIO.read(handle, upToCount: readBlockBytes), !block.isEmpty {
             guard Int64(block.count) <= Int64.max - count else {
                 throw ImageAllMigrationArchiveError.resourceChanged
             }

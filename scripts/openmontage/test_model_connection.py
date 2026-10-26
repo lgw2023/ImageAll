@@ -9,7 +9,7 @@ import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
 import unittest
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'Vendor/OpenMontage/Runtime/engine'))
+sys.path.insert(0, os.environ.get('IMAGEALL_TEST_ENGINE', str(Path(__file__).resolve().parents[2] / 'Vendor/OpenMontage/Runtime/engine')))
 from PIL import Image
 from lib.model_connection import normalize_url
 from lib.private_photo_vision import review, validate_saved

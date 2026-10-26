@@ -15,7 +15,13 @@ enum CatalogSnapshotHashing {
 
         while true {
             do {
-                let chunk = try handle.read(upToCount: 65_536) ?? Data()
+                // Foundation may autorelease each NSData returned by FileHandle.
+                // Snapshot creation and validation can hash a large catalog twice
+                // on the same worker; drain each read instead of retaining the
+                // entire catalog until the outer run-loop pool is released.
+                let chunk = try autoreleasepool {
+                    try handle.read(upToCount: 65_536) ?? Data()
+                }
                 if chunk.isEmpty {
                     break
                 }

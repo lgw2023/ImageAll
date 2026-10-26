@@ -543,6 +543,13 @@ enum RemoteHostProcessHolder {
     }
 
     static func configureMigrationTransferTarget(_ directory: URL) async throws -> LifecycleResult {
+        if let previous = migrationTransferTargetURL(), previous.standardizedFileURL != directory.standardizedFileURL {
+            let receiver = try PhoneHostImportReceivers.shared.receiver(at: previous)
+            guard try await receiver.hostJobs().allSatisfy({ $0.phase == .complete }) else {
+                throw RemoteAPIError(code: .conflict,
+                    message: "原接收目录还有 Mac 本地任务，请先在“设备与导入”完成或重试，再切换接收目录。手机无需保持连接。")
+            }
+        }
         let bookmark = try directory.bookmarkData(
             options: [.withSecurityScope], includingResourceValuesForKeys: nil,
             relativeTo: nil
@@ -585,6 +592,11 @@ enum RemoteHostProcessHolder {
 
     static func cancelPairingSession() async {
         await state.pairingStore?.cancelOffer()
+    }
+
+    static func connectedDeviceIDs() async -> Set<UUID> {
+        guard let server = await state.server else { return [] }
+        return await server.connectedDeviceIDs()
     }
 
     static func pairedDevices() async -> [RemotePairedDeviceSummary] {
@@ -857,8 +869,8 @@ enum RemoteHostProcessHolder {
         if let target = migrationTransferTargetURL(defaults: defaults),
            target.startAccessingSecurityScopedResource() {
             do {
-                migrationTransferStore = try ImageAllMigrationTransferStore(
-                    root: target, maximumSessionBytes: migrationTransferMaximumBytes(defaults: defaults))
+                migrationTransferStore = try PhoneHostImportReceivers.shared.receiver(
+                    at: target, maximumBytes: migrationTransferMaximumBytes(defaults: defaults))
                 migrationTransferScopeURL = target
             } catch {
                 target.stopAccessingSecurityScopedResource()
@@ -899,6 +911,20 @@ enum RemoteHostProcessHolder {
                     try await PhoneArchiveImportProcessHolder.recheckCopiesForPhone(report)
                 },
                 migrationTransferStore: migrationTransferStore,
+                migrationHandoffAccepted: { [receiver = migrationTransferStore, target = migrationTransferScopeURL] in
+                    guard let receiver, let target else { return }
+                    await PhoneHostImportProcess.wake(receiver: receiver, target: target)
+                },
+                automaticCleanupProvider: { [receiver = migrationTransferStore] query, nonce, deviceID in
+                    guard let receiver else { throw ImageAllMigrationCleanupError.busy }
+                    return try await PhoneImportTaskActivity.automaticCleanup(query, nonce: nonce, hostID: identity.hostID, deviceID: deviceID, receiver: receiver)
+                },
+                exportCleanupReceiptProvider: { query, nonce, deviceID in
+                    try await PhoneImportTaskActivity.exportCleanupReceipt(query, nonce: nonce, hostID: identity.hostID, deviceID: deviceID)
+                },
+                importTaskStatusProvider: { query in
+                    try await PhoneImportTaskActivity.status(query)
+                },
                 migrationTransferScopeURL: migrationTransferScopeURL,
                 accessAccountStore: accessAccountStore,
                 eventBroker: eventBroker,

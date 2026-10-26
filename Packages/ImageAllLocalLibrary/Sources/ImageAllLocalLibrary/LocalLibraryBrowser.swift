@@ -92,26 +92,30 @@ public final class LocalLibraryBrowser {
     }
 
     /// Enumerates source metadata only. Preparing never selects assets or sends anything.
-    public func prepareBulkSharePreview() async throws -> LocalBulkSharePreview {
+    public func prepareBulkSharePreview(excludingAssetIDs: Set<UUID> = []) async throws -> LocalBulkSharePreview {
         invalidate()
         guard source.canRead else { throw LocalLibraryError.sharePlanExpired }
         let current = generation
         let version = try await store.shareSelectionVersion()
+        let excluded = try await store.localIdentifiers(for: excludingAssetIDs, expected: version)
         let count = try await source.refresh()
         guard isCurrent(current), count >= 0 else { throw LocalLibraryError.sharePlanExpired }
         var identifiers = Set<String>()
         var photos = 0, videos = 0
+        var seen = Set<String>()
         for start in stride(from: 0, to: count, by: pageSize) {
             try Task.checkCancellation()
             let end = min(count, start + pageSize)
             let page = try await source.observations(in: start..<end)
             guard isCurrent(current), page.count == end - start else { throw LocalLibraryError.sharePlanExpired }
             for item in page {
-                guard identifiers.insert(item.localIdentifier).inserted,
+                guard seen.insert(item.localIdentifier).inserted,
                       item.kind == "image" || item.kind == "video" else { throw LocalLibraryError.sharePlanExpired }
+                if excluded.contains(item.localIdentifier) { continue }
+                identifiers.insert(item.localIdentifier)
                 if item.kind == "video" { videos += 1 } else { photos += 1 }
             }
-            try await store.observe(page)
+            try await store.observe(page.filter { !excluded.contains($0.localIdentifier) })
             guard isCurrent(current) else { throw LocalLibraryError.sharePlanExpired }
         }
         try await validateVisible(identifiers, generation: current)
@@ -123,13 +127,16 @@ public final class LocalLibraryBrowser {
         return preview
     }
 
-    public func confirmBulkSharePreview(_ preview: LocalBulkSharePreview) async throws -> Int {
+    public func confirmBulkSharePreview(_ preview: LocalBulkSharePreview, replacingSelection: Bool = false) async throws -> Int {
         guard let plan = sharePlan, plan.preview == preview, isCurrent(plan.generation) else {
             throw LocalLibraryError.sharePlanExpired
         }
         try await validateVisible(plan.identifiers, generation: plan.generation)
         // Consume before yielding to the actor: a repeated tap cannot submit this plan twice.
         sharePlan = nil
+        if replacingSelection {
+            return try await store.replaceSharedSelection(localIdentifiers: plan.identifiers, expected: plan.version)
+        }
         return try await store.addSharedSelection(localIdentifiers: plan.identifiers, expected: plan.version)
     }
 

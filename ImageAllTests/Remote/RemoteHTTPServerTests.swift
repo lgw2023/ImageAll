@@ -6,11 +6,143 @@ import Foundation
 import ImageIO
 import ImageAllRemoteProtocol
 import Network
+import Security
 import UniformTypeIdentifiers
 import XCTest
 @testable import ImageAll
 
 final class RemoteHTTPServerTests: XCTestCase {
+    func testWebSocketControlDecoderBoundsAndCoalescedFrames() throws {
+        var decoder = RemoteWebSocketControlDecoder()
+        let ping = Data([0x89, 0x83, 1, 2, 3, 4, 0x60, 0x60, 0x60])
+        XCTAssertTrue(try decoder.append(ping.prefix(3)).isEmpty)
+        XCTAssertEqual(try decoder.append(Data(ping.dropFirst(3)) + Data([0x88, 0x80, 1, 2, 3, 4])),
+                       [.pong(Data("abc".utf8)), .close(Data())])
+        for invalid in [Data([0x89, 0]), Data([0x09, 0x80]), Data([0x89, 0xfe]),
+                        Data([0x88, 0x81, 1, 2, 3, 4, 0]),
+                        Data([0x82, 0xff, 0, 0, 0, 0, 0, 2, 0, 0])] {
+            var fresh = RemoteWebSocketControlDecoder()
+            XCTAssertThrowsError(try fresh.append(invalid))
+        }
+    }
+
+    func testWebSocketCloseHandshakeReleasesRepeatedConnections() async throws {
+        let (server, _) = makeServer(port: 25174)
+        try await server.start()
+        defer { Task { await server.stop() } }
+        // More lifecycles than the USB bridge's eight slots, without relying on
+        // a client TCP FIN to clean up a completed WebSocket close handshake.
+        for _ in 0..<12 {
+            let connection = try await openSyntheticWebSocket(port: 25174)
+            defer { connection.cancel() }
+            try await sendWebSocketBytes(Data([0x88, 0x82, 1, 2, 3, 4, 0x02, 0xea]), on: connection)
+            let reply = try await readWebSocketBytes(on: connection)
+            XCTAssertEqual(reply.data, Data([0x88, 2, 0x03, 0xe8]))
+            if !reply.ended {
+                let eof = try await readWebSocketBytes(on: connection)
+                XCTAssertTrue(eof.ended)
+            }
+        }
+    }
+
+    func testWebSocketPingGetsPongAcrossSplitReceive() async throws {
+        let (server, _) = makeServer(port: 25175)
+        try await server.start()
+        defer { Task { await server.stop() } }
+        let connection = try await openSyntheticWebSocket(port: 25175)
+        defer { connection.cancel() }
+        try await sendWebSocketBytes(Data([0x89, 0x83, 1]), on: connection)
+        try await sendWebSocketBytes(Data([2, 3, 4, 0x60, 0x60, 0x60]), on: connection)
+        let reply = try await readWebSocketBytes(on: connection)
+        XCTAssertEqual(reply.data, Data([0x8a, 3]) + Data("abc".utf8))
+    }
+
+    func testDevicePresenceTracksAuthenticatedConnectionsAndClose() async throws {
+        let port: UInt16 = 25176
+        let (server, pairing) = makeServer(port: port)
+        let offer = await pairing.issueOffer()
+        let tokens = try await pairing.completePairing(.init(
+            pairingToken: offer.pairingToken, deviceName: "Synthetic phone",
+            devicePublicKeySPKI_SHA256: "synthetic-key"))
+        try await server.start()
+        defer { Task { await server.stop() } }
+        let debug = try await openSyntheticWebSocket(port: port)
+        defer { debug.cancel() }
+        let initial = await server.connectedDeviceIDs()
+        XCTAssertTrue(initial.isEmpty)
+        let first = try await openSyntheticWebSocket(port: port, token: tokens.accessToken)
+        let second = try await openSyntheticWebSocket(port: port, token: tokens.accessToken)
+        defer { first.cancel(); second.cancel() }
+        // Handshake completion and actor bookkeeping may resume in either order.
+        for _ in 0..<50 {
+            if await server.connectedDeviceIDs() == [tokens.deviceID] { break }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        let connected = await server.connectedDeviceIDs()
+        XCTAssertEqual(connected, [tokens.deviceID])
+        try await sendWebSocketBytes(Data([0x88, 0x80, 1, 2, 3, 4]), on: first)
+        _ = try await readWebSocketBytes(on: first)
+        let stillConnected = await server.connectedDeviceIDs()
+        XCTAssertEqual(stillConnected, [tokens.deviceID])
+        try await sendWebSocketBytes(Data([0x88, 0x80, 1, 2, 3, 4]), on: second)
+        _ = try await readWebSocketBytes(on: second)
+        let disconnected = await server.connectedDeviceIDs()
+        XCTAssertTrue(disconnected.isEmpty)
+        let third = try await openSyntheticWebSocket(port: port, token: tokens.accessToken)
+        defer { third.cancel() }
+        await server.stop()
+        let stopped = await server.connectedDeviceIDs()
+        XCTAssertTrue(stopped.isEmpty)
+    }
+
+    private func openSyntheticWebSocket(port: UInt16, token: String? = nil) async throws -> NWConnection {
+        let connection = NWConnection(host: "127.0.0.1", port: .init(rawValue: port)!, using: .tcp)
+        connection.start(queue: .global(qos: .userInitiated))
+        let request = "GET \(RemoteHTTPPaths.eventsWebSocket) HTTP/1.1\r\nHost: 127.0.0.1:\(port)\r\nAuthorization: Bearer \(token ?? Self.legacyDebugToken)\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\r\n"
+        try await sendWebSocketBytes(Data(request.utf8), on: connection)
+        var response = Data()
+        while response.range(of: Data("\r\n\r\n".utf8)) == nil {
+            let part = try await readWebSocketBytes(on: connection)
+            response.append(part.data)
+            if part.ended { break }
+        }
+        XCTAssertTrue(String(decoding: response, as: UTF8.self).hasPrefix("HTTP/1.1 101"))
+        return connection
+    }
+
+    private func sendWebSocketBytes(_ data: Data, on connection: NWConnection) async throws {
+        try await withCheckedThrowingContinuation { (c: CheckedContinuation<Void, Error>) in
+            connection.send(content: data, completion: .contentProcessed { error in
+                if let error { c.resume(throwing: error) } else { c.resume() }
+            })
+        }
+    }
+
+    private func readWebSocketBytes(on connection: NWConnection) async throws -> (data: Data, ended: Bool) {
+        let deadline = Task {
+            do { try await Task.sleep(for: .seconds(3)) } catch { return }
+            connection.cancel()
+        }
+        defer { deadline.cancel() }
+        return try await withCheckedThrowingContinuation { c in
+            connection.receive(minimumIncompleteLength: 1, maximumLength: 65536) { data, _, ended, error in
+                if let error { c.resume(throwing: error) }
+                else { c.resume(returning: (data ?? Data(), ended)) }
+            }
+        }
+    }
+
+    func testPhotoImportProcessingBudgetRequiresPairedBearerAndKeepsHeaderDeadline() {
+        let path = RemoteHTTPPaths.migrationTransfer(UUID())
+        XCTAssertEqual(RemoteHTTPServer.requestTimeout, .seconds(15))
+        XCTAssertNil(RemoteHTTPServer.photoImportProcessingSeconds(method: "POST", path: path, pairedBearer: false))
+        XCTAssertEqual(RemoteHTTPServer.photoImportProcessingSeconds(method: "POST", path: path, pairedBearer: true), 600)
+        XCTAssertEqual(RemoteHTTPServer.photoImportProcessingSeconds(method: "POST",
+            path: RemoteHTTPPaths.localLibrarySnapshotChunk, pairedBearer: true), 180)
+        XCTAssertNil(RemoteHTTPServer.photoImportProcessingSeconds(method: "GET",
+            path: RemoteHTTPPaths.capabilities, pairedBearer: true))
+    }
+
     func testPhoneCollectionRenameIsAtomicReplayableAndRejectsStaleCursor() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }
@@ -139,6 +271,68 @@ final class RemoteHTTPServerTests: XCTestCase {
         XCTAssertEqual(RemoteHostProcessHolder.migrationTransferMaximumGiB(defaults: defaults), 128)
     }
 
+    func testImportTaskStatusUsesPairedSourceAndWorksWithoutTransferStaging() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("ImportStatus-\(UUID())")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let port = UInt16.random(in: 19_000...29_000), hostID = UUID()
+        let pairing = makePairingStore(hostID: hostID, listenPort: Int(port))
+        let sync = try RemoteLocalLibrarySyncStore(hostID: hostID, storageURL: root.appendingPathComponent("sync.json"))
+        let query = RemoteImportTaskQuery(taskID: UUID(), migrationID: UUID(),
+            sourceInstallID: UUID(), sourceEpoch: UUID(), manifestSHA256: String(repeating: "a", count: 64))
+        let sourceID = UUID()
+        let (server, _) = makeServer(port: port, pairingStore: pairing, localLibrarySyncStore: sync,
+            exportCleanupReceiptProvider: { received, nonce, device in
+                .init(query: received, nonce: nonce, hostID: hostID, deviceID: device, sourceID: sourceID,
+                      itemCount: 2_866, resourceCount: 4_169, verifiedBytes: 100)
+            },
+            importTaskStatusProvider: { received in
+                XCTAssertEqual(received, query)
+                return .init(query: received, phase: .browsable, sourceID: sourceID, itemCount: 2_866)
+            })
+        try await server.start()
+        defer { Task { await server.stop() } }
+        try await Task.sleep(for: .milliseconds(150))
+        let offer = await pairing.issueOffer()
+        let tokens = try await pairing.completePairing(.init(pairingToken: offer.pairingToken,
+            deviceName: "Synthetic phone", devicePublicKeySPKI_SHA256: "status-fixture"))
+        let client = RemoteLibraryClient(endpoint: try .init(host: "127.0.0.1", port: Int(port),
+            accessToken: tokens.accessToken))
+        do { _ = try await client.importTaskStatus(query); XCTFail("unsynced source must fail") }
+        catch let error as RemoteAPIError { XCTAssertEqual(error.code, .conflict) }
+        _ = try await sync.submit(.init(hostID: hostID, installID: query.sourceInstallID,
+            sourceEpoch: query.sourceEpoch, scopeRevision: 1, snapshotSequence: 1,
+            selectedAssetIDs: [], assets: []), authenticatedDeviceID: tokens.deviceID)
+        let result = try await client.importTaskStatus(query)
+        XCTAssertEqual(result.query, query)
+        XCTAssertEqual(result.phase, .browsable)
+        XCTAssertEqual(result.sourceID, sourceID)
+        XCTAssertEqual(result.itemCount, 2_866)
+        let nonce = UUID()
+        let cleanup = try await client.exportCleanupReceipt(query, nonce: nonce, hostID: hostID, deviceID: tokens.deviceID)
+        XCTAssertEqual(cleanup.sourceID, sourceID)
+        XCTAssertThrowsError(try cleanup.validate(query: query, nonce: UUID(), hostID: hostID, deviceID: tokens.deviceID))
+        XCTAssertThrowsError(try cleanup.validate(query: query, nonce: nonce, hostID: hostID, deviceID: UUID()))
+
+        do {
+            _ = try await client.importTaskStatus(.init(taskID: query.taskID, migrationID: query.migrationID,
+                sourceInstallID: query.sourceInstallID, sourceEpoch: UUID(), manifestSHA256: query.manifestSHA256))
+            XCTFail("old source epoch must fail")
+        } catch let error as RemoteAPIError { XCTAssertEqual(error.code, .conflict) }
+        let otherOffer = await pairing.issueOffer()
+        let otherTokens = try await pairing.completePairing(.init(pairingToken: otherOffer.pairingToken,
+            deviceName: "Other phone", devicePublicKeySPKI_SHA256: "other-status-fixture"))
+        let otherClient = RemoteLibraryClient(endpoint: try .init(host: "127.0.0.1", port: Int(port),
+            accessToken: otherTokens.accessToken))
+        do { _ = try await otherClient.importTaskStatus(query); XCTFail("other phone must fail") }
+        catch let error as RemoteAPIError { XCTAssertEqual(error.code, .conflict) }
+        do {
+            _ = try await otherClient.exportCleanupReceipt(query, nonce: nonce, hostID: hostID, deviceID: otherTokens.deviceID)
+            XCTFail("other phone cleanup must fail")
+        } catch let error as RemoteAPIError { XCTAssertEqual(error.code, .conflict) }
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: root.path), ["sync.json"])
+    }
+
     func testPairedMigrationChunkRouteStreamsBeyondJSONLimitAndSealsPackage() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(
             "RemoteMigrationTransfer-\(UUID().uuidString)", isDirectory: true
@@ -151,7 +345,7 @@ final class RemoteHTTPServerTests: XCTestCase {
         let migrationID = UUID()
         let resourceID = UUID()
         let relativePath = "resources/\(resourceID.uuidString.lowercased()).bin"
-        let bytes = Data(repeating: 0x52, count: 384 * 1_024)
+        let bytes = Data(repeating: 0x52, count: 4 * 1_024 * 1_024)
         let resourceURL = source.appendingPathComponent(relativePath)
         try FileManager.default.createDirectory(
             at: resourceURL.deletingLastPathComponent(), withIntermediateDirectories: true
@@ -237,11 +431,23 @@ final class RemoteHTTPServerTests: XCTestCase {
             upload.setValue(path, forHTTPHeaderField: "X-ImageAll-File")
             upload.setValue("0", forHTTPHeaderField: "X-ImageAll-Offset")
             upload.setValue(hash(contents), forHTTPHeaderField: "X-ImageAll-SHA256")
+            upload.setValue("file", forHTTPHeaderField: "X-ImageAll-Progress-Scope")
             let (data, response) = try await URLSession.shared.data(for: upload)
             XCTAssertEqual(
                 try XCTUnwrap(response as? HTTPURLResponse).statusCode, 200,
                 String(decoding: data, as: UTF8.self)
             )
+            let compact = try JSONDecoder().decode(ImageAllMigrationTransferProgress.self, from: data)
+            XCTAssertEqual(compact.files.map(\.relativePath), [path])
+            XCTAssertEqual(compact.files.first?.committedBytes, Int64(contents.count))
+            if path == relativePath {
+                // Lost ACK replay with an old client still returns the full batch.
+                upload.setValue(nil, forHTTPHeaderField: "X-ImageAll-Progress-Scope")
+                let (legacyData, legacyResponse) = try await URLSession.shared.data(for: upload)
+                XCTAssertEqual((legacyResponse as? HTTPURLResponse)?.statusCode, 200)
+                let legacy = try JSONDecoder().decode(ImageAllMigrationTransferProgress.self, from: legacyData)
+                XCTAssertEqual(legacy.files.count, 2)
+            }
         }
         let verifyBody = try JSONEncoder().encode(ImageAllMigrationResourceVerificationRequest(
             relativePath: relativePath, byteCount: Int64(bytes.count), sha256: hash(bytes)))
@@ -254,6 +460,18 @@ final class RemoteHTTPServerTests: XCTestCase {
         XCTAssertEqual(resourceReceipt.migrationID, migrationID)
         XCTAssertEqual(resourceReceipt.deviceID, tokens.deviceID)
         XCTAssertEqual(resourceReceipt.resource.sha256, hash(bytes))
+        let resumePath = RemoteHTTPPaths.migrationTransferResume(migrationID)
+        let (resumeData, resumeResponse) = try await URLSession.shared.data(for: request(resumePath, method: "GET"))
+        XCTAssertEqual(try XCTUnwrap(resumeResponse as? HTTPURLResponse).statusCode, 200)
+        let resume = try JSONDecoder().decode(ImageAllMigrationResumeCheckpoint.self, from: resumeData)
+        XCTAssertEqual(resume.migrationID, migrationID)
+        XCTAssertEqual(resume.sourceInstallID, installID)
+        XCTAssertEqual(resume.resources, [resourceReceipt])
+        XCTAssertFalse(resume.sealed)
+        var unauthenticatedResume = request(resumePath, method: "GET")
+        unauthenticatedResume.setValue(nil, forHTTPHeaderField: "Authorization")
+        let (_, deniedResume) = try await URLSession.shared.data(for: unauthenticatedResume)
+        XCTAssertEqual(try XCTUnwrap(deniedResume as? HTTPURLResponse).statusCode, 401)
         var unauthenticatedVerify = request(verifyPath, method: "POST", body: verifyBody)
         unauthenticatedVerify.setValue(nil, forHTTPHeaderField: "Authorization")
         let (_, deniedVerify) = try await URLSession.shared.data(for: unauthenticatedVerify)
@@ -2829,13 +3047,18 @@ final class RemoteHTTPServerTests: XCTestCase {
         return .init(binding: binding, outcome: .outcomeUnknown, updatedAtMs: 3000)
     }
 
-    private func makeServer(
+    // Shared by the isolated mobile-task/HTTP/catalog integration scenario.
+    func makeServer(
         port: UInt16,
         catalog: any RemoteCatalogServing = RemoteHTTPServerTestCatalog(),
         pairingStore: RemotePairingStore? = nil,
         localLibrarySyncStore: RemoteLocalLibrarySyncStore? = nil,
         phoneCopyAuditor: (@Sendable (RemotePhoneCleanupSourceReport) async throws -> Void)? = nil,
         migrationTransferStore: ImageAllMigrationTransferStore? = nil,
+        migrationHandoffAccepted: (@Sendable () async -> Void)? = nil,
+        automaticCleanupProvider: (@Sendable (RemoteImportTaskQuery, UUID, UUID) async throws -> RemoteExportCleanupReceipt)? = nil,
+        exportCleanupReceiptProvider: (@Sendable (RemoteImportTaskQuery, UUID, UUID) async throws -> RemoteExportCleanupReceipt)? = nil,
+        importTaskStatusProvider: (@Sendable (RemoteImportTaskQuery) async throws -> RemoteImportTaskStatus?)? = nil,
         accessAccountStore: RemoteAccessAccountStore? = nil,
         trainingWorkspace: (any TrainingWorkspacePort)? = nil,
         trainingCommands: (any RemoteTrainingCommandPort)? = nil,
@@ -2847,7 +3070,10 @@ final class RemoteHTTPServerTests: XCTestCase {
         hostAppVersion: String = "1.0.0",
         webAssetStore: RemoteWebCompanionAssetStore = RemoteWebCompanionAssetStore(),
         mediaResources: any RemoteMediaResourceProviding = UnavailableRemoteMediaResourceProvider(),
-        originalAssetOpener: (any LibraryOriginalAssetOpening)? = nil
+        originalAssetOpener: (any LibraryOriginalAssetOpening)? = nil,
+        hostID: UUID? = nil,
+        secIdentity: SecIdentity? = nil,
+        certificateFingerprint: String? = nil
     ) -> (RemoteHTTPServer, RemotePairingStore) {
         let store = pairingStore ?? makePairingStore(listenPort: Int(port))
         let facade = RemoteCatalogFacade(
@@ -2862,7 +3088,10 @@ final class RemoteHTTPServerTests: XCTestCase {
             workspaceNotices: workspaceNotices,
             idempotency: makeIdempotencyStore(),
             hostAppVersion: hostAppVersion,
-            listenPort: Int(port)
+            listenPort: Int(port),
+            hostID: hostID,
+            usesTLS: secIdentity != nil,
+            certificateFingerprintSHA256: certificateFingerprint
         )
         let server = RemoteHTTPServer(
             facade: facade,
@@ -2870,13 +3099,19 @@ final class RemoteHTTPServerTests: XCTestCase {
             localLibrarySyncStore: localLibrarySyncStore,
             phoneCopyAuditor: phoneCopyAuditor,
             migrationTransferStore: migrationTransferStore,
+            migrationHandoffAccepted: migrationHandoffAccepted,
+            automaticCleanupProvider: automaticCleanupProvider,
+            exportCleanupReceiptProvider: exportCleanupReceiptProvider,
+            importTaskStatusProvider: importTaskStatusProvider,
             accessAccountStore: accessAccountStore ?? makeAccessAccountStore(),
             eventBroker: RemoteEventBroker(),
             mediaResources: mediaResources,
             originalAssetOpener: originalAssetOpener,
             webAssetStore: webAssetStore,
-            secIdentity: nil,
-            port: port
+            secIdentity: secIdentity,
+            port: port,
+            advertisementName: hostID == nil ? RemoteHTTPServer.defaultAdvertisementName() : "ImageAll USB task acceptance",
+            hostID: hostID
         )
         return (server, store)
     }

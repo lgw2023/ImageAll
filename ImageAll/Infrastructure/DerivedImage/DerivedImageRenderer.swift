@@ -41,7 +41,8 @@ struct DerivedImageRenderer: Sendable {
         let prepared = try cascade.preparedImageIOSource(
             sourceBytes: sourceBytes,
             expectedMediaType: expectedMediaType,
-            maximumPixelSize: Self.thumbnailMaxPixelSize(for: variant)
+            maximumPixelSize: Self.thumbnailMaxPixelSize(for: variant),
+            embeddedRAWOnly: true
         )
         let source = prepared.source
         let type = prepared.type
@@ -56,10 +57,17 @@ struct DerivedImageRenderer: Sendable {
         }
         let frameIndex = cascade.primaryFrameIndex(source: source, isCameraRaw: isCameraRaw)
 
-        // Cap decode size before crop/fit so concurrent grid loads do not full-decode
-        // multi‑megapixel originals into memory (a common cause of blank thumbnails).
+        // A max output size does not bound RAW demosaicing memory. For large
+        // RAW containers require an existing thumbnail; never force sensor decode.
+        let properties = CGImageSourceCopyPropertiesAtIndex(source, frameIndex, nil) as? [CFString: Any]
+        let width = properties?[kCGImagePropertyPixelWidth] as? Int ?? 0
+        let height = properties?[kCGImagePropertyPixelHeight] as? Int ?? 0
+        let smallRasterContainer = type == UTType.tiff.identifier
+            && width > 0 && height > 0 && width <= 2_048 && height <= 2_048
+        let requiresEmbeddedThumbnail = isCameraRaw && prepared.stage == .imageIO && !smallRasterContainer
         let thumbOptions: [CFString: Any] = [
-            kCGImageSourceCreateThumbnailFromImageAlways: true,
+            kCGImageSourceCreateThumbnailFromImageAlways: !requiresEmbeddedThumbnail,
+            kCGImageSourceCreateThumbnailFromImageIfAbsent: false,
             kCGImageSourceCreateThumbnailWithTransform: true,
             kCGImageSourceShouldCacheImmediately: true,
             kCGImageSourceThumbnailMaxPixelSize: Self.thumbnailMaxPixelSize(for: variant),

@@ -1,0 +1,41 @@
+{
+  "version": 1,
+  "id": "soft-gray-glyph-shadow",
+  "name": "深灰柔边字幕",
+  "defaultFor": [
+    "standard-photo-story",
+    "brief-title-dissolve"
+  ],
+  "background": "none",
+  "backdropBlur": false,
+  "offsetX": 0,
+  "offsetY": 0,
+  "referenceShortEdge": 1080,
+  "shadowRGB": [
+    40,
+    40,
+    40
+  ],
+  "shadowLayers": [
+    {
+      "blur": 1.5,
+      "opacity": 0.9
+    },
+    {
+      "blur": 4,
+      "opacity": 0.65
+    }
+  ],
+  "nativeShadow": {
+    "blur": 3,
+    "opacity": 0.9
+  },
+  "preserve": [
+    "fontFamily",
+    "fontSize",
+    "fontWeight",
+    "captionContent",
+    "position",
+    "safeMargin"
+  ]
+}

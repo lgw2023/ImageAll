@@ -8,7 +8,10 @@ struct FolderReconcileSourceAccessService: Sendable {
     var onScopeStart: (@Sendable () -> Void)?
     var onScopeStop: (@Sendable () -> Void)?
 
-    func withActiveSourceRootURL<T>(sourceID: UUID, perform: (URL) throws -> T) throws -> T {
+    func withActiveSourceRootURL<T>(sourceID: UUID, allowManagedPhoneSource: Bool = true, perform: (URL) throws -> T) throws -> T {
+        if !allowManagedPhoneSource, try repository.isManagedPhoneSource(sourceID) {
+            throw FolderReconcileHandlerError.sourceUnavailable
+        }
         switch try repository.lookupSource(id: sourceID) {
         case .notFound, .wrongKind:
             throw FolderReconcileHandlerError.sourceUnavailable
@@ -280,7 +283,7 @@ struct FolderReconcileHandler: LeaseBoundJobHandler {
         let classifier = FolderMediaClassifier(resourceReader: fileResourceReader)
 
         do {
-            try rootAccess.withActiveSourceRootURL(sourceID: sourceID) { rootURL in
+            try rootAccess.withActiveSourceRootURL(sourceID: sourceID, allowManagedPhoneSource: false) { rootURL in
                 let session = FolderDirectoryEnumerator(
                     rootURL: rootURL,
                     config: enumerationConfig,

@@ -701,6 +701,8 @@ struct RemoteHostSettingsView: View {
     var body: some View {
         ScrollView {
             VStack(spacing: 16) {
+                settingsCard { DevicePhotoConnectionCard() }
+                phoneImportWorkflowCard
                 hostOverviewCard
 
                 if let statusMessage = model.statusMessage {
@@ -729,6 +731,28 @@ struct RemoteHostSettingsView: View {
                 projection: projection,
                 deviceName: model.devices.first(where: { $0.deviceID == projection.deviceID })?.deviceName
             )
+        }
+    }
+
+    private var phoneImportWorkflowCard: some View {
+        settingsCard {
+            VStack(alignment: .leading, spacing: 12) {
+                sectionHeading("从 iPhone 导入照片与整理信息",
+                    subtitle: "照片和信息属于同一批次，手机原件保留",
+                    systemImage: "square.and.arrow.down")
+                Label("1. 手机授权与选片", systemImage: "photo.on.rectangle")
+                    .font(.callout.weight(.medium))
+                Text("在手机 ImageAll 的“此 iPhone”授予照片访问权限，选中照片加入“待分享”。相簿名称和层级需要完整照片权限；标记包括 ImageAll 标签与集合。")
+                    .font(.footnote).foregroundStyle(.secondary)
+                Label("2. 配对并设置保存位置", systemImage: "link")
+                    .font(.callout.weight(.medium))
+                Text("先启用下方手机连接服务并选择接收目录。有线导入：手机开启 USB，在上方发起连接并在手机确认 Mac 身份，无需扫码。网络连接：开始配对并用手机“Mac 图库”扫码。")
+                    .font(.footnote).foregroundStyle(.secondary)
+                Label("3. 一起传输与导入", systemImage: "tray.and.arrow.down")
+                    .font(.callout.weight(.medium))
+                Text("手机“待分享”点击“导入所选照片与信息到 Mac”。收到批次后，在 Mac 点击“导入照片与信息”，再查看照片、来源相簿和红心。不要把目录已收到当作原件已导入。")
+                    .font(.footnote).foregroundStyle(.secondary)
+            }
         }
     }
 
@@ -1371,11 +1395,16 @@ final class PhoneArchiveImportModel: ObservableObject {
     @Published private(set) var sourceCleanupPreflight: PhoneArchiveSourceCleanupPreflight?
     @Published private(set) var completionReceiptIsCurrent = false
     @Published private(set) var isBusy = false
+    @Published private(set) var isRefreshing = false
     @Published private(set) var message: String?
     @Published var transferMaximumGiB = RemoteHostProcessHolder.migrationTransferMaximumGiB()
+    @Published var receiveDirectoryError: String?
+    @Published var importError: String?
+    @Published private(set) var isImporting = false
     @Published private(set) var savedTransferMaximumGiB = RemoteHostProcessHolder.migrationTransferMaximumGiB()
     @Published private(set) var transferTargetPath: String? =
         RemoteHostProcessHolder.migrationTransferTargetURL()?.path
+    @Published private(set) var hostJobs: [ImageAllMigrationHostJob] = []
     @Published private(set) var sealedTransfers: [ImageAllMigrationTransferSealedArchive] = []
     @Published private(set) var galleryOriginalURLs: [UUID: URL] = [:]
     @Published var preview: PhoneArchivePreview?
@@ -1388,7 +1417,10 @@ final class PhoneArchiveImportModel: ObservableObject {
     }
 
     func refresh() async {
-        guard !isBusy else { return }
+        guard !isBusy, !isRefreshing else { return }
+        isRefreshing = true
+        defer { isRefreshing = false }
+        await refreshSealedTransfers()
         guard let importer = PhoneArchiveImportProcessHolder.importer() else {
             message = "图库尚未就绪，请稍后重试。"
             return
@@ -1413,22 +1445,19 @@ final class PhoneArchiveImportModel: ObservableObject {
     }
 
     func chooseNetworkReceiveDirectory() async {
-        guard !isBusy else { return }
+        guard !isBusy, !isRefreshing else { return }
+        isBusy = true
+        receiveDirectoryError = nil
+        defer { isBusy = false }
         guard let target = await chooseDirectory(
-            title: "选择 iPhone 网络归档接收目录",
-            message: "分片暂存与验证后的 Mac 归档都将保存在这里；请选独立且空间充足的目录。"
+            title: "选择 iPhone 照片接收目录",
+            message: "USB 和网络收到的照片与信息都将保存在这里；请选择与已有来源目录分离且空间充足的目录。"
         ) else { return }
-        guard !isProtectedPhotoVolume(target),
-              !target.pathComponents.contains(where: { $0.hasSuffix(".photoslibrary") }) else {
-            message = "受保护照片目录或 Photos Library 不能作为网络归档接收目标。"
-            return
-        }
         guard let importer = PhoneArchiveImportProcessHolder.importer() else {
             message = "图库尚未就绪，请稍后重试。"
+            receiveDirectoryError = message
             return
         }
-        isBusy = true
-        defer { isBusy = false }
         do {
             let access = target.startAccessingSecurityScopedResource()
             defer { if access { target.stopAccessingSecurityScopedResource() } }
@@ -1437,12 +1466,19 @@ final class PhoneArchiveImportModel: ObservableObject {
             }
             let result = try await RemoteHostProcessHolder.configureMigrationTransferTarget(target)
             transferTargetPath = target.path
-            message = result == .running
-                ? "网络接收已启用；手机连接此 Mac 后可上传本机归档。"
-                : "接收目录已保存；Host 尚未运行，请先启动 Mac 远程服务。"
+            switch result {
+            case .running:
+                message = "照片接收已启用；手机连接此 Mac 后可导入照片与信息。"
+            case .failed(let detail):
+                message = "接收目录已保存，但接收服务启动失败：\(detail)"
+                receiveDirectoryError = message
+            case .stopped, .waitingForAttachment, .superseded:
+                message = "接收目录已保存；Host 尚未运行，请先启动 Mac 远程服务。"
+            }
             await refreshSealedTransfers()
         } catch {
-            message = "网络接收目录未启用：\(error.localizedDescription)"
+            message = "照片接收目录未启用：\(error.localizedDescription)"
+            receiveDirectoryError = message
         }
     }
 
@@ -1459,7 +1495,7 @@ final class PhoneArchiveImportModel: ObservableObject {
     }
 
     func applyTransferMaximum() async {
-        guard !isBusy else { return }
+        guard !isBusy, !isRefreshing else { return }
         isBusy = true
         defer { isBusy = false }
         do {
@@ -1476,7 +1512,7 @@ final class PhoneArchiveImportModel: ObservableObject {
         } catch { message = "容量上限未保存：\(error.localizedDescription)" }
     }
 
-    private func refreshSealedTransfers() async {
+    func refreshSealedTransfers() async {
         guard let target = RemoteHostProcessHolder.migrationTransferTargetURL() else {
             transferTargetPath = nil
             sealedTransfers = []
@@ -1486,8 +1522,10 @@ final class PhoneArchiveImportModel: ObservableObject {
         let access = target.startAccessingSecurityScopedResource()
         defer { if access { target.stopAccessingSecurityScopedResource() } }
         do {
-            sealedTransfers = try await ImageAllMigrationTransferStore(root: target)
-                .sealedArchives()
+            let receiver = try PhoneHostImportReceivers.shared.receiver(at: target)
+            hostJobs = try await receiver.hostJobs()
+            let managed = Set(hostJobs.map(\.id))
+            sealedTransfers = try await receiver.sealedArchives().filter { !managed.contains($0.id) }
         } catch {
             sealedTransfers = []
             message = "读取网络接收记录失败：\(error.localizedDescription)"
@@ -1495,22 +1533,73 @@ final class PhoneArchiveImportModel: ObservableObject {
     }
 
     func importSealedTransfer(_ transfer: ImageAllMigrationTransferSealedArchive) async {
-        guard !isBusy, let importer = PhoneArchiveImportProcessHolder.importer(),
-              let target = RemoteHostProcessHolder.migrationTransferTargetURL() else { return }
+        guard !isBusy, !isRefreshing else { return }
+        guard let importer = PhoneArchiveImportProcessHolder.importer() else {
+            reportImportFailure("图库尚未就绪，请稍后重试。")
+            return
+        }
+        guard let target = RemoteHostProcessHolder.migrationTransferTargetURL() else {
+            reportImportFailure("请先选择照片接收目录，再导入已接收批次。")
+            return
+        }
         isBusy = true
-        defer { isBusy = false }
+        isImporting = true
+        importError = nil
+        message = "正在校验、复制并入库；请保持目标磁盘连接。"
+        PhoneImportTaskActivity.set(.verifying, for: transfer.id)
+        defer { isBusy = false; isImporting = false }
         let access = target.startAccessingSecurityScopedResource()
         defer { if access { target.stopAccessingSecurityScopedResource() } }
         do {
             let receipt = try await CatalogBlockingExecutor.shared.run(priority: .utility) {
                 try importer.importArchive(from: transfer.packageURL, to: target)
             }
-            message = "Mac 已复验 \(receipt.itemCount) 项、\(receipt.resourceCount) 个资源并应用现有整理快照；完成回执仍需共享冲突及事实水位验收。"
+            PhoneImportTaskActivity.set(.publishing, for: transfer.id)
+            _ = try await CatalogBlockingExecutor.shared.run(priority: .utility) {
+                try PhoneNativeLibraryPublisher(database: importer.database).publish(
+                    importReceipt: receipt)
+            }
             isBusy = false
             await refresh()
+            await select(receipt.migrationID)
+            NotificationCenter.default.post(name: .phoneNativeLibraryChanged, object: nil)
+            PhoneImportTaskActivity.set(nil, for: transfer.id)
+            message = "导入完成：\(receipt.itemCount) 项、\(receipt.resourceCount) 个资源已写入 Mac 独立副本，整理快照已应用。"
         } catch {
-            message = "接收包入库失败：\(error.localizedDescription)"
+            PhoneImportTaskActivity.set(.needsAttention, for: transfer.id)
+            reportImportFailure("接收包入库失败：\(error.localizedDescription)")
         }
+    }
+
+    func releaseSelectedStagingPayload() async {
+        guard !isBusy, let batch = selectedBatch,
+              let importer = PhoneArchiveImportProcessHolder.importer(),
+              let receiver = RemoteHostProcessHolder.migrationTransferTargetURL() else { return }
+        isBusy = true
+        defer { isBusy = false }
+        let access = receiver.startAccessingSecurityScopedResource()
+        defer { if access { receiver.stopAccessingSecurityScopedResource() } }
+        message = "正在完整核验 Mac 副本和来源引用，再释放接收暂存…"
+        do {
+            let result = try await CatalogBlockingExecutor.shared.run(priority: .utility) {
+                try PhoneNativeLibraryPublisher(database: importer.database)
+                    .releaseStagingPayload(migrationID: batch.id, receiverRoot: receiver)
+            }
+            let size = ByteCountFormatter.string(fromByteCount: result.logicalBytesReleased, countStyle: .file)
+            message = result.alreadyReleased ? "此批次接收暂存已收尾；Mac 来源可继续浏览。"
+                : "已释放接收暂存载荷 \(size)（逻辑大小）；Mac 原件和完成记录保留。磁盘可用空间变化可能不同。"
+        } catch ImageAllMigrationCleanupError.busy {
+            message = "接收或读取仍在使用此目录。请停止手机连接服务并等待入库结束，再释放暂存。Mac 来源可继续浏览。"
+        } catch ImageAllMigrationCleanupError.unowned {
+            message = "此暂存没有本版本的所有权登记，未执行清理。Mac 来源可继续浏览。"
+        } catch {
+            message = "暂存收尾未完成：\(error.localizedDescription)。已发布图库保留，可在核查后重试。"
+        }
+    }
+
+    private func reportImportFailure(_ detail: String) {
+        message = detail
+        importError = detail
     }
 
     func select(_ id: UUID) async {
@@ -1581,44 +1670,52 @@ final class PhoneArchiveImportModel: ObservableObject {
     }
 
     func importChosenArchive() async {
-        guard !isBusy else { return }
+        guard !isBusy, !isRefreshing else { return }
+        isBusy = true
+        importError = nil
+        defer { isBusy = false; isImporting = false }
         guard let source = await chooseDirectory(
-            title: "选择 iPhone 原件归档包",
-            message: "请选择包含 manifest.jsonl 与 resources 的完整归档目录。"
+            title: "选择手机导出的离线照片包",
+            message: "请选择手机另行导出的完整包，而非照片接收目录。USB 导入请从手机“待分享”发起。"
         ) else { return }
+        let sourceScope = source.startAccessingSecurityScopedResource()
+        defer { if sourceScope { source.stopAccessingSecurityScopedResource() } }
+        do {
+            try await CatalogBlockingExecutor.shared.run(priority: .utility) {
+                try VerifiedPhoneArchiveImporter.validateIncomingArchiveDirectory(source)
+            }
+        } catch {
+            reportImportFailure(error.localizedDescription)
+            return
+        }
         guard let target = await chooseDirectory(
             title: "选择 Mac 归档存放目录",
-            message: "ImageAll 会在这里发布经逐资源校验的独立副本。"
+            message: "请选择与已有来源目录分离的位置，ImageAll 会在这里保存校验后的独立副本。"
         ) else { return }
-        guard !isProtectedPhotoVolume(source), !isProtectedPhotoVolume(target) else {
-            message = "受保护的 HDD2 真实照片目录不能作为此阶段的归档来源或写入目标。"
-            return
-        }
         guard let importer = PhoneArchiveImportProcessHolder.importer() else {
-            message = "图库尚未就绪，请稍后重试。"
+            reportImportFailure("图库尚未就绪，请稍后重试。")
             return
         }
-        let sourceScope = source.startAccessingSecurityScopedResource()
         let targetScope = target.startAccessingSecurityScopedResource()
-        defer {
-            if targetScope { target.stopAccessingSecurityScopedResource() }
-            if sourceScope { source.stopAccessingSecurityScopedResource() }
-        }
-        isBusy = true
+        defer { if targetScope { target.stopAccessingSecurityScopedResource() } }
+        isImporting = true
         message = "正在校验、复制并入库；请保持目标磁盘连接。"
         do {
             let receipt = try await CatalogBlockingExecutor.shared.run(priority: .utility) {
-                try importer.importArchive(from: source, to: target)
+                let receipt = try importer.importArchive(from: source, to: target)
+                _ = try PhoneNativeLibraryPublisher(database: importer.database).publish(
+                    importReceipt: receipt)
+                return receipt
             }
             isBusy = false
             await refresh()
             await select(receipt.migrationID)
+            NotificationCenter.default.post(name: .phoneNativeLibraryChanged, object: nil)
             message = receipt.replayed
                 ? "归档已存在，副本复验通过：\(receipt.itemCount) 项、\(receipt.resourceCount) 个资源。"
                 : "导入完成：\(receipt.itemCount) 项、\(receipt.resourceCount) 个资源已写入 Mac 独立副本。"
         } catch {
-            isBusy = false
-            message = "归档导入失败：\(error.localizedDescription)"
+            reportImportFailure("归档导入失败：\(error.localizedDescription)")
         }
     }
 
@@ -1801,6 +1898,32 @@ final class PhoneArchiveImportModel: ObservableObject {
             isBusy = false
             message = "整理信息对账失败：\(error.localizedDescription)"
         }
+    }
+
+    func showNativeLibraryStatus() {
+        if let error = PhoneNativeLibraryProcess.lastError { message = error }
+    }
+
+    func openNativeLibrary() async {
+        guard !isBusy, let batch = selectedBatch,
+              let importer = PhoneArchiveImportProcessHolder.importer() else { return }
+        isBusy = true
+        defer { isBusy = false }
+        do {
+            let parent = try targetParent(for: batch)
+            let access = parent.startAccessingSecurityScopedResource()
+            defer { if access { parent.stopAccessingSecurityScopedResource() } }
+            message = "正在准备 iPhone 来源；首次加入需要核查归档。"
+            let id = try await CatalogBlockingExecutor.shared.run(priority: .utility) {
+                try PhoneNativeLibraryPublisher(database: importer.database).publish(
+                    migrationID: batch.id, archiveRoot: parent.appendingPathComponent(
+                        "ImageAll-Archive-\(batch.id.uuidString.lowercased())", isDirectory: true))
+            }
+            NotificationCenter.default.post(name: .phoneNativeLibraryOpen, object: id)
+            message = "已加入主图库的 iPhone 来源。"
+            NSApp.activate(ignoringOtherApps: true)
+            NSApp.windows.first(where: { $0.canBecomeMain && $0.title != "设备与导入" && !$0.isSheet })?.makeKeyAndOrderFront(nil)
+        } catch { message = "加入图库失败：\(error.localizedDescription)" }
     }
 
     func auditSelectedBatch() async {
@@ -2262,30 +2385,33 @@ final class PhoneArchiveImportModel: ObservableObject {
     }
 }
 
-private struct PhoneArchiveImportCard: View {
+struct PhoneArchiveImportCard: View {
+    @State private var showsMigrationAcceptance = false
     @StateObject private var model = PhoneArchiveImportModel()
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             HStack {
-                Label("iPhone 原件归档", systemImage: "externaldrive.badge.plus")
+                Label("iPhone 照片与信息导入", systemImage: "externaldrive.badge.plus")
                     .font(.headline)
                 Spacer()
                 Button("刷新") { Task { await model.refresh() } }
                     .buttonStyle(.bordered)
-                Button("导入归档包") { Task { await model.importChosenArchive() } }
-                    .buttonStyle(.borderedProminent)
-                    .disabled(model.isBusy)
+                    .disabled(model.isBusy || model.isRefreshing)
+                Button("导入离线照片包…") { Task { await model.importChosenArchive() } }
+                    .buttonStyle(.bordered)
+                    .help("选择手机另行导出的离线包；USB 导入从手机“待分享”发起。")
+                    .disabled(model.isBusy || model.isRefreshing)
             }
-            Text("手动选择手机导出的完整包和 Mac 保存目录。入库前校验每个资源；这里展示的是 Mac 独立副本，手机原件不会被删除。")
+            Text("在手机“待分享”发起导入。手机显示“传输完成 · 可以拔线”后，Mac 会独立完成核验、入库和收尾；只需保持目标磁盘连接。手机原件保留。旧版已封存批次仍可手动入库。")
                 .font(.footnote).foregroundStyle(.secondary)
             HStack {
-                Button("选择网络接收目录") {
+                Button("选择照片接收目录") {
                     Task { await model.chooseNetworkReceiveDirectory() }
                 }
                 .buttonStyle(.bordered)
-                .disabled(model.isBusy)
-                Text(model.transferTargetPath ?? "尚未设置网络接收目录")
+                .disabled(model.isBusy || model.isRefreshing)
+                Text(model.transferTargetPath ?? "尚未设置照片接收目录")
                     .font(.caption).foregroundStyle(.secondary)
                     .lineLimit(1).truncationMode(.middle)
             }
@@ -2296,22 +2422,54 @@ private struct PhoneArchiveImportCard: View {
                     }
                 }
                 .frame(maxWidth: 250)
-                .disabled(model.isBusy)
+                .disabled(model.isBusy || model.isRefreshing)
                 Button("应用上限") { Task { await model.applyTransferMaximum() } }
-                    .disabled(model.isBusy || model.transferMaximumGiB == model.savedTransferMaximumGiB)
+                    .disabled(model.isBusy || model.isRefreshing || model.transferMaximumGiB == model.savedTransferMaximumGiB)
             }
             Text("上限包含资源、清单和整理信息，不是磁盘预留。请按目标卷余量选择；写入时仍至少保留 1 GiB。应用后可在手机重试受额度限制的批次；调低上限不会删除已接收数据。")
                 .font(.footnote).foregroundStyle(.secondary)
+            ForEach(model.hostJobs) { job in
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack {
+                        Text("\(job.receipt.itemCount) 项 · \(hostJobTitle(job.phase))")
+                        Spacer()
+                        if job.phase == .needsAttention {
+                            Button("在 Mac 重试") {
+                                PhoneHostImportProcess.retry(job.id)
+                                Task { await model.refreshSealedTransfers() }
+                            }
+                        }
+                    }
+                    if let error = job.state?.error { Text(error).font(.caption).foregroundStyle(.red) }
+                    Text("手机可断开 · \(job.id.uuidString)").font(.caption).foregroundStyle(.secondary)
+                }
+            }
             ForEach(model.sealedTransfers) { transfer in
                 HStack {
-                    Text("已校验归档 · \(transfer.id.uuidString)")
+                    Text("已封存 · 入库时复验 · \(transfer.id.uuidString)")
                         .font(.caption).lineLimit(1).truncationMode(.middle)
                     Spacer()
-                    Button("入库并对账") {
+                    Button("导入照片与信息") {
                         Task { await model.importSealedTransfer(transfer) }
                     }
-                    .disabled(model.isBusy)
+                    .buttonStyle(.borderedProminent)
+                    .disabled(model.isBusy || model.isRefreshing)
                 }
+            }
+            if model.isRefreshing {
+                ProgressView("正在读取已封存批次…")
+            }
+            if model.sealedTransfers.isEmpty && !model.isRefreshing {
+                Text("等待手机发送照片包。手机显示接收完成后，点击本卡片“刷新”查看批次。")
+                    .font(.footnote).foregroundStyle(.secondary)
+            }
+            if model.isImporting {
+                HStack {
+                    ProgressView().controlSize(.small)
+                    Text("正在校验、复制并入库；请保持目标磁盘连接。")
+                        .font(.callout)
+                }
+                .accessibilityElement(children: .combine)
             }
             if let message = model.message {
                 Text(message).font(.footnote).foregroundStyle(.secondary)
@@ -2383,6 +2541,14 @@ private struct PhoneArchiveImportCard: View {
                     .buttonStyle(.bordered)
                     .disabled(model.isBusy)
                 }
+                DisclosureGroup("接收暂存收尾") {
+                    Text("停止手机连接服务后，可完整核验 Mac 副本并释放已登记的接收暂存。Mac 原件和完成记录保留。")
+                        .font(.caption).foregroundStyle(.secondary)
+                    Button("释放接收暂存") { Task { await model.releaseSelectedStagingPayload() } }
+                        .buttonStyle(.bordered)
+                        .disabled(model.isBusy)
+                }
+                DisclosureGroup("迁移验收与独立备份", isExpanded: $showsMigrationAcceptance) {
                 if let record = model.latestValidationRecord {
                     HStack {
                         Text("候选验收记录 · \(Date(timeIntervalSince1970: TimeInterval(record.createdAtMs) / 1_000).formatted(date: .abbreviated, time: .shortened)) · 需复核")
@@ -2451,34 +2617,37 @@ private struct PhoneArchiveImportCard: View {
                             .font(.caption).foregroundStyle(.secondary)
                     }.padding(.vertical, 6)
                 }
-                ForEach(model.items) { item in
-                    HStack {
-                        VStack(alignment: .leading, spacing: 3) {
-                            Text(item.sourceLocalIdentifier)
-                                .font(.callout).lineLimit(1).truncationMode(.middle)
-                            Text("\(item.mediaKind == "video" ? "视频" : "照片") · \(item.resourceCount) 个资源 · \(item.tagCount) 项标签决定 · \(item.collectionCount) 个 ImageAll 集合 · \(item.appleAlbumCount) 个来源相册")
-                                .font(.caption).foregroundStyle(.secondary)
-                        }
-                        Spacer()
-                        Button("在 App 中预览") {
-                            Task { await model.previewOriginal(item) }
-                        }
-                        .buttonStyle(.bordered)
-                        .disabled(model.isBusy)
-                        Button("打开原件") { Task { await model.openOriginal(item) } }
-                            .buttonStyle(.bordered)
-                            .disabled(model.isBusy)
-                    }
-                    .padding(.vertical, 3)
                 }
-                if model.items.count < batch.itemCount {
-                    Button("加载更多") { Task { await model.loadMore() } }
-                        .buttonStyle(.bordered)
-                        .disabled(model.isBusy)
+                Button("在图库中查看", systemImage: "photo.on.rectangle") {
+                    Task { await model.openNativeLibrary() }
                 }
+                .buttonStyle(.borderedProminent)
+                .disabled(model.isBusy)
+                Text("完成入库和核查后，照片会自动加入主界面的 iPhone 来源。相簿、红心、标签与集合随照片保留。")
+                    .font(.caption).foregroundStyle(.secondary)
             }
         }
         .task { await model.refresh() }
+        .onReceive(NotificationCenter.default.publisher(for: .phoneNativeLibraryChanged)) { _ in
+            model.showNativeLibraryStatus()
+            Task { await model.refreshSealedTransfers() }
+        }
+        .alert("无法设置照片接收目录", isPresented: Binding(
+            get: { model.receiveDirectoryError != nil },
+            set: { if !$0 { model.receiveDirectoryError = nil } }
+        )) {
+            Button("好", role: .cancel) { model.receiveDirectoryError = nil }
+        } message: {
+            Text(model.receiveDirectoryError ?? "")
+        }
+        .alert("照片导入未完成", isPresented: Binding(
+            get: { model.importError != nil },
+            set: { if !$0 { model.importError = nil } }
+        )) {
+            Button("好", role: .cancel) { model.importError = nil }
+        } message: {
+            Text(model.importError ?? "")
+        }
         .sheet(item: $model.preview, onDismiss: { model.dismissPreview() }) { preview in
             PhoneArchivePreviewSheet(preview: preview)
         }
@@ -3800,5 +3969,16 @@ enum PhoneArchiveImagePreview {
         ] as CFDictionary)
         guard CGImageDestinationFinalize(destination) else { return nil }
         return data as Data
+    }
+}
+
+private func hostJobTitle(_ phase: ImageAllMigrationHostJob.Phase) -> String {
+    switch phase {
+    case .received: "Mac 已接管，等待处理"
+    case .verifying: "Mac 正在核验与入库"
+    case .publishing: "正在加入图库"
+    case .cleanup: "已可浏览，正在释放接收暂存"
+    case .complete: "已可浏览，收尾完成"
+    case .needsAttention: "需要在 Mac 处理"
     }
 }

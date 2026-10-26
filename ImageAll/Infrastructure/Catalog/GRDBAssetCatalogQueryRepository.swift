@@ -88,7 +88,7 @@ struct GRDBAssetCatalogQueryRepository: AssetCatalogQueryPort, Sendable {
                     SELECT source_id, relative_path, parent_relative_path, name
                     FROM source_folder
                     WHERE source_id = ? AND \(parentPredicate)
-                    ORDER BY name COLLATE NOCASE, name, relative_path
+                    ORDER BY source_ordinal, name COLLATE NOCASE, name, relative_path
                     LIMIT ? OFFSET ?
                     """,
                     arguments: pageArguments
@@ -930,16 +930,19 @@ struct GRDBAssetCatalogQueryRepository: AssetCatalogQueryPort, Sendable {
             let upperBound = relativePath + "0"
             clauses.append(
                 """
-                (asset.source_id = ?
-                    AND asset.locator_kind = 'file'
-                    AND asset.relative_path >= ?
-                    AND asset.relative_path < ?)
+                (asset.source_id = ? AND (
+                    (NOT EXISTS(SELECT 1 FROM phone_library_source p WHERE p.source_id = asset.source_id)
+                     AND asset.locator_kind = 'file' AND asset.relative_path >= ? AND asset.relative_path < ?)
+                    OR EXISTS(SELECT 1 FROM phone_library_member m
+                        WHERE m.asset_id = asset.id AND m.source_id = asset.source_id
+                          AND (m.relative_path = ? OR (m.relative_path >= ? AND m.relative_path < ?)))
+                ))
                 """
             )
             arguments += [
                 CatalogQuerySQLHelpers.lowercaseUUID(folderScope.sourceID),
                 lowerBound,
-                upperBound,
+                upperBound, relativePath, lowerBound, upperBound,
             ]
         }
 

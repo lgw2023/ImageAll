@@ -1,5 +1,6 @@
 import CryptoKit
 import Foundation
+import Darwin
 
 public enum ImageAllMigrationTransferError: Error, Equatable, Sendable {
     case unsafeRoot
@@ -27,10 +28,22 @@ public struct ImageAllMigrationTransferProgress: Codable, Sendable, Equatable {
     public let files: [ImageAllMigrationTransferFileProgress]
     public let sealed: Bool
     public let sourceInstallID: UUID?
+
+    /// A chunk ACK can contain only its file. Preserve the initial batch view
+    /// when returning the public file-upload result; begin/status remain full.
+    public func includingEarlierFiles(from earlier: Self) -> Self {
+        var combined = Dictionary(earlier.files.map { ($0.relativePath, $0) }, uniquingKeysWith: { _, new in new })
+        for file in files { combined[file.relativePath] = file }
+        return .init(migrationID: migrationID, maximumChunkBytes: maximumChunkBytes,
+            maximumSessionBytes: maximumSessionBytes,
+            files: combined.values.sorted { $0.relativePath < $1.relativePath },
+            sealed: sealed, sourceInstallID: sourceInstallID)
+    }
 }
 
-/// A verified staging receipt. It is not a Mac catalog import receipt or a
-/// migration-complete receipt.
+/// Legacy seal, or explicitly versioned durable handoff. `verifiedBytes` keeps
+/// the wire name: for handoff it sums durably received extents, NOT a fresh
+/// full-archive audit. Neither kind proves catalog publication.
 public struct ImageAllMigrationTransferSealReceipt: Codable, Sendable, Equatable {
     public let migrationID: UUID
     public let manifestSHA256: String
@@ -38,8 +51,10 @@ public struct ImageAllMigrationTransferSealReceipt: Codable, Sendable, Equatable
     public let resourceCount: Int
     public let verifiedBytes: Int64
     public let factsSHA256: String?
+    public let hostProcessingVersion: Int?
 
     public init(verification: ImageAllMigrationVerification) {
+        hostProcessingVersion = nil
         migrationID = verification.migrationID
         manifestSHA256 = verification.manifestSHA256
         itemCount = verification.itemCount
@@ -47,6 +62,13 @@ public struct ImageAllMigrationTransferSealReceipt: Codable, Sendable, Equatable
         verifiedBytes = verification.verifiedBytes
         factsSHA256 = verification.factsSHA256
     }
+    init(handoff summary: ImageAllMigrationVerification) {
+        migrationID = summary.migrationID; manifestSHA256 = summary.manifestSHA256
+        itemCount = summary.itemCount; resourceCount = summary.resourceCount
+        verifiedBytes = summary.verifiedBytes; factsSHA256 = summary.factsSHA256
+        hostProcessingVersion = 1
+    }
+
 }
 
 /// A per-resource check of receiver-owned bytes, not an archive completion receipt.
@@ -66,6 +88,22 @@ public struct ImageAllMigrationResourceVerificationReceipt: Codable, Sendable, E
     public let migrationID: UUID
     public let deviceID: UUID
     public let resource: ImageAllMigrationResourceVerificationRequest
+    /// Explicit opt-in custody of fsynced, individually SHA-checked chunks.
+    /// The resource's declared SHA is still pending the Mac full-file gate.
+    public var custodyVersion: Int? = nil
+}
+
+/// Receiver-owned durable acknowledgments for fast reconnect. Legacy entries
+/// describe earlier whole-resource SHA verification. Explicit custody clients
+/// may also receive custodyVersion=1 entries with a declared resource digest;
+/// those prove committed chunks only, not a fresh integrity audit or completion.
+/// Final sealing and catalog import must still independently verify all bytes.
+public struct ImageAllMigrationResumeCheckpoint: Codable, Sendable, Equatable {
+    public let migrationID: UUID
+    public let deviceID: UUID
+    public let sourceInstallID: UUID?
+    public let sealed: Bool
+    public let resources: [ImageAllMigrationResourceVerificationReceipt]
 }
 
 public struct ImageAllMigrationTransferSealedArchive: Sendable, Equatable, Identifiable {
@@ -83,23 +121,116 @@ public actor ImageAllMigrationTransferStore {
     public static let defaultMaximumSessionBytes: Int64 = 64 * 1_024 * 1_024 * 1_024
     private static let minimumFreeBytes: Int64 = 1 * 1_024 * 1_024 * 1_024
 
-    private struct Chunk: Codable, Equatable {
+    struct Chunk: Codable, Equatable {
         let offset: Int64
         let byteCount: Int
         let sha256: String
     }
 
-    private struct Session: Codable {
+    struct StorageObject: Codable, Equatable {
+        let device: Int32
+        let inode: UInt64
+        let birthSeconds: Int64
+        let birthNanoseconds: Int64
+
+        init(at url: URL) throws {
+            var info = stat()
+            guard lstat(url.path, &info) == 0, (info.st_mode & S_IFMT) != S_IFLNK else {
+                throw ImageAllMigrationTransferError.invalidSession
+            }
+            device = info.st_dev
+            inode = info.st_ino
+            birthSeconds = Int64(info.st_birthtimespec.tv_sec)
+            birthNanoseconds = Int64(info.st_birthtimespec.tv_nsec)
+        }
+    }
+
+    private struct LedgerBinding: Codable {
+        let path: String
+        let chunks: [Chunk]
+        let receipt: ImageAllMigrationResourceVerificationReceipt?
+    }
+
+    public enum RecoveryPolicy: Sendable {
+        case verifiedBytes
+        /// Restores receiving progress only; sealing/import must still verify actual bytes.
+        case receiveProgress
+    }
+
+    struct Session: Codable {
         let formatVersion: Int
         let migrationID: UUID
         let deviceID: UUID
         var chunksByPath: [String: [Chunk]]
         var sealed: Bool
+        // Optional for legacy journals; immutable media lock stays sealed while facts change.
+        var factsUpdatePending: Bool? = nil
         var sourceInstallID: UUID? = nil
         var verifiedResources: [String: ImageAllMigrationResourceVerificationReceipt]? = nil
+        // Absent on legacy journals, which must pass strict byte verification first.
+        var storageObjects: [String: StorageObject]? = nil
+        var directoryObjects: [StorageObject]? = nil
+        var ledgerDigests: [String: String]? = nil
+        var ownerBinding: String? = nil
+        var ownershipVersion: Int? = nil
+        var automaticCleanupVersion: Int? = nil
+        var hostHandoff: ImageAllMigrationHostJob? = nil
     }
 
+    /// Encoded values only; this cache is never an integrity receipt. Keep one
+    /// task and bound both payload and per-entry dictionary overhead (ADR-112).
+    private struct JournalRow {
+        let digest: String
+        let object: StorageObject
+        let key: Data
+        let chunks: Data
+        let receipt: Data?
+        let storage: Data
+        let ledger: Data
+        var byteCount: Int { key.count + chunks.count + (receipt?.count ?? 0) + storage.count + ledger.count }
+    }
+
+    private struct JournalEncodingCache {
+        let migrationID: UUID
+        var rows: [String: JournalRow] = [:]
+        var byteCount = 0
+    }
+
+    /// Keep the existing wire keys while encoding the large maps separately.
+    private struct JournalHeader: Encodable {
+        let session: Session
+        enum CodingKeys: String, CodingKey {
+            case formatVersion, migrationID, deviceID, sealed, factsUpdatePending
+            case sourceInstallID, directoryObjects, ownerBinding, ownershipVersion, automaticCleanupVersion, hostHandoff
+        }
+        func encode(to encoder: Encoder) throws {
+            var c = encoder.container(keyedBy: CodingKeys.self)
+            try c.encode(session.formatVersion, forKey: .formatVersion)
+            try c.encode(session.migrationID, forKey: .migrationID)
+            try c.encode(session.deviceID, forKey: .deviceID)
+            try c.encode(session.sealed, forKey: .sealed)
+            try c.encodeIfPresent(session.factsUpdatePending, forKey: .factsUpdatePending)
+            try c.encodeIfPresent(session.sourceInstallID, forKey: .sourceInstallID)
+            try c.encodeIfPresent(session.directoryObjects, forKey: .directoryObjects)
+            try c.encodeIfPresent(session.ownerBinding, forKey: .ownerBinding)
+            try c.encodeIfPresent(session.ownershipVersion, forKey: .ownershipVersion)
+            try c.encodeIfPresent(session.automaticCleanupVersion, forKey: .automaticCleanupVersion)
+            try c.encodeIfPresent(session.hostHandoff, forKey: .hostHandoff)
+        }
+    }
+
+    private var journalEncodingCache: JournalEncodingCache?
+    private var journalEncodingCacheEnabled = true
+
+    // Internal test seam: same binary, original encoder, no production UI or setting.
+    func disableJournalEncodingCacheForDiagnostics() {
+        journalEncodingCacheEnabled = false
+        journalEncodingCache = nil
+    }
+
+    private let recoveryPolicy: RecoveryPolicy
     private let root: URL
+    private var lifetimeLease: ImageAllMigrationStagingLease?
     private let maximumChunkBytes: Int
     private var maximumSessionBytes: Int64
     private var loaded: [UUID: Session] = [:]
@@ -107,7 +238,8 @@ public actor ImageAllMigrationTransferStore {
     public init(
         root: URL,
         maximumChunkBytes: Int = defaultMaximumChunkBytes,
-        maximumSessionBytes: Int64 = defaultMaximumSessionBytes
+        maximumSessionBytes: Int64 = defaultMaximumSessionBytes,
+        recoveryPolicy: RecoveryPolicy = .verifiedBytes
     ) throws {
         guard maximumChunkBytes > 0, maximumChunkBytes <= Self.defaultMaximumChunkBytes,
               maximumSessionBytes > 0 else {
@@ -117,9 +249,40 @@ public actor ImageAllMigrationTransferStore {
         guard values.isDirectory == true, values.isSymbolicLink != true else {
             throw ImageAllMigrationTransferError.unsafeRoot
         }
+        self.recoveryPolicy = recoveryPolicy
         self.root = root.standardizedFileURL
+        self.lifetimeLease = try ImageAllMigrationStagingLease(root: root)
         self.maximumChunkBytes = maximumChunkBytes
         self.maximumSessionBytes = maximumSessionBytes
+    }
+
+    private func ensureLifetimeLease() throws {
+        if lifetimeLease == nil { lifetimeLease = try ImageAllMigrationStagingLease(root: root) }
+    }
+
+    /// Synchronous actor critical section: no request can reenter while our own
+    /// shared lease is suspended. Other readers still make cleanup fail busy.
+    /// A failed reacquisition makes ALL later file entry points acquire first.
+    public func performAutomaticCleanup<T: Sendable>(query: RemoteImportTaskQuery,
+        authenticatedDeviceID: UUID, operation: @Sendable (URL) throws -> T) throws -> T {
+        try ensureLifetimeLease()
+        try validateDirectories(for: query.migrationID)
+        let directory = try ImageAllMigrationStagingLease.openDirectory(sessionDirectory(query.migrationID))
+        defer { close(directory) }
+        let bytes = try ImageAllMigrationStagingCleanup.read(directory, "session.json")
+        let session = try JSONDecoder().decode(Session.self, from: bytes)
+        guard session.automaticCleanupVersion == 1, session.ownershipVersion == 1 else {
+            throw ImageAllMigrationCleanupError.unowned
+        }
+        guard session.migrationID == query.migrationID, session.deviceID == authenticatedDeviceID,
+              (session.sourceInstallID ?? session.deviceID) == query.sourceInstallID,
+              session.sealed, session.factsUpdatePending == false else {
+            throw ImageAllMigrationCleanupError.incompleteReferences
+        }
+        loaded.removeValue(forKey: query.migrationID)
+        lifetimeLease = nil
+        defer { lifetimeLease = try? ImageAllMigrationStagingLease(root: root) }
+        return try operation(root)
     }
 
     /// Serializes policy changes with writes in this receiver. Lowering the
@@ -142,7 +305,7 @@ public actor ImageAllMigrationTransferStore {
                 }
                 if session.sourceInstallID == nil {
                     session.sourceInstallID = sourceInstallID
-                    try persist(session)
+                    try persist(&session)
                     loaded[migrationID] = session
                 }
             }
@@ -172,12 +335,12 @@ public actor ImageAllMigrationTransferStore {
         try FileManager.default.createDirectory(
             at: packageDirectory(migrationID), withIntermediateDirectories: true
         )
-        let session = Session(
+        var session = Session(
             formatVersion: 1, migrationID: migrationID, deviceID: authenticatedDeviceID,
-            chunksByPath: [:], sealed: false, sourceInstallID: sourceInstallID
+            chunksByPath: [:], sealed: false, sourceInstallID: sourceInstallID, ownershipVersion: 1, automaticCleanupVersion: 1
         )
         do {
-            try persist(session)
+            try persist(&session)
         } catch {
             try? FileManager.default.removeItem(at: directory)
             throw error
@@ -198,9 +361,68 @@ public actor ImageAllMigrationTransferStore {
         return progress(session)
     }
 
+    /// UI observation only. No repair, resource reads or recovered-session cache.
+    /// A seal flag says "received", never "published" or freshly reverified.
+    public func recordedSealState(migrationID: UUID, authenticatedDeviceID: UUID,
+                                  sourceInstallID: UUID) throws -> Bool {
+        guard let session = try load(migrationID: migrationID, repair: false) else {
+            throw ImageAllMigrationTransferError.invalidSession
+        }
+        guard session.deviceID == authenticatedDeviceID, session.sourceInstallID == sourceInstallID else {
+            throw ImageAllMigrationTransferError.identityConflict
+        }
+        return session.sealed
+    }
+
+    /// One bounded control exchange replaces N per-resource full re-hashes.
+    /// Cold process recovery retains load's committed-chunk integrity check.
+    /// A reconnect in the same process only checks journal and file presence/size;
+    /// same-size media corruption is still rejected by sealVerifiedArchive.
+    public func resumeCheckpoint(migrationID: UUID, authenticatedDeviceID: UUID, allowDurableCustody: Bool = false) throws
+        -> ImageAllMigrationResumeCheckpoint {
+        guard let session = try load(migrationID: migrationID),
+              session.deviceID == authenticatedDeviceID else {
+            throw ImageAllMigrationTransferError.identityConflict
+        }
+        try validateDirectories(for: migrationID)
+        try validateStorageObjects(in: session)
+        try validateLedgerBindings(in: session)
+        let receipts = session.verifiedResources ?? [:]
+        for (path, receipt) in receipts {
+            try Task.checkCancellation()
+            let resource = receipt.resource
+            guard receipt.migrationID == migrationID, receipt.deviceID == authenticatedDeviceID,
+                  path == resource.relativePath, path.hasPrefix("resources/"), Self.isAllowed(path),
+                  resource.byteCount > 0, resource.sha256.count == 64,
+                  resource.sha256.allSatisfy({ $0.isASCII && $0.isHexDigit && !$0.isUppercase }),
+                  let chunks = session.chunksByPath[path],
+                  Self.committedLength(chunks) == resource.byteCount else {
+                throw ImageAllMigrationTransferError.invalidSession
+            }
+            let file = packageDirectory(migrationID).appendingPathComponent(path)
+            let parent = try file.deletingLastPathComponent().resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey])
+            guard parent.isDirectory == true, parent.isSymbolicLink != true else {
+                throw ImageAllMigrationTransferError.unsafePath
+            }
+            guard FileManager.default.fileExists(atPath: file.path) else {
+                throw ImageAllMigrationTransferError.invalidSession
+            }
+            let values = try file.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey, .fileSizeKey])
+            guard values.isRegularFile == true, values.isSymbolicLink != true,
+                  values.fileSize.map(Int64.init) == resource.byteCount else {
+                throw ImageAllMigrationTransferError.invalidSession
+            }
+        }
+        return .init(migrationID: migrationID, deviceID: authenticatedDeviceID,
+            sourceInstallID: session.sourceInstallID, sealed: session.sealed && session.factsUpdatePending != true,
+            resources: receipts.values.filter { allowDurableCustody || $0.custodyVersion == nil }
+                .sorted { $0.resource.relativePath < $1.resource.relativePath })
+    }
+
     public func append(
         migrationID: UUID, authenticatedDeviceID: UUID,
-        relativePath: String, offset: Int64, bytes: Data, sha256: String
+        relativePath: String, offset: Int64, bytes: Data, sha256: String,
+        fileProgressOnly: Bool = false
     ) throws -> ImageAllMigrationTransferProgress {
         guard Self.isAllowed(relativePath) else {
             throw ImageAllMigrationTransferError.unsafePath
@@ -214,11 +436,12 @@ public actor ImageAllMigrationTransferStore {
               session.deviceID == authenticatedDeviceID else {
             throw ImageAllMigrationTransferError.identityConflict
         }
-        guard !session.sealed || relativePath.hasPrefix("facts/") else {
+        guard session.hostHandoff == nil, !session.sealed || relativePath.hasPrefix("facts/") else {
             throw ImageAllMigrationTransferError.sealed
         }
         let file = packageDirectory(migrationID).appendingPathComponent(relativePath)
         try prepareFileParent(for: file, migrationID: migrationID)
+        try validateStorageObject(relativePath, in: session)
         let committed = try Self.repairFile(
             at: file, chunks: session.chunksByPath[relativePath] ?? []
         )
@@ -229,10 +452,10 @@ public actor ImageAllMigrationTransferStore {
             let handle = try FileHandle(forReadingFrom: file)
             defer { try? handle.close() }
             try handle.seek(toOffset: UInt64(prior.offset))
-            guard try handle.read(upToCount: prior.byteCount) == bytes else {
+            guard try ImageAllMigrationFileIO.read(handle, upToCount: prior.byteCount) == bytes else {
                 throw ImageAllMigrationTransferError.changedChunk
             }
-            return progress(session)
+            return progress(session, relativePath: fileProgressOnly ? relativePath : nil)
         }
         guard session.verifiedResources?[relativePath] == nil else {
             throw ImageAllMigrationTransferError.sealed
@@ -252,6 +475,13 @@ public actor ImageAllMigrationTransferStore {
         guard let free, free.int64Value >= Self.minimumFreeBytes + Int64(bytes.count) else {
             throw ImageAllMigrationTransferError.insufficientSpace
         }
+        // Invalidate discovery BEFORE writing: a crash or partial fact upload
+        // must remain hidden until a new complete seal, without unlocking media.
+        if session.sealed, session.factsUpdatePending != true {
+            session.factsUpdatePending = true
+            try persist(&session)
+            loaded[migrationID] = session
+        }
         if !FileManager.default.fileExists(atPath: file.path) {
             guard FileManager.default.createFile(atPath: file.path, contents: nil) else {
                 throw ImageAllMigrationTransferError.invalidSession
@@ -265,9 +495,50 @@ public actor ImageAllMigrationTransferStore {
         session.chunksByPath[relativePath, default: []].append(.init(
             offset: offset, byteCount: bytes.count, sha256: hash
         ))
-        try persist(session)
+        try bindStorageObject(relativePath, in: &session)
+        try persist(&session)
         loaded[migrationID] = session
-        return progress(session)
+        return progress(session, relativePath: fileProgressOnly ? relativePath : nil)
+    }
+
+    /// New handoff flow: confirm custody, not a fresh full-file SHA. Each chunk
+    /// was checksum-checked and fsynced before its journal entry was committed.
+    /// Only explicit custody clients receive this weaker progress credential;
+    /// legacy resume and verify-resource continue to require actual full reads.
+    public func acceptResource(migrationID: UUID, authenticatedDeviceID: UUID,
+                               request: ImageAllMigrationResourceVerificationRequest) throws -> ImageAllMigrationResourceVerificationReceipt {
+        guard request.relativePath.hasPrefix("resources/"), Self.isAllowed(request.relativePath),
+              request.byteCount > 0, request.sha256.count == 64,
+              request.sha256.allSatisfy({ $0.isASCII && $0.isHexDigit }) else {
+            throw ImageAllMigrationTransferError.unsafePath
+        }
+        guard var session = try load(migrationID: migrationID), session.deviceID == authenticatedDeviceID else {
+            throw ImageAllMigrationTransferError.identityConflict
+        }
+        guard session.hostHandoff == nil else { throw ImageAllMigrationTransferError.sealed }
+        try validateDirectories(for: migrationID)
+        try validateStorageObject(request.relativePath, in: session)
+        guard session.ownerBinding == ownerBinding(session),
+              session.ledgerDigests?[request.relativePath] == (try ledgerDigest(request.relativePath, in: session)),
+              let chunks = session.chunksByPath[request.relativePath],
+              Self.committedLength(chunks) == request.byteCount else { throw ImageAllMigrationTransferError.incompleteArchive }
+        let file = packageDirectory(migrationID).appendingPathComponent(request.relativePath)
+        let descriptor = try FileHandle(forReadingFrom: file); defer { try? descriptor.close() }
+        let version = try ImageAllMigrationStagingCleanup.ObjectVersion(descriptor.fileDescriptor)
+        guard version.size == request.byteCount else { throw ImageAllMigrationTransferError.incompleteArchive }
+        var receipt = ImageAllMigrationResourceVerificationReceipt(migrationID: migrationID, deviceID: authenticatedDeviceID,
+            resource: .init(relativePath: request.relativePath, byteCount: request.byteCount, sha256: request.sha256.lowercased()))
+        receipt.custodyVersion = 1
+        if let prior = session.verifiedResources?[request.relativePath] {
+            guard prior.migrationID == receipt.migrationID, prior.deviceID == receipt.deviceID,
+                  prior.resource == receipt.resource else { throw ImageAllMigrationTransferError.identityConflict }
+            return prior
+        }
+        session.verifiedResources = (session.verifiedResources ?? [:]).merging([request.relativePath: receipt]) { _, new in new }
+        try bindStorageObject(request.relativePath, in: &session)
+        try persist(&session)
+        loaded[migrationID] = session
+        return receipt
     }
 
     /// Re-read one resource independently of the phone. Persistently freeze its
@@ -301,7 +572,7 @@ public actor ImageAllMigrationTransferStore {
         defer { try? handle.close() }
         var digest = SHA256()
         var count: Int64 = 0
-        while let bytes = try handle.read(upToCount: 64 * 1_024), !bytes.isEmpty {
+        while let bytes = try ImageAllMigrationFileIO.read(handle, upToCount: ImageAllMigrationFileIO.resourceBlockBytes), !bytes.isEmpty {
             try Task.checkCancellation()
             guard Int64(bytes.count) <= request.byteCount - count else {
                 throw ImageAllMigrationTransferError.changedChunk
@@ -316,12 +587,14 @@ public actor ImageAllMigrationTransferStore {
         let receipt = ImageAllMigrationResourceVerificationReceipt(
             migrationID: migrationID, deviceID: authenticatedDeviceID,
             resource: .init(relativePath: request.relativePath, byteCount: count, sha256: hash))
-        if let prior = session.verifiedResources?[request.relativePath], prior != receipt {
-            throw ImageAllMigrationTransferError.identityConflict
+        if let prior = session.verifiedResources?[request.relativePath] {
+            guard prior.migrationID == receipt.migrationID, prior.deviceID == receipt.deviceID,
+                  prior.resource == receipt.resource else { throw ImageAllMigrationTransferError.identityConflict }
         }
         session.verifiedResources = (session.verifiedResources ?? [:]).merging(
             [request.relativePath: receipt]) { _, new in new }
-        try persist(session)
+        try bindStorageObject(request.relativePath, in: &session)
+        try persist(&session)
         loaded[migrationID] = session
         return receipt
     }
@@ -344,7 +617,7 @@ public actor ImageAllMigrationTransferStore {
         }
         // A sealed media package may receive later immutable fact checkpoints.
         // Manifest and resource bytes stay locked after the first seal.
-        guard !session.sealed || relativePath.hasPrefix("facts/") else {
+        guard session.hostHandoff == nil, !session.sealed || relativePath.hasPrefix("facts/") else {
             throw ImageAllMigrationTransferError.sealed
         }
         try validateDirectories(for: migrationID)
@@ -376,7 +649,7 @@ public actor ImageAllMigrationTransferStore {
     public func commitIncomingChunk(
         migrationID: UUID, authenticatedDeviceID: UUID,
         relativePath: String, offset: Int64, temporaryURL: URL,
-        byteCount: Int, sha256: String
+        byteCount: Int, sha256: String, fileProgressOnly: Bool = false
     ) throws -> ImageAllMigrationTransferProgress {
         defer { try? FileManager.default.removeItem(at: temporaryURL) }
         guard temporaryURL.deletingLastPathComponent().standardizedFileURL ==
@@ -395,7 +668,7 @@ public actor ImageAllMigrationTransferStore {
         let source = try FileHandle(forReadingFrom: temporaryURL)
         defer { try? source.close() }
         var sourceHash = SHA256()
-        while let block = try source.read(upToCount: 64 * 1_024), !block.isEmpty {
+        while let block = try ImageAllMigrationFileIO.read(source, upToCount: 64 * 1_024), !block.isEmpty {
             sourceHash.update(data: block)
         }
         guard Self.hex(Data(sourceHash.finalize())) == sha256 else {
@@ -405,11 +678,12 @@ public actor ImageAllMigrationTransferStore {
               session.deviceID == authenticatedDeviceID else {
             throw ImageAllMigrationTransferError.identityConflict
         }
-        guard !session.sealed || relativePath.hasPrefix("facts/") else {
+        guard session.hostHandoff == nil, !session.sealed || relativePath.hasPrefix("facts/") else {
             throw ImageAllMigrationTransferError.sealed
         }
         let file = packageDirectory(migrationID).appendingPathComponent(relativePath)
         try prepareFileParent(for: file, migrationID: migrationID)
+        try validateStorageObject(relativePath, in: session)
         let committed = try Self.repairFile(
             at: file, chunks: session.chunksByPath[relativePath] ?? []
         )
@@ -424,7 +698,7 @@ public actor ImageAllMigrationTransferStore {
             var priorHash = SHA256()
             while remaining > 0 {
                 let count = min(remaining, 64 * 1_024)
-                guard let block = try target.read(upToCount: count), !block.isEmpty else {
+                guard let block = try ImageAllMigrationFileIO.read(target, upToCount: count), !block.isEmpty else {
                     throw ImageAllMigrationTransferError.changedChunk
                 }
                 priorHash.update(data: block)
@@ -433,7 +707,7 @@ public actor ImageAllMigrationTransferStore {
             guard Self.hex(Data(priorHash.finalize())) == sha256 else {
                 throw ImageAllMigrationTransferError.changedChunk
             }
-            return progress(session)
+            return progress(session, relativePath: fileProgressOnly ? relativePath : nil)
         }
         guard offset == committed, offset >= 0,
               Int64(byteCount) <= Int64.max - committed else {
@@ -445,6 +719,13 @@ public actor ImageAllMigrationTransferStore {
         guard Int64(byteCount) <= maximumSessionBytes - used else {
             throw ImageAllMigrationTransferError.quotaExceeded
         }
+        // Invalidate discovery BEFORE writing: a crash or partial fact upload
+        // must remain hidden until a new complete seal, without unlocking media.
+        if session.sealed, session.factsUpdatePending != true {
+            session.factsUpdatePending = true
+            try persist(&session)
+            loaded[migrationID] = session
+        }
         if !FileManager.default.fileExists(atPath: file.path) {
             guard FileManager.default.createFile(atPath: file.path, contents: nil) else {
                 throw ImageAllMigrationTransferError.invalidSession
@@ -454,16 +735,143 @@ public actor ImageAllMigrationTransferStore {
         defer { try? target.close() }
         try target.seekToEnd()
         try source.seek(toOffset: 0)
-        while let block = try source.read(upToCount: 64 * 1_024), !block.isEmpty {
+        while let block = try ImageAllMigrationFileIO.read(source, upToCount: 64 * 1_024), !block.isEmpty {
             try target.write(contentsOf: block)
         }
         try target.synchronize()
         session.chunksByPath[relativePath, default: []].append(.init(
             offset: offset, byteCount: byteCount, sha256: sha256
         ))
-        try persist(session)
+        try bindStorageObject(relativePath, in: &session)
+        try persist(&session)
         loaded[migrationID] = session
-        return progress(session)
+        return progress(session, relativePath: fileProgressOnly ? relativePath : nil)
+    }
+
+    /// Persist custody before ACK. No media reads and no catalog trust are
+    /// obtained here; the Mac worker still runs the full verification gates.
+    public func acceptHandoff(migrationID: UUID, authenticatedDeviceID: UUID,
+                              manifestSHA256: String) throws -> ImageAllMigrationTransferSealReceipt {
+        let session = try readHostSession(migrationID)
+        guard session.deviceID == authenticatedDeviceID else { throw ImageAllMigrationTransferError.identityConflict }
+        if let job = session.hostHandoff {
+            guard job.receipt.manifestSHA256 == manifestSHA256 else { throw ImageAllMigrationTransferError.identityConflict }
+            try synchronizeHandoffJournal(migrationID)
+            return job.receipt
+        }
+        try validateStorageObjects(in: session)
+        try validateLedgerBindings(in: session)
+        guard session.ownershipVersion == 1, session.ownerBinding != nil else { throw ImageAllMigrationTransferError.invalidSession }
+        let package = packageDirectory(migrationID)
+        for (path, chunks) in session.chunksByPath {
+            let values = try package.appendingPathComponent(path).resourceValues(forKeys: [.fileSizeKey, .isRegularFileKey, .isSymbolicLinkKey])
+            guard values.isRegularFile == true, values.isSymbolicLink != true,
+                  values.fileSize.map(Int64.init) == Self.committedLength(chunks) else { throw ImageAllMigrationTransferError.incompleteArchive }
+        }
+        let (header, summary) = try ImageAllMigrationArchive.inspectReceived(at: package) { path, bytes, hash in
+            guard let receipt = session.verifiedResources?[path], receipt.migrationID == migrationID,
+                  receipt.deviceID == authenticatedDeviceID, receipt.resource.relativePath == path,
+                  receipt.resource.byteCount == bytes, receipt.resource.sha256 == hash,
+                  Self.committedLength(session.chunksByPath[path] ?? []) == bytes else {
+                throw ImageAllMigrationTransferError.incompleteArchive
+            }
+        }
+        guard summary.migrationID == migrationID, summary.manifestSHA256 == manifestSHA256,
+              header.sourceDeviceID == (session.sourceInstallID ?? authenticatedDeviceID), summary.isComplete else {
+            throw ImageAllMigrationTransferError.identityConflict
+        }
+        let incoming = sessionDirectory(migrationID).appendingPathComponent("incoming")
+        if FileManager.default.fileExists(atPath: incoming.path),
+           !(try FileManager.default.contentsOfDirectory(atPath: incoming.path)).isEmpty {
+            throw ImageAllMigrationCleanupError.busy
+        }
+        // Make directory entries durable too, before publishing the custody journal.
+        for url in [root, sessionDirectory(migrationID), package, package.appendingPathComponent("resources"),
+                    package.appendingPathComponent("facts")] where FileManager.default.fileExists(atPath: url.path) {
+            let fd = try ImageAllMigrationStagingLease.openDirectory(url); defer { close(fd) }
+            guard fsync(fd) == 0 else { throw ImageAllMigrationCleanupError.ioFailure }
+        }
+        let receipt = ImageAllMigrationTransferSealReceipt(handoff: summary)
+        var next = session
+        next.sealed = true; next.factsUpdatePending = false
+        next.hostHandoff = .init(receipt: receipt, deviceID: authenticatedDeviceID,
+            sourceInstallID: header.sourceDeviceID, sourceEpoch: header.sourceEpoch)
+        try persist(&next)
+        // Chunk bodies were synchronized on receive. Synchronize the final
+        // immutable journal and directory before the phone may disconnect.
+        try synchronizeHandoffJournal(migrationID)
+        loaded[migrationID] = next
+        return receipt
+    }
+
+    private func synchronizeHandoffJournal(_ id: UUID) throws {
+        let directory = try ImageAllMigrationStagingLease.openDirectory(sessionDirectory(id))
+        defer { close(directory) }
+        let fd = try ImageAllMigrationStagingCleanup.file(directory, "session.json", write: false)
+        defer { close(fd) }
+        guard fsync(fd) == 0, fsync(directory) == 0 else { throw ImageAllMigrationCleanupError.ioFailure }
+    }
+
+    public func handoffReceipt(migrationID: UUID, authenticatedDeviceID: UUID) throws -> ImageAllMigrationTransferSealReceipt? {
+        guard FileManager.default.fileExists(atPath: sessionDirectory(migrationID).appendingPathComponent("session.json").path) else { return nil }
+        let session = try readHostSession(migrationID)
+        guard session.deviceID == authenticatedDeviceID else { throw ImageAllMigrationTransferError.identityConflict }
+        // A prior request may have persisted the enrollment but failed its
+        // fsync. A retried/read-back ACK must complete durability too.
+        if session.hostHandoff != nil { try synchronizeHandoffJournal(migrationID) }
+        return session.hostHandoff?.receipt
+    }
+
+    private func readHostSession(_ id: UUID) throws -> Session {
+        try ensureLifetimeLease()
+        try validateDirectories(for: id)
+        let fd = try ImageAllMigrationStagingLease.openDirectory(sessionDirectory(id)); defer { close(fd) }
+        let session = try JSONDecoder().decode(Session.self, from: ImageAllMigrationStagingCleanup.read(fd, "session.json"))
+        guard session.formatVersion == 1, session.migrationID == id,
+              (try session.hostHandoff == nil || session.directoryObjects == [root, sessionDirectory(id), packageDirectory(id)].map(StorageObject.init)) else {
+            throw ImageAllMigrationTransferError.identityConflict
+        }
+        return session
+    }
+
+    /// Explicitly enrolled jobs only. No Photos scan and no legacy adoption.
+    public func hostJobs() throws -> [ImageAllMigrationHostJob] {
+        try ensureLifetimeLease()
+        var result: [ImageAllMigrationHostJob] = []
+        for name in try FileManager.default.contentsOfDirectory(atPath: root.path) where name.hasPrefix(".imageall-transfer-") {
+            guard let id = UUID(uuidString: String(name.dropFirst(".imageall-transfer-".count))),
+                  name == ".imageall-transfer-\(id.uuidString.lowercased())" else { continue }
+            guard FileManager.default.fileExists(atPath: sessionDirectory(id).appendingPathComponent("session.json").path),
+                  var job = try readHostSession(id).hostHandoff else { continue }
+            let dir = try ImageAllMigrationStagingLease.openDirectory(sessionDirectory(id)); defer { close(dir) }
+            if try ImageAllMigrationStagingCleanup.names(dir).contains("host-processing.json") {
+                let state = try JSONDecoder().decode(ImageAllMigrationHostJob.State.self,
+                    from: ImageAllMigrationStagingCleanup.read(dir, "host-processing.json"))
+                guard state.migrationID == id else { throw ImageAllMigrationTransferError.identityConflict }
+                job.state = state
+            }
+            result.append(job)
+        }
+        return result.sorted { $0.id.uuidString < $1.id.uuidString }
+    }
+
+    public func validateHostHandoff(_ job: ImageAllMigrationHostJob) throws {
+        let session = try readHostSession(job.id)
+        guard let enrolled = session.hostHandoff, enrolled.receipt == job.receipt,
+              enrolled.deviceID == job.deviceID, enrolled.sourceInstallID == job.sourceInstallID,
+              enrolled.sourceEpoch == job.sourceEpoch else { throw ImageAllMigrationTransferError.identityConflict }
+        try validateStorageObjects(in: session)
+        try validateLedgerBindings(in: session)
+    }
+
+    public func recordHostState(_ state: ImageAllMigrationHostJob.State) throws {
+        guard try readHostSession(state.migrationID).hostHandoff != nil else { throw ImageAllMigrationCleanupError.unowned }
+        let directory = sessionDirectory(state.migrationID)
+        let url = directory.appendingPathComponent("host-processing.json")
+        try JSONEncoder().encode(state).write(to: url, options: .atomic)
+        let dir = try ImageAllMigrationStagingLease.openDirectory(directory); defer { close(dir) }
+        let fd = try ImageAllMigrationStagingCleanup.file(dir, "host-processing.json", write: false); defer { close(fd) }
+        guard fsync(fd) == 0, fsync(dir) == 0 else { throw ImageAllMigrationCleanupError.ioFailure }
     }
 
     /// Sealing proves the package independently. Catalog import and any
@@ -485,17 +893,20 @@ public actor ImageAllMigrationTransferStore {
               verification.isComplete else {
             throw ImageAllMigrationTransferError.incompleteArchive
         }
-        if !session.sealed {
+        if !session.sealed || session.factsUpdatePending != false {
             session.sealed = true
-            try persist(session)
+            session.factsUpdatePending = false
+            try persist(&session)
             loaded[migrationID] = session
         }
         return (package, verification)
     }
 
-    /// Local Mac UI only: lists completed staging packages for explicit
-    /// catalog import. The package is verified again by the importer.
+    /// Local Mac UI discovery only: the journal records a previous seal.
+    /// No resource bytes are read or repaired. This is NOT a current integrity
+    /// receipt; the importer must independently verify all bytes before commit.
     public func sealedArchives() throws -> [ImageAllMigrationTransferSealedArchive] {
+        try ensureLifetimeLease()
         let names = try FileManager.default.contentsOfDirectory(atPath: root.path)
         var archives: [ImageAllMigrationTransferSealedArchive] = []
         for name in names where name.hasPrefix(".imageall-transfer-") {
@@ -504,30 +915,76 @@ public actor ImageAllMigrationTransferStore {
                   name == ".imageall-transfer-\(id.uuidString.lowercased())" else {
                 continue
             }
+            if try ImageAllMigrationStagingCleanup.hasIntent(in: sessionDirectory(id)) { continue }
             guard let session = try load(migrationID: id, repair: false), session.sealed,
-                  let verification = try? ImageAllMigrationArchive.verify(
-                    at: packageDirectory(id)
-                  ), verification.isComplete else { continue }
-            archives.append(.init(id: id, packageURL: packageDirectory(id)))
+                  session.factsUpdatePending != true else { continue }
+            try validateDirectories(for: id)
+            let package = packageDirectory(id)
+            let manifest = try package.appendingPathComponent(ImageAllMigrationArchive.manifestFilename).resourceValues(
+                forKeys: [.isRegularFileKey, .isSymbolicLinkKey, .fileSizeKey])
+            guard manifest.isRegularFile == true, manifest.isSymbolicLink != true,
+                  (manifest.fileSize ?? 0) > 0 else {
+                throw ImageAllMigrationTransferError.invalidSession
+            }
+            if session.factsUpdatePending == nil {
+                // Older writers did not invalidate the seal when appending facts.
+                // Inspect only small organization sidecars, never resource bytes.
+                let facts = package.appendingPathComponent(ImageAllMigrationFacts.sidecarDirectoryName)
+                if FileManager.default.fileExists(atPath: facts.path) {
+                    let values = try facts.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey])
+                    guard values.isDirectory == true, values.isSymbolicLink != true else {
+                        throw ImageAllMigrationTransferError.unsafePath
+                    }
+                    let files = try FileManager.default.contentsOfDirectory(at: facts, includingPropertiesForKeys: nil)
+                    guard files.allSatisfy({ (try? ImageAllMigrationFacts.read(at: $0)) != nil }) else { continue }
+                }
+            }
+            archives.append(.init(id: id, packageURL: package))
         }
         return archives.sorted { $0.id.uuidString < $1.id.uuidString }
     }
 
     private func load(migrationID: UUID, repair: Bool = true) throws -> Session? {
+        try ensureLifetimeLease()
+        if try ImageAllMigrationStagingCleanup.hasIntent(in: sessionDirectory(migrationID)) {
+            throw ImageAllMigrationCleanupError.retired
+        }
         if let cached = loaded[migrationID] { return cached }
         let url = sessionDirectory(migrationID).appendingPathComponent("session.json")
         guard FileManager.default.fileExists(atPath: url.path) else { return nil }
+        try validateDirectories(for: migrationID)
         let values = try url.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey])
         guard values.isRegularFile == true, values.isSymbolicLink != true else {
             throw ImageAllMigrationTransferError.invalidSession
         }
-        let session = try JSONDecoder().decode(Session.self, from: Data(contentsOf: url))
+        var session = try JSONDecoder().decode(Session.self, from: Data(contentsOf: url))
         guard session.formatVersion == 1, session.migrationID == migrationID,
               session.chunksByPath.keys.allSatisfy(Self.isAllowed) else {
             throw ImageAllMigrationTransferError.invalidSession
         }
         if repair {
-            try repairFiles(in: session, verifyCommittedHashes: true)
+            try validateStorageObjects(in: session)
+            let hasBindings = session.storageObjects != nil && session.ledgerDigests != nil && session.ownerBinding != nil
+            try validateLedgerBindings(in: session)
+            try repairFiles(in: session, verifyCommittedHashes: recoveryPolicy == .verifiedBytes || !hasBindings)
+            if !hasBindings {
+                // A legacy receipt was not bound to its chunk ledger. Verify
+                // its actual bytes before enrolling it into staged recovery.
+                for receipt in (session.verifiedResources ?? [:]).values {
+                    let file = packageDirectory(session.migrationID).appendingPathComponent(receipt.resource.relativePath)
+                    guard receipt.migrationID == session.migrationID, receipt.deviceID == session.deviceID,
+                          Self.isAllowed(receipt.resource.relativePath),
+                          Self.committedLength(session.chunksByPath[receipt.resource.relativePath] ?? []) == receipt.resource.byteCount,
+                          try Self.resourceHash(at: file) == receipt.resource.sha256 else {
+                        throw ImageAllMigrationTransferError.invalidSession
+                    }
+                }
+                session.storageObjects = [:]
+                for path in session.chunksByPath.keys {
+                    try bindStorageObject(path, in: &session)
+                }
+                try persist(&session)
+            }
             loaded[migrationID] = session
         } else {
             // A separate UI reader must not truncate an active writer's
@@ -591,23 +1048,154 @@ public actor ImageAllMigrationTransferStore {
         }
     }
 
-    private func persist(_ session: Session) throws {
-        let data = try JSONEncoder().encode(session)
+    private func validateStorageObject(_ path: String, in session: Session) throws {
+        guard let object = session.storageObjects?[path] else { return }
+        guard try StorageObject(at: packageDirectory(session.migrationID).appendingPathComponent(path)) == object else {
+            throw ImageAllMigrationTransferError.identityConflict
+        }
+    }
+
+    private func bindStorageObject(_ path: String, in session: inout Session) throws {
+        let object = try StorageObject(at: packageDirectory(session.migrationID).appendingPathComponent(path))
+        session.storageObjects = (session.storageObjects ?? [:]).merging([path: object]) { _, new in new }
+        session.ledgerDigests = (session.ledgerDigests ?? [:]).merging([path: try ledgerDigest(path, in: session)]) { _, new in new }
+    }
+
+    private func ledgerDigest(_ path: String, in session: Session) throws -> String {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        let binding = LedgerBinding(path: path, chunks: session.chunksByPath[path] ?? [],
+            receipt: session.verifiedResources?[path])
+        return Self.hex(Data(SHA256.hash(data: try encoder.encode(binding))))
+    }
+
+    private func ownerBinding(_ session: Session) -> String {
+        [session.migrationID.uuidString, session.deviceID.uuidString, session.sourceInstallID?.uuidString ?? ""].joined(separator: "|")
+    }
+
+    private func validateLedgerBindings(in session: Session) throws {
+        guard let digests = session.ledgerDigests else { return }
+        guard session.ownerBinding == ownerBinding(session),
+              Set(digests.keys) == Set(session.chunksByPath.keys),
+              Set((session.verifiedResources ?? [:]).keys).isSubset(of: Set(digests.keys)) else {
+            throw ImageAllMigrationTransferError.invalidSession
+        }
+        for (path, digest) in digests {
+            guard try ledgerDigest(path, in: session) == digest else {
+                throw ImageAllMigrationTransferError.invalidSession
+            }
+        }
+    }
+
+    private static func resourceHash(at file: URL) throws -> String {
+        let handle = try FileHandle(forReadingFrom: file)
+        defer { try? handle.close() }
+        var digest = SHA256()
+        while let bytes = try ImageAllMigrationFileIO.read(handle, upToCount: ImageAllMigrationFileIO.resourceBlockBytes), !bytes.isEmpty {
+            try Task.checkCancellation()
+            digest.update(data: bytes)
+        }
+        return hex(Data(digest.finalize()))
+    }
+
+    private func validateStorageObjects(in session: Session) throws {
+        guard let objects = session.storageObjects else { return }
+        guard let directories = session.directoryObjects,
+              directories == (try [root, sessionDirectory(session.migrationID), packageDirectory(session.migrationID)].map(StorageObject.init)),
+              Set(objects.keys) == Set(session.chunksByPath.keys) else {
+            throw ImageAllMigrationTransferError.identityConflict
+        }
+        for (path, object) in objects {
+            guard try StorageObject(at: packageDirectory(session.migrationID).appendingPathComponent(path)) == object else {
+                throw ImageAllMigrationTransferError.identityConflict
+            }
+        }
+    }
+
+    private func persist(_ session: inout Session) throws {
+        if session.storageObjects == nil, session.chunksByPath.isEmpty { session.storageObjects = [:] }
+        if session.directoryObjects == nil {
+            session.directoryObjects = try [root, sessionDirectory(session.migrationID), packageDirectory(session.migrationID)].map(StorageObject.init)
+        }
+        if session.ledgerDigests == nil, session.chunksByPath.isEmpty { session.ledgerDigests = [:] }
+        session.ownerBinding = ownerBinding(session)
+        let (data, candidateCache) = try encodeJournal(session)
         try data.write(
             to: sessionDirectory(session.migrationID).appendingPathComponent("session.json"),
             options: .atomic
         )
+        // Publish cache only after the durable snapshot operation succeeds.
+        journalEncodingCache = candidateCache
     }
 
-    private func progress(_ session: Session) -> ImageAllMigrationTransferProgress {
-        .init(
+    private func encodeJournal(_ session: Session) throws -> (Data, JournalEncodingCache?) {
+        let encoder = JSONEncoder()
+        guard journalEncodingCacheEnabled, session.chunksByPath.count <= 8_192,
+              let objects = session.storageObjects, let digests = session.ledgerDigests,
+              objects.count == session.chunksByPath.count,
+              digests.count == session.chunksByPath.count,
+              (session.verifiedResources ?? [:]).keys.allSatisfy({ session.chunksByPath[$0] != nil }) else {
+            return (try encoder.encode(session), nil)
+        }
+        var candidate = JournalEncodingCache(migrationID: session.migrationID)
+        let previous = journalEncodingCache?.migrationID == session.migrationID ? journalEncodingCache : nil
+        for (path, chunks) in session.chunksByPath {
+            guard let digest = digests[path], let object = objects[path] else {
+                return (try encoder.encode(session), nil)
+            }
+            let row: JournalRow
+            if let cached = previous?.rows[path], cached.digest == digest, cached.object == object {
+                row = cached
+            } else {
+                row = try JournalRow(digest: digest, object: object,
+                    key: encoder.encode(path), chunks: encoder.encode(chunks),
+                    receipt: session.verifiedResources?[path].map { try encoder.encode($0) },
+                    storage: encoder.encode(object), ledger: encoder.encode(digest))
+            }
+            candidate.byteCount += row.byteCount
+            guard candidate.byteCount <= 8 * 1_024 * 1_024 else {
+                return (try encoder.encode(session), nil)
+            }
+            candidate.rows[path] = row
+        }
+        var data = try encoder.encode(JournalHeader(session: session))
+        data.removeLast() // JSONEncoder's closing object brace.
+        func appendMap(_ name: String, value: (JournalRow) -> Data?) {
+            data.append(contentsOf: ",\"\(name)\":{".utf8)
+            var first = true
+            for row in candidate.rows.values {
+                guard let encoded = value(row) else { continue }
+                if !first { data.append(44) }
+                first = false
+                data.append(row.key); data.append(58); data.append(encoded)
+            }
+            data.append(125)
+        }
+        appendMap("chunksByPath") { $0.chunks }
+        appendMap("storageObjects") { $0.storage }
+        appendMap("ledgerDigests") { $0.ledger }
+        if session.verifiedResources != nil { appendMap("verifiedResources") { $0.receipt } }
+        data.append(125)
+        return (data, candidate)
+    }
+
+    private func progress(_ session: Session, relativePath: String? = nil) -> ImageAllMigrationTransferProgress {
+        let files: [ImageAllMigrationTransferFileProgress]
+        if let relativePath {
+            // Do not enumerate or sort thousands of unrelated files per chunk.
+            files = [.init(relativePath: relativePath,
+                committedBytes: Self.committedLength(session.chunksByPath[relativePath] ?? []))]
+        } else {
+            files = session.chunksByPath.map { path, chunks in
+                .init(relativePath: path, committedBytes: Self.committedLength(chunks))
+            }.sorted { $0.relativePath < $1.relativePath }
+        }
+        return .init(
             migrationID: session.migrationID,
             maximumChunkBytes: maximumChunkBytes,
             maximumSessionBytes: maximumSessionBytes,
-            files: session.chunksByPath.map { path, chunks in
-                .init(relativePath: path, committedBytes: Self.committedLength(chunks))
-            }.sorted { $0.relativePath < $1.relativePath },
-            sealed: session.sealed, sourceInstallID: session.sourceInstallID
+            files: files,
+            sealed: session.sealed && session.factsUpdatePending != true, sourceInstallID: session.sourceInstallID
         )
     }
 
@@ -655,7 +1243,7 @@ public actor ImageAllMigrationTransferStore {
             let handle = try FileHandle(forReadingFrom: url)
             defer { try? handle.close() }
             for chunk in chunks {
-                guard let bytes = try handle.read(upToCount: chunk.byteCount),
+                guard let bytes = try ImageAllMigrationFileIO.read(handle, upToCount: chunk.byteCount),
                       bytes.count == chunk.byteCount,
                       hex(Data(SHA256.hash(data: bytes))) == chunk.sha256 else {
                     throw ImageAllMigrationTransferError.changedChunk

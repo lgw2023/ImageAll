@@ -44,11 +44,285 @@ final class LocalLibraryModel: ObservableObject {
     @Published private(set) var hasMore = false
     @Published private(set) var favoriteWritesInFlight: Set<UUID> = []
     @Published var errorMessage: String?
+    @Published private var shareTaskRecord = LocalShareTaskRecord()
+    @Published private(set) var shareTaskPersistenceError: String?
+    @Published private(set) var macImportStatusMessage: String?
+    @Published private(set) var legacyAssociationInProgress = false
+    @Published private(set) var legacyAssociationMessage: String?
+    @Published private(set) var exportCleanupBusy = false
+    @Published private(set) var exportCleanupMessage: String?
+    var canReleaseExportPayload: Bool { shareTask.macOwnsProcessing != true && shareTask.phase == .received && shareTaskRecord.exportStagingName != nil && !exportCleanupBusy }
+    private var refreshingMacImportStatus = false
+    private var shareTaskJournal: LocalShareTaskJournal?
+    var shareTask: LocalShareTask {
+        get { shareTaskRecord.task }
+        set {
+            shareTaskRecord.task = newValue
+            do { try saveShareTaskRecord(shareTaskRecord) }
+            catch { failShareTaskPersistence(error) }
+        }
+    }
+    private func failShareTaskPersistence(_ error: Error) {
+        shareTaskPersistenceError = error.localizedDescription
+        errorMessage = shareTaskPersistenceError
+        activeImportTask?.cancel()
+    }
+    private func saveShareTaskRecord(_ record: LocalShareTaskRecord) throws {
+        guard shareTaskPersistenceError == nil, let shareTaskJournal else {
+            throw LocalShareTaskRecoveryError.unavailable
+        }
+        do { try shareTaskJournal.save(record) }
+        catch { failShareTaskPersistence(error); throw error }
+    }
+    func beginShareTask(target: String, hostID: String, fingerprint: String,
+                        includeAlbumCatalog: Bool, intent: LocalShareTask.Intent) throws {
+        var record = shareTaskRecord
+        try record.begin(selectionIDs: Set(sharedSelections.map(\.id)),
+            includeAlbumCatalog: includeAlbumCatalog, hostID: hostID, fingerprint: fingerprint,
+            target: target, intent: intent)
+        try saveShareTaskRecord(record)
+        shareTaskRecord = record
+    }
+    func resetReceivedShareTask() {
+        guard shareTask.phase == .received, !exportCleanupBusy else { return }
+        let record = LocalShareTaskRecord()
+        do {
+            try cleanupQueue()?.retain(shareTaskRecord)
+            try saveShareTaskRecord(record); shareTaskRecord = record
+        }
+        catch { failShareTaskPersistence(error) }
+    }
+    private func bindShareTaskSource(_ snapshot: LocalSharedSnapshot) throws {
+        var record = shareTaskRecord
+        try record.bind(sourceInstallID: snapshot.installID, sourceEpoch: snapshot.sourceEpoch)
+        try saveShareTaskRecord(record)
+        shareTaskRecord = record
+    }
+    private func bindShareTaskMigration(_ id: UUID) throws {
+        var record = shareTaskRecord
+        try record.bind(migrationID: id)
+        try saveShareTaskRecord(record)
+        shareTaskRecord = record
+    }
+    var activeImportTask: Task<Void, Never>?
+    func pauseActiveImport(reason: LocalShareTask.PauseReason = .userRequested) {
+        guard shareTask.phase == .running else { return }
+        shareTask.requestPause(reason)
+        activeImportTask?.cancel()
+    }
+    @Published var shareIncludeAlbumCatalog = UserDefaults.standard.object(forKey: "imageall.mobile.shareIncludeAlbumCatalog") as? Bool ?? true {
+        didSet { UserDefaults.standard.set(shareIncludeAlbumCatalog, forKey: "imageall.mobile.shareIncludeAlbumCatalog") }
+    }
+    @Published private(set) var shareSelectionEditing = false
+    var shareTaskSelectionIDs: Set<UUID> { shareTaskRecord.selectionIDs }
+    var shareTaskAlbumCatalog: Bool { shareTaskRecord.includeAlbumCatalog }
+    var shareTaskHostID: String { shareTaskRecord.hostID }
+    var shareTaskFingerprint: String { shareTaskRecord.fingerprint }
+
+    func receiveShareTask(_ receipt: ImageAllMigrationTransferSealReceipt) throws {
+        var record = shareTaskRecord
+        try record.receive(receipt)
+        try saveShareTaskRecord(record)
+        shareTaskRecord = record
+    }
+
+    func refreshMacImportStatus(_ remote: RemoteCompanionModel) async {
+        guard !refreshingMacImportStatus, shareTaskPersistenceError == nil,
+              shareTask.phase == .received else { return }
+        guard let query = shareTaskRecord.statusQuery else {
+            macImportStatusMessage = "旧任务未保存清单绑定，请在 Mac 核对结果；不会为补齐状态重新上传。"
+            return
+        }
+        refreshingMacImportStatus = true
+        defer { refreshingMacImportStatus = false }
+        do {
+            guard shareTaskHostID == remote.savedPairingHostID,
+                  shareTaskFingerprint == remote.savedPairingFingerprint else {
+                throw LocalShareTaskRecoveryError.bindingChanged
+            }
+            let connection = try remote.importStatusConnection()
+            let status = try await connection.client.importTaskStatus(query)
+            try remote.validateImportStatusConnection(hostID: connection.hostID,
+                deviceID: connection.deviceID, transportID: connection.transportID)
+            guard shareTaskRecord.statusQuery == query,
+                  shareTaskHostID == remote.savedPairingHostID,
+                  shareTaskFingerprint == remote.savedPairingFingerprint else { return }
+            try shareTaskRecord.observe(status)
+            macImportStatusMessage = "Mac 状态已更新 · " + Date(timeIntervalSince1970: Double(status.checkedAtMs) / 1_000)
+                .formatted(date: .omitted, time: .standard)
+        } catch {
+            guard shareTaskRecord.statusQuery == query else { return }
+            shareTaskRecord.task.macStatus = nil
+            macImportStatusMessage = "暂未取得 Mac 最新状态：\(error.localizedDescription)"
+        }
+    }
+
+    private func cleanupQueue() -> LocalShareCleanupQueue? {
+        shareTaskJournal.map { .init(directory: $0.directory.appendingPathComponent("AutomaticCleanup")) }
+    }
+    private func saveCleanupRecord(_ record: LocalShareTaskRecord) throws {
+        if record.taskID == shareTaskRecord.taskID {
+            try saveShareTaskRecord(record); shareTaskRecord = record
+            if let queue = cleanupQueue(), try queue.contains(record.taskID) { try queue.save(record) }
+        } else {
+            guard let queue = cleanupQueue() else { throw LocalShareTaskRecoveryError.unavailable }
+            try queue.save(record)
+        }
+    }
+    var automaticCleanupMessage: String? {
+        guard let state = shareTaskRecord.automaticCleanup, shareTask.phase == .received else { return nil }
+        switch state.phase {
+        case .complete: return "自动收尾完成 · Mac 图库可继续浏览"
+        case .running: return "正在核验并自动收尾…"
+        case .pending: return "Mac 完成导入后将自动收尾"
+        case .deferred:
+            return state.reason == .connectionUnavailable ? "自动收尾已延期 · 等待连接原 Mac" : "自动收尾已延期 · 稍后重试，已导入图库不受影响"
+        }
+    }
+    func advanceAutomaticCleanup(_ remote: RemoteCompanionModel) async {
+        guard !exportCleanupBusy, shareTaskPersistenceError == nil,
+              shareTask.phase != .running, shareTask.phase != .pausing,
+              UIApplication.shared.applicationState == .active, !Task.isCancelled else { return }
+        var next = shareTaskRecord
+        let nonce = next.beginAutomaticCleanup(nowMs: Int64(Date().timeIntervalSince1970 * 1000),
+            connected: remote.isConnected, ready: shareTask.macStatus?.phase == .browsable)
+        if next.automaticCleanup != shareTaskRecord.automaticCleanup {
+            do { try saveShareTaskRecord(next); shareTaskRecord = next }
+            catch { return }
+        }
+        if let nonce {
+            await releaseExportPayload(remote, automaticNonce: nonce)
+        } else if remote.isConnected {
+            do {
+                guard var queued = try cleanupQueue()?.next(hostID: remote.savedPairingHostID,
+                    fingerprint: remote.savedPairingFingerprint, nowMs: Int64(Date().timeIntervalSince1970 * 1000)),
+                      queued.statusQuery != nil else { return }
+                if let nonce = queued.beginAutomaticCleanup(nowMs: Int64(Date().timeIntervalSince1970 * 1000), connected: true, ready: true) {
+                    try saveCleanupRecord(queued)
+                    await releaseExportPayload(remote, automaticNonce: nonce, queuedRecord: queued)
+                }
+            } catch { exportCleanupMessage = "先前任务收尾已延期：\(error.localizedDescription)" }
+        }
+    }
+
+    func releaseExportPayload(_ remote: RemoteCompanionModel, automaticNonce: UUID? = nil,
+                              queuedRecord: LocalShareTaskRecord? = nil) async {
+        let cleanupRecord = queuedRecord ?? shareTaskRecord
+        guard !exportCleanupBusy, let query = cleanupRecord.statusQuery,
+              let name = cleanupRecord.exportStagingName else { return }
+        exportCleanupBusy = true
+        exportCleanupMessage = "正在核验 Mac 最终副本…"
+        defer { exportCleanupBusy = false }
+        do {
+            guard cleanupRecord.hostID == remote.savedPairingHostID,
+                  cleanupRecord.fingerprint == remote.savedPairingFingerprint else { throw LocalShareTaskRecoveryError.bindingChanged }
+            let connection = try remote.importStatusConnection()
+            let nonce = automaticNonce ?? UUID()
+            let receipt: RemoteExportCleanupReceipt
+            if automaticNonce != nil {
+                receipt = try await connection.client.automaticCleanup(query, nonce: nonce,
+                    hostID: connection.hostID, deviceID: connection.deviceID)
+            } else {
+                receipt = try await connection.client.exportCleanupReceipt(query, nonce: nonce,
+                    hostID: connection.hostID, deviceID: connection.deviceID)
+            }
+            try Task.checkCancellation()
+            guard UIApplication.shared.applicationState == .active else { throw CancellationError() }
+            try remote.validateImportStatusConnection(hostID: connection.hostID,
+                deviceID: connection.deviceID, transportID: connection.transportID)
+            guard queuedRecord != nil || (shareTaskRecord.statusQuery == query && shareTaskRecord.exportStagingName == name) else {
+                throw LocalShareTaskRecoveryError.bindingChanged
+            }
+            let parent = try FileManager.default.url(for: .applicationSupportDirectory, in: .userDomainMask,
+                appropriateFor: nil, create: false).appendingPathComponent("LocalLibrary/MigrationStreaming")
+            let root = parent.appendingPathComponent(name)
+            exportCleanupMessage = "正在释放已核验的导出暂存…"
+            let work = Task.detached(priority: .utility) {
+                try ImageAllMigrationExportCleanup.release(root: root, query: query,
+                    hostID: connection.hostID, deviceID: connection.deviceID, nonce: nonce, receipt: receipt)
+            }
+            let result = try await withTaskCancellationHandler(operation: { try await work.value }, onCancel: { work.cancel() })
+            if let automaticNonce {
+                var next = queuedRecord ?? shareTaskRecord
+                next.finishAutomaticCleanup(automaticNonce, nowMs: Int64(Date().timeIntervalSince1970 * 1000))
+                try saveCleanupRecord(next)
+            }
+            exportCleanupMessage = result.alreadyReleased ? "导出暂存已收尾，Mac 图库可继续浏览。" :
+                "导出暂存收尾完成，释放 \(ByteCountFormatter.string(fromByteCount: result.logicalBytesReleased, countStyle: .file))。"
+        } catch {
+            if let automaticNonce {
+                var next = queuedRecord ?? shareTaskRecord
+                let reason: ImageAllAutomaticCleanup.Reason = !remote.isConnected ? .connectionUnavailable :
+                    (error is CancellationError ? .interrupted : .failed)
+                next.finishAutomaticCleanup(automaticNonce, failure: reason, nowMs: Int64(Date().timeIntervalSince1970 * 1000))
+                do { try saveCleanupRecord(next) } catch { /* Persistence error already surfaced. */ }
+            }
+            exportCleanupMessage = "收尾暂未完成，可重试：\(error.localizedDescription)"
+        }
+        await refreshMacImportStatus(remote)
+    }
+
+    /// Explicit metadata-only adoption. No Photos fetch, begin, seal or upload.
+    func associatePreviouslyPublishedTask(_ remote: RemoteCompanionModel, target: String) async {
+        guard let store, shareTask.phase == .idle, !legacyAssociationInProgress,
+              shareTaskPersistenceError == nil, !shareSelectionEditing else { return }
+        legacyAssociationInProgress = true
+        legacyAssociationMessage = "正在读取手机旧清单并核对 Mac 发布记录，不上传原件…"
+        defer { legacyAssociationInProgress = false }
+        do {
+            let taskID = shareTaskRecord.taskID
+            let ids = Set(sharedSelections.map(\.id)), albums = shareIncludeAlbumCatalog
+            let fingerprint = remote.savedPairingFingerprint
+            let connection = try remote.importStatusConnection()
+            let install = try await store.installID(), version = try await store.shareSelectionVersion()
+            let support = try FileManager.default.url(for: .applicationSupportDirectory,
+                in: .userDomainMask, appropriateFor: nil, create: false)
+            let parent = support.appendingPathComponent("LocalLibrary/MigrationStreaming")
+            let candidates = try await Task.detached(priority: .utility) {
+                var result: [LocalShareLegacyCandidate] = []
+                try ImageAllMigrationStreamRecord.visitExisting(in: parent) { record in
+                    if let candidate = try LocalShareLegacyCandidate(record: record,
+                        hostID: connection.hostID, deviceID: connection.deviceID,
+                        sourceInstallID: install, sourceEpoch: version.sourceEpoch,
+                        selectionIDs: ids, includeAlbumCatalog: albums) {
+                        result.append(candidate)
+                    }
+                }
+                return result
+            }.value
+            guard candidates.count == 1, let candidate = candidates.first else {
+                legacyAssociationMessage = candidates.isEmpty
+                    ? "没有找到与当前选择、相簿选项及原 Mac 身份匹配的已封存批次。未新建或上传；请保留旧记录核对。"
+                    : "找到多个匹配的旧批次，不能自动选择。未新建或上传；请先核对批次。"
+                return
+            }
+            let status = try await connection.client.importTaskStatus(candidate.query(taskID: taskID))
+            try remote.validateImportStatusConnection(hostID: connection.hostID,
+                deviceID: connection.deviceID, transportID: connection.transportID)
+            guard shareTask.phase == .idle, shareTaskRecord.taskID == taskID,
+                  Set(sharedSelections.map(\.id)) == ids, shareIncludeAlbumCatalog == albums,
+                  remote.savedPairingFingerprint == fingerprint,
+                  try await store.installID() == install,
+                  try await store.shareSelectionVersion() == version else {
+                throw LocalShareTaskRecoveryError.bindingChanged
+            }
+            var record = shareTaskRecord
+            try record.associate(candidate, status: status, selectionIDs: ids, includeAlbumCatalog: albums,
+                hostID: connection.hostID.uuidString, fingerprint: fingerprint, target: target)
+            try saveShareTaskRecord(record)
+            shareTaskRecord = record
+            legacyAssociationMessage = nil
+            macImportStatusMessage = "已关联旧批次 · 核对 \(candidate.receipt.itemCount) 项已发布；原件新增上传 0。"
+        } catch {
+            legacyAssociationMessage = "未关联旧批次：\(error.localizedDescription) 未启动传输，也未修改 Mac 照片。"
+        }
+    }
 
     private let store: LocalLibraryStore?
     private let favoriteSource: any LocalFavoriteSource
     private let browser: LocalLibraryBrowser?
     private var photoChanges: LocalPhotoChangeObserver?
+    private let photoVisibilityGeneration = LocalLibraryVisibilityGeneration()
 
     func validateCleanupRecheckIdentity(_ request: RemotePhoneCleanupRecheck) async throws {
         guard let store else { throw RemoteAPIError(code: .internalError, message: "本机资料库不可用") }
@@ -71,15 +345,84 @@ final class LocalLibraryModel: ObservableObject {
             let opened = try LocalLibraryStore(url: root.appendingPathComponent("LocalLibrary/local.sqlite"))
             store = opened
             browser = LocalLibraryBrowser(store: opened, source: browsingSource)
+            do {
+                let journal = LocalShareTaskJournal(directory: root.appendingPathComponent("LocalLibrary"))
+                shareTaskJournal = journal
+                if let restored = try journal.load() {
+                    try journal.save(restored)
+                    shareTaskRecord = restored
+                }
+            } catch {
+                shareTaskPersistenceError = error.localizedDescription
+                errorMessage = shareTaskPersistenceError
+            }
         } catch {
             store = nil
             browser = nil
             errorMessage = "本机资料库无法打开：\(error.localizedDescription)"
         }
-        photoChanges = LocalPhotoChangeObserver { [weak self] in
+        photoChanges = LocalPhotoChangeObserver(generation: photoVisibilityGeneration) { [weak self] in
             Task { await self?.refresh() }
         }
     }
+
+    #if DEBUG
+    /// Explicit, metadata-only diagnosis of the retained selection. Never reads
+    /// resources or changes selection; report only aggregate counts, not locators.
+    func diagnoseSelectedAvailability() async -> [String: Any] {
+        do {
+            guard let store else { return ["error": "localStoreUnavailable"] }
+            let selected = try await store.sharedSelections()
+            let permission = PHPhotoLibrary.authorizationStatus(for: .readWrite)
+            var report: [String: Any] = ["selectedCount": selected.count,
+                "authorization": permission.rawValue, "sourceBytesRead": false,
+                "macUploads": false, "selectionChanged": false]
+            guard permission == .authorized || permission == .limited else { return report }
+            let identifiers = selected.map(\.localIdentifier)
+            let normal = PHFetchOptions()
+            normal.includeHiddenAssets = false
+            normal.includeAssetSourceTypes = .typeUserLibrary
+            let eligible = PHAsset.fetchAssets(withLocalIdentifiers: identifiers, options: normal)
+            var eligibleIDs = Set<String>()
+            eligible.enumerateObjects { asset, _, _ in eligibleIDs.insert(asset.localIdentifier) }
+            let missing = identifiers.filter { !eligibleIDs.contains($0) }
+            let metadata = PHFetchOptions()
+            metadata.includeHiddenAssets = true
+            metadata.includeAssetSourceTypes = [.typeUserLibrary, .typeCloudShared, .typeiTunesSynced]
+            let returned = PHAsset.fetchAssets(withLocalIdentifiers: missing, options: metadata)
+            var hidden = 0, nonUserLibrary = 0, returnedUserLibrary = 0
+            returned.enumerateObjects { asset, _, _ in
+                if asset.isHidden { hidden += 1 }
+                if !asset.sourceType.contains(.typeUserLibrary) { nonUserLibrary += 1 }
+                if !asset.isHidden && asset.sourceType.contains(.typeUserLibrary) { returnedUserLibrary += 1 }
+            }
+            report["eligibleCount"] = eligibleIDs.count
+            report["missingFromImportFetch"] = missing.count
+            report["hiddenCount"] = hidden
+            report["otherSourceTypeCount"] = nonUserLibrary
+            report["returnedUnhiddenUserLibraryCount"] = returnedUserLibrary
+            report["notReturnedByPhotoKitCount"] = missing.count - returned.count
+            report["authorizationAfter"] = PHPhotoLibrary.authorizationStatus(for: .readWrite).rawValue
+            return report
+        } catch { return ["errorDomain": (error as NSError).domain, "errorCode": (error as NSError).code] }
+    }
+
+    func diagnoseImportPreparation(verifyOnePendingLocalResource: Bool = false) async -> [String: Any] {
+        do {
+            guard let store else { return ["error": "localStoreUnavailable"] }
+            let selected = try await store.sharedSelections()
+            let options = PHFetchOptions()
+            options.includeHiddenAssets = false; options.includeAssetSourceTypes = .typeUserLibrary
+            guard authorization == .authorized || authorization == .limited else { return ["error": "photosNotAuthorized"] }
+            let fetched = PHAsset.fetchAssets(withLocalIdentifiers: selected.map(\.localIdentifier), options: options)
+            var visible = Set<String>()
+            fetched.enumerateObjects { asset, _, _ in visible.insert(asset.localIdentifier) }
+            let snapshot = try await store.sharedSnapshot(visibleIdentifiers: visible)
+            return try await LocalPhotoArchiveExporter.preparationDiagnostics(
+                snapshot: snapshot, verifyOnePendingLocalResource: verifyOnePendingLocalResource)
+        } catch { return ["error": error.localizedDescription] }
+    }
+    #endif
 
     func requestAccess() async {
         authorization = await PHPhotoLibrary.requestAuthorization(for: .readWrite)
@@ -208,7 +551,66 @@ final class LocalLibraryModel: ObservableObject {
         return added
     }
 
-    func cancelBulkSharePreview() { browser?.cancelBulkSharePreview() }
+    private struct CompletedSelectionLedger: Codable {
+        let installID: UUID
+        let epoch: UUID
+        var ids: Set<UUID>
+    }
+    private var newBatchPreviewTaskID: UUID?
+    private func newBatchLedger() throws -> (URL, CompletedSelectionLedger) {
+        guard shareTask.phase == .received, let install = shareTaskRecord.sourceInstallID,
+              let epoch = shareTaskRecord.sourceEpoch, let journal = shareTaskJournal else {
+            throw LocalShareTaskRecoveryError.bindingChanged
+        }
+        let url = journal.directory.appendingPathComponent("completed-selection.json")
+        var ledger = CompletedSelectionLedger(installID: install, epoch: epoch, ids: [])
+        if FileManager.default.fileExists(atPath: url.path) {
+            let fd = Darwin.open(url.path, O_RDONLY | O_NOFOLLOW)
+            guard fd >= 0 else { throw LocalShareTaskRecoveryError.invalidRecord }
+            let file = FileHandle(fileDescriptor: fd, closeOnDealloc: true)
+            defer { try? file.close() }
+            var info = stat()
+            guard fstat(fd, &info) == 0, info.st_mode & S_IFMT == S_IFREG, info.st_size <= 16 * 1024 * 1024,
+                  let data = try file.read(upToCount: 16 * 1024 * 1024 + 1), data.count <= 16 * 1024 * 1024 else {
+                throw LocalShareTaskRecoveryError.invalidRecord
+            }
+            ledger = try JSONDecoder().decode(CompletedSelectionLedger.self, from: data)
+            guard ledger.installID == install, ledger.epoch == epoch else { throw LocalShareTaskRecoveryError.bindingChanged }
+        }
+        ledger.ids.formUnion(shareTaskRecord.selectionIDs)
+        return (url, ledger)
+    }
+    func prepareNewBatchPreview() async throws -> LocalBulkSharePreview {
+        guard authorization == .authorized, !exportCleanupBusy, !shareSelectionEditing, let browser, let store else {
+            throw LocalShareTaskRecoveryError.unavailable
+        }
+        let (_, ledger) = try newBatchLedger()
+        guard try await store.installID() == ledger.installID,
+              try await store.shareSelectionVersion().sourceEpoch == ledger.epoch else {
+            throw LocalShareTaskRecoveryError.bindingChanged
+        }
+        newBatchPreviewTaskID = shareTaskRecord.taskID
+        return try await browser.prepareBulkSharePreview(excludingAssetIDs: ledger.ids)
+    }
+    func confirmNewBatchPreview(_ preview: LocalBulkSharePreview) async throws -> Int {
+        guard !exportCleanupBusy, !shareSelectionEditing, let browser, let journal = shareTaskJournal,
+              newBatchPreviewTaskID == shareTaskRecord.taskID else { throw LocalShareTaskRecoveryError.bindingChanged }
+        shareSelectionEditing = true
+        defer { shareSelectionEditing = false; newBatchPreviewTaskID = nil }
+        let (ledgerURL, ledger) = try newBatchLedger()
+        // Preserve the original task before replacing selection or the visible task.
+        let saved = LocalShareTaskJournal(directory: journal.directory.appendingPathComponent("CompletedTasks")
+            .appendingPathComponent(shareTaskRecord.taskID.uuidString.lowercased()))
+        try FileManager.default.createDirectory(at: saved.directory, withIntermediateDirectories: true)
+        try saved.save(shareTaskRecord)
+        try JSONEncoder().encode(ledger).write(to: ledgerURL, options: [.atomic, .completeFileProtection])
+        let count = try await browser.confirmBulkSharePreview(preview, replacingSelection: true)
+        resetReceivedShareTask()
+        guard shareTask.phase == .idle else { throw LocalShareTaskRecoveryError.unavailable }
+        await reloadFacts()
+        return count
+    }
+    func cancelBulkSharePreview() { browser?.cancelBulkSharePreview(); newBatchPreviewTaskID = nil }
 
     func renamePrivateCollection(_ collection: LocalCollection, revision: Int64, name: String) async throws {
         guard let store else { throw LocalFavoriteSourceError.storeUnavailable }
@@ -281,6 +683,32 @@ final class LocalLibraryModel: ObservableObject {
         }
     }
 
+    func removeSharedSelections(_ ids: Set<UUID>) async -> Int {
+        guard let store, !shareSelectionEditing, shareTask.phase != .running, shareTask.phase != .pausing else { return 0 }
+        shareSelectionEditing = true
+        defer { shareSelectionEditing = false }
+        var removed = 0
+        for id in ids {
+            do { try await store.setShared(assetID: id, shared: false); removed += 1 }
+            catch { errorMessage = "部分项目未移出待分享：\(error.localizedDescription)"; break }
+        }
+        await reloadFacts()
+        return removed
+    }
+
+    func restoreShareTaskSelection() async {
+        guard let store, !shareSelectionEditing, shareTask.phase == .paused || shareTask.phase == .failed else { return }
+        shareSelectionEditing = true
+        defer { shareSelectionEditing = false }
+        let current = Set(sharedSelections.map(\.id))
+        do {
+            for id in current.subtracting(shareTaskSelectionIDs) { try await store.setShared(assetID: id, shared: false) }
+            for id in shareTaskSelectionIDs.subtracting(current) { try await store.setShared(assetID: id, shared: true) }
+            shareIncludeAlbumCatalog = shareTaskAlbumCatalog
+        } catch { errorMessage = "未完全恢复任务范围，请核对选择：\(error.localizedDescription)" }
+        await reloadFacts()
+    }
+
     func prepareSharedSnapshotRecoveringReceipt(
         from remoteModel: RemoteCompanionModel
     ) async throws -> LocalSharedSnapshot {
@@ -324,6 +752,20 @@ final class LocalLibraryModel: ObservableObject {
         guard let store else { throw LocalFavoriteSourceError.storeUnavailable }
         let visible = try await observedSharedVisibleIdentifiers()
         try await store.validateSharedSnapshotScope(snapshot, visibleIdentifiers: visible)
+    }
+
+    private func sharedVisibleIdentifiersForTransfer(_ snapshot: LocalSharedSnapshot) throws -> Set<String> {
+        let permission = PHPhotoLibrary.authorizationStatus(for: .readWrite)
+        guard permission == .authorized || permission == .limited else {
+            throw LocalArchiveExportError.selectionNotVisible
+        }
+        let options = PHFetchOptions()
+        options.includeHiddenAssets = false
+        options.includeAssetSourceTypes = .typeUserLibrary
+        let result = PHAsset.fetchAssets(withLocalIdentifiers: snapshot.assets.map(\.localIdentifier), options: options)
+        var visible = Set<String>()
+        result.enumerateObjects { asset, _, _ in visible.insert(asset.localIdentifier) }
+        return visible
     }
 
     private func makeMigrationFactSnapshot() async throws -> LocalSharedSnapshot {
@@ -391,55 +833,222 @@ final class LocalLibraryModel: ObservableObject {
 
     /// Explicit resource-first network export. Each local scratch resource is
     /// released only after the paired receiver independently confirms its bytes.
-    func streamSelectedArchive(to remote: RemoteCompanionModel, includeAlbumCatalog: Bool = false) async throws -> ImageAllMigrationTransferSealReceipt {
-        let connection = try remote.migrationStreamingConnection()
-        if includeAlbumCatalog { try remote.requireMigrationAlbumCatalogSupport() }
-        let snapshot = try await makeMigrationFactSnapshot()
-        guard !snapshot.selectedAssetIDs.isEmpty else { throw LocalArchiveExportError.emptySelection }
-        guard Set(snapshot.selectedAssetIDs) == Set(snapshot.assets.map(\.id)) else {
-            throw LocalArchiveExportError.selectionNotVisible
+    /// One user action delivers the selected media and its organization facts
+    /// through the existing paired protocol; conflicts never silently proceed.
+    func importSelectedPhotos(to remote: RemoteCompanionModel, includeAlbumCatalog: Bool = false, sealVerifiedSubset: Bool = false) async throws -> ImageAllMigrationTransferSealReceipt {
+        guard !sharedSelections.isEmpty else { throw LocalArchiveExportError.emptySelection }
+        guard shareTask.phase == .running, shareTaskPersistenceError == nil else {
+            throw LocalShareTaskRecoveryError.unavailable
         }
-        let check: @Sendable () async throws -> Void = { [self, remote] in
-            try Task.checkCancellation()
-            try await remote.validateMigrationStreamingConnection(
-                hostID: connection.hostID, deviceID: connection.deviceID)
+        remote.beginMigrationProgress(intent: sealVerifiedSubset ? .sealReceived : .transferSelection)
+        remote.recordMigrationTask(id: shareTaskRecord.taskID)
+        defer { remote.finishMigrationProgress() }
+        let initialConnection = try remote.migrationStreamingConnection()
+        guard try await initialConnection.client.fetchCapabilities().migrationHandoffVersion == 1 else {
+            throw RemoteAPIError(code: .conflict, message: "请先更新 Mac ImageAll，再开始传输。新版支持传完拔线，由 Mac 独立处理。")
+        }
+        if let id = shareTaskRecord.migrationID, let name = shareTaskRecord.exportStagingName {
+            let prior = try await initialConnection.client.migrationHandoffReceipt(migrationID: id)
+            if let prior {
+                let support = try FileManager.default.url(for: .applicationSupportDirectory, in: .userDomainMask,
+                    appropriateFor: nil, create: false)
+                let root = support.appendingPathComponent("LocalLibrary/MigrationStreaming").appendingPathComponent(name)
+                let lease = try ImageAllMigrationExportCheckpoint(streamingRoot: root)
+                defer { lease.close() }
+                let file = try FileHandle(forReadingFrom: root.appendingPathComponent("manifest.jsonl"))
+                defer { try? file.close() }
+                var digest = SHA256()
+                while let bytes = try autoreleasepool(invoking: { try file.read(upToCount: 64 * 1024) }), !bytes.isEmpty {
+                    digest.update(data: bytes)
+                }
+                guard prior.hostProcessingVersion == 1, prior.migrationID == lease.migrationID,
+                      prior.manifestSHA256 == digest.finalize().map({ String(format: "%02x", $0) }).joined() else {
+                    throw LocalShareTaskRecoveryError.bindingChanged
+                }
+                return prior
+            }
+        }
+        if includeAlbumCatalog {
+            guard PHPhotoLibrary.authorizationStatus(for: .readWrite) == .authorized else {
+                throw RemoteAPIError(code: .conflict, message: "保存用户相簿目录需要完整照片权限，请在系统设置中授权或关闭相簿目录选项。")
+            }
+            try remote.requireMigrationAlbumCatalogSupport()
+        }
+        remote.setMigrationPhase("读取所选目录与核对上次回执")
+        let snapshot = try await prepareSharedSnapshotRecoveringReceipt(from: remote)
+        try bindShareTaskSource(snapshot)
+        remote.setMigrationPhase("发送目录与整理信息，等待 Mac 回执")
+        let receipt = try await remote.submitLocalLibrarySnapshot(snapshot) {
             try await self.validateSharedSnapshotScope(snapshot)
         }
+        remote.setMigrationPhase("同步红心、标签与集合")
+        let result = try await completeSharedSync(snapshot: snapshot, receipt: receipt, remoteModel: remote)
+        let readiness = ImageAllPhoneImportReadiness(conflicts: result.conflicts,
+            remainingOperations: result.remaining, deferredOperations: result.deferred,
+            hasMoreTagChanges: result.pullHasMore, hasMoreCollectionChanges: result.collectionPullHasMore,
+            hasMoreFavoriteChanges: result.favoritePullHasMore)
+        guard readiness.canStartMediaImport else {
+            throw RemoteAPIError(code: .conflict,
+                message: "目录已提交，整理信息还有冲突、待处理操作或后续变化页。请先到“更多操作”同步并处理整理信息冲突，再重试导入；原件尚未传输。")
+        }
+        try Task.checkCancellation()
+        try remote.validateMigrationStreamingConnection(hostID: initialConnection.hostID,
+            deviceID: initialConnection.deviceID, transportID: initialConnection.transportID)
+        remote.setMigrationPhase("核对续传目录与原件")
+        return try await streamSelectedArchive(to: remote, includeAlbumCatalog: includeAlbumCatalog,
+            expectedScope: snapshot, expectedTransportID: initialConnection.transportID, sealVerifiedSubset: sealVerifiedSubset)
+    }
+
+    func streamSelectedArchive(to remote: RemoteCompanionModel, includeAlbumCatalog: Bool = false,
+                               expectedScope: LocalSharedSnapshot? = nil, expectedTransportID: UUID? = nil, sealVerifiedSubset: Bool = false) async throws -> ImageAllMigrationTransferSealReceipt {
+        let connection = try remote.migrationStreamingConnection()
+        guard expectedTransportID == nil || expectedTransportID == connection.transportID else { throw ImageAllUSBError.disconnected }
+        if includeAlbumCatalog { try remote.requireMigrationAlbumCatalogSupport() }
+        let snapshot = try await makeMigrationFactSnapshot()
+        if let expectedScope {
+            guard snapshot.installID == expectedScope.installID,
+                  snapshot.sourceEpoch == expectedScope.sourceEpoch,
+                  snapshot.scopeRevision == expectedScope.scopeRevision,
+                  Set(snapshot.selectedAssetIDs) == Set(expectedScope.selectedAssetIDs) else {
+                throw LocalArchiveExportError.selectionChanged
+            }
+        }
+        guard !snapshot.selectedAssetIDs.isEmpty else { throw LocalArchiveExportError.emptySelection }
+        let availability = try LocalMigrationAvailability(snapshot: snapshot)
+        guard availability.availableCount > 0 else { throw LocalArchiveExportError.selectionNotVisible }
+        remote.setMigrationAvailability(available: availability.availableCount, pending: availability.pendingCount)
+        guard let store else { throw LocalFavoriteSourceError.storeUnavailable }
+        let scopeValidator = LocalSharedSnapshotScopeValidator(snapshot: snapshot, store: store,
+            generation: photoVisibilityGeneration, visibleIdentifiers: { [self] in
+                try await self.sharedVisibleIdentifiersForTransfer(snapshot)
+            })
+        let check: @Sendable () async throws -> Void = { [remote, self] in
+            try Task.checkCancellation()
+            guard await self.shareTaskPersistenceError == nil else { throw LocalShareTaskRecoveryError.unavailable }
+            try await remote.validateMigrationStreamingConnection(
+                hostID: connection.hostID, deviceID: connection.deviceID, transportID: connection.transportID)
+            let permission = PHPhotoLibrary.authorizationStatus(for: .readWrite)
+            guard permission == .authorized || permission == .limited else {
+                throw LocalArchiveExportError.selectionNotVisible
+            }
+            try await scopeValidator.validate(permissionVersion: permission.rawValue)
+            guard PHPhotoLibrary.authorizationStatus(for: .readWrite) == permission else {
+                throw LocalArchiveExportError.selectionNotVisible
+            }
+            try await remote.validateMigrationStreamingConnection(
+                hostID: connection.hostID, deviceID: connection.deviceID, transportID: connection.transportID)
+        }
+        let boundaryCheck: @Sendable () async throws -> Void = {
+            try await check()
+            let permission = PHPhotoLibrary.authorizationStatus(for: .readWrite)
+            try await scopeValidator.validate(permissionVersion: permission.rawValue, forceRefresh: true)
+            try await check()
+        }
+        let transferClient = connection.client.recoveringMigrationRequests(
+            beforeAttempt: check,
+            accessToken: { rejected in
+                try await remote.migrationAccessToken(rejected: rejected, hostID: connection.hostID,
+                    deviceID: connection.deviceID, transportID: connection.transportID)
+            },
+            onRetry: { attempt in
+                await remote.setMigrationPhase("连接短暂中断，正在自动重试（\(attempt)）")
+            })
         return try await LocalPhotoArchiveExporter.stream(snapshot: snapshot, includeAlbumCatalog: includeAlbumCatalog, configuration: .init(
             destination: "\(connection.hostID.uuidString)|\(connection.deviceID.uuidString)",
-            beforeResource: { try await check() },
+            sealVerifiedSubset: sealVerifiedSubset,
+            expectedMigrationID: shareTaskRecord.migrationID,
+            reportItem: { index, total in remote.reportMigrationItem(index: index, total: total) },
+            resumeCheckpoint: { [self] migrationID in
+                try bindShareTaskMigration(migrationID)
+                remote.setMigrationPhase("恢复 Mac 接收进度")
+                try await boundaryCheck()
+                _ = try await transferClient.beginMigrationTransfer(migrationID: migrationID,
+                    sourceInstallID: snapshot.installID)
+                let receipts = try await transferClient.migrationResumeCheckpoint(migrationID: migrationID,
+                    deviceID: connection.deviceID, sourceInstallID: snapshot.installID, allowDurableCustody: true)
+                try await check()
+                remote.recordMigrationRecovery(id: migrationID, receiptCount: receipts.count)
+                remote.setMigrationPhase("接收进度已恢复，完整性待核验")
+                return receipts
+            },
+            beforeResource: {
+                remote.setMigrationPhase("准备原件与校验")
+                try await boundaryCheck()
+            },
+            beforeSourceRevalidation: { expectedBytes in
+                remote.beginSourceRevalidation(expectedBytes: expectedBytes)
+                try await boundaryCheck()
+            },
+            sourceRevalidationRead: { remote.recordSourceRevalidationRead($0) },
+            sourceRevalidationVerified: { remote.finishSourceRevalidation() },
+            verifyExistingResource: { migrationID, resource in
+                guard let path = resource.relativePath, let size = resource.byteCount, let hash = resource.sha256 else {
+                    throw LocalArchiveExportError.incompleteArchive
+                }
+                remote.setMigrationPhase("核对 Mac 接收进度，跳过手机重复导出")
+                try await boundaryCheck()
+                return try await transferClient.acceptMigrationResource(migrationID: migrationID,
+                    deviceID: connection.deviceID, request: .init(relativePath: path, byteCount: size, sha256: hash))
+            },
             uploadResource: { migrationID, file, resource in
                 guard let path = resource.relativePath, let size = resource.byteCount,
                       let hash = resource.sha256 else { throw LocalArchiveExportError.incompleteArchive }
-                _ = try await connection.client.uploadMigrationFile(
-                    at: file, migrationID: migrationID, relativePath: path,
-                    byteCount: size, sha256: hash, sourceInstallID: snapshot.installID, beforeChunk: check)
-                try await check()
-                let receipt = try await connection.client.verifyMigrationResource(
+                try await boundaryCheck()
+                remote.beginMigrationUpload()
+                do {
+                    _ = try await transferClient.uploadMigrationFile(
+                        at: file, migrationID: migrationID, relativePath: path,
+                        byteCount: size, sha256: hash, sourceInstallID: snapshot.installID, beforeChunk: check,
+                        onCommittedBytes: { count in
+                            await remote.setMigrationPhase("传输原件")
+                            await remote.recordMigrationBytes(count)
+                        })
+                } catch {
+                    remote.endMigrationUpload()
+                    throw error
+                }
+                remote.endMigrationUpload()
+                remote.setMigrationPhase("Mac 确认接收，完整核验将在交接后进行")
+                try await boundaryCheck()
+                let receipt = try await transferClient.acceptMigrationResource(
                     migrationID: migrationID, deviceID: connection.deviceID,
                     request: .init(relativePath: path, byteCount: size, sha256: hash))
                 try await check()
                 return receipt
             },
             finish: { [self] root, header, items in
-                try await check()
+                remote.setMigrationPhase("提交整理信息，交由 Mac 继续处理")
+                try await boundaryCheck()
                 let current = try await self.makeMigrationFactSnapshot()
                 guard current.installID == header.sourceDeviceID, current.sourceEpoch == header.sourceEpoch,
                       current.scopeRevision == header.scopeRevision,
-                      Set(current.selectedAssetIDs) == Set(items.map(\.mediaID)),
+                      Set(current.selectedAssetIDs) == Set(header.retainedSelectionIDs ?? items.map(\.mediaID)),
                       Set(current.assets.map(\.id)) == Set(items.map(\.mediaID)) else {
                     throw LocalArchiveExportError.selectionChanged
                 }
-                let facts = try LocalMigrationFactExporter.export(snapshot: current)
+                let archivedFacts = try current.archiveSnapshot(mediaIDs: Set(items.map(\.mediaID)),
+                    allowVerifiedSubset: sealVerifiedSubset)
+                let facts = try LocalMigrationFactExporter.export(snapshot: archivedFacts)
                 defer { try? FileManager.default.removeItem(at: facts) }
                 _ = try ImageAllMigrationFacts.publish(from: facts, into: root)
-                let receipt = try await connection.client.finishPreparedMigration(
-                    at: root, header: header, items: items, beforeChunk: check)
-                try await check()
+                // Save the exact root before the request so a lost ACK can be
+                // recovered without reading Photos or uploading anything again.
+                var pending = self.shareTaskRecord
+                try pending.bindExportRoot(root, migrationID: header.migrationID)
+                try self.saveShareTaskRecord(pending)
+                self.shareTaskRecord = pending
+                let receipt = try await transferClient.finishPreparedMigration(
+                    at: root, header: header, items: items, handoffToMac: true, beforeChunk: check)
+                // The authenticated response is the disconnect boundary. Do not
+                // require a still-live transport after this durable acceptance.
                 try ImageAllMigrationStreamRecord(hostID: connection.hostID, deviceID: connection.deviceID,
                     header: header, items: items, receipt: receipt).save(in: root)
                 try FileManager.default.setAttributes([.protectionKey: FileProtectionType.complete],
                     ofItemAtPath: root.appendingPathComponent(ImageAllMigrationStreamRecord.filename).path)
+                var taskRecord = self.shareTaskRecord
+                try taskRecord.bindExportRoot(root, migrationID: header.migrationID)
+                try self.saveShareTaskRecord(taskRecord)
+                self.shareTaskRecord = taskRecord
                 return receipt
             }
         ))
@@ -676,7 +1285,7 @@ final class LocalLibraryModel: ObservableObject {
         let check: @Sendable () async throws -> Void = { [self, remote] in
             try Task.checkCancellation()
             try await remote.validateMigrationStreamingConnection(
-                hostID: record.hostID, deviceID: record.deviceID)
+                hostID: record.hostID, deviceID: record.deviceID, transportID: connection.transportID)
             try await self.validateSharedSnapshotScope(scope)
         }
         try await check()
@@ -1159,12 +1768,15 @@ private final class PhotoKitLocalBrowsingSource: LocalLibraryBrowsingSource {
 
 private final class LocalPhotoChangeObserver: NSObject, PHPhotoLibraryChangeObserver, @unchecked Sendable {
     private let onChange: @MainActor @Sendable () -> Void
-    init(onChange: @escaping @MainActor @Sendable () -> Void) {
+    private let generation: LocalLibraryVisibilityGeneration
+    init(generation: LocalLibraryVisibilityGeneration, onChange: @escaping @MainActor @Sendable () -> Void) {
         self.onChange = onChange
+        self.generation = generation
         super.init()
         PHPhotoLibrary.shared().register(self)
     }
     func photoLibraryDidChange(_ changeInstance: PHChange) {
+        generation.invalidate()
         Task { @MainActor [onChange] in onChange() }
     }
     deinit { PHPhotoLibrary.shared().unregisterChangeObserver(self) }
@@ -1295,6 +1907,9 @@ struct LocalLibraryView: View {
                     systemImage: "lock.shield",
                     description: Text("可在系统设置中更改权限。已有本地标签和集合会保留。")
                 )
+                Button("打开照片权限设置") {
+                    if let url = URL(string: UIApplication.openSettingsURLString) { UIApplication.shared.open(url) }
+                }
             case .authorized, .limited:
                 libraryContent
             @unknown default:
@@ -1309,8 +1924,16 @@ struct LocalLibraryView: View {
                 }
             }
             ToolbarItem(placement: .topBarTrailing) {
+                NavigationLink { organizationContent } label: { Image(systemName: "square.stack") }
+                    .accessibilityLabel("标签与集合")
+            }
+            ToolbarItem(placement: .topBarTrailing) {
                 Menu {
                     Button("刷新", systemImage: "arrow.clockwise") { Task { await model.refresh() } }
+                    NavigationLink("批量加入待分享…") { LocalBulkShareView(model: model) }
+                    Button("管理照片权限", systemImage: "lock.shield") {
+                        if let url = URL(string: UIApplication.openSettingsURLString) { UIApplication.shared.open(url) }
+                    }
                     NavigationLink("备份本机整理库") { LocalLibraryBackupView(model: model) }
                 } label: { Image(systemName: "ellipsis.circle") }
             }
@@ -1328,13 +1951,21 @@ struct LocalLibraryView: View {
     }
 
     private var libraryContent: some View {
-        List {
-            if model.authorization == .limited {
-                Section {
-                    Label("当前只显示系统授权的照片；相册结构可能不可用。", systemImage: "info.circle")
-                        .font(.footnote)
-                }
+        LocalPhotoLibraryContent(items: model.assets.map { asset in
+            LocalShareItem(id: asset.id, localIdentifier: asset.localIdentifier,
+                           isVideo: asset.kind == "video", date: asset.creationDate,
+                           isFavorite: asset.favoriteTarget ?? asset.observedFavorite)
+        }, sharedCount: model.sharedSelections.count, limited: model.authorization == .limited,
+           hasMore: model.hasMore, loadMore: { Task { await model.loadMore() } }) { item in
+            if let asset = model.assets.first(where: { $0.id == item.id }) {
+                LocalAssetDetailView(model: model, asset: asset)
             }
+        }
+        .refreshable { await model.refresh() }
+    }
+
+    private var organizationContent: some View {
+        List {
             Section {
                 LabeledContent("已分享范围的待提交操作", value: "\(model.pendingCount)")
                 Text("本机整理会持久保存；只有明确加入待分享范围的资产会进入跨端提交队列。")
@@ -1377,36 +2008,10 @@ struct LocalLibraryView: View {
                 Text("本机新建且未进入分享范围的集合可直接改名。共享集合请到“待分享”中改名；旧集合的共享历史不足时，保留身份核对要求。")
                     .font(.footnote).foregroundStyle(.secondary)
             }
-            Section("已授权照片") {
-                ForEach(model.assets) { asset in
-                    NavigationLink {
-                        LocalAssetDetailView(model: model, asset: asset)
-                    } label: {
-                        HStack {
-                            LocalThumbnailView(localIdentifier: asset.localIdentifier)
-                                .frame(width: 64, height: 64)
-                                .clipShape(RoundedRectangle(cornerRadius: 6))
-                            VStack(alignment: .leading) {
-                                Text(asset.kind == "video" ? "视频" : "照片")
-                                if let date = asset.creationDate {
-                                    Text(date, format: .dateTime.year().month().day())
-                                        .font(.caption).foregroundStyle(.secondary)
-                                }
-                            }
-                            Spacer()
-                            if asset.favoriteTarget ?? asset.observedFavorite {
-                                Image(systemName: "heart.fill").foregroundStyle(.red)
-                            }
-                        }
-                    }
-                }
-                if model.hasMore {
-                    Button("加载更多") { Task { await model.loadMore() } }
-                }
-            }
         }
-        .refreshable { await model.refresh() }
+        .navigationTitle("整理")
     }
+
 }
 
 private struct LocalLibraryBackupTransfer: Transferable {
@@ -1463,6 +2068,7 @@ private struct LocalLibraryBackupView: View {
 
 private struct LocalBulkShareView: View {
     @ObservedObject var model: LocalLibraryModel
+    var newBatch = false
     @State private var preview: LocalBulkSharePreview?
     @State private var busy = false
     @State private var message: String?
@@ -1472,7 +2078,7 @@ private struct LocalBulkShareView: View {
         Form {
             Section("范围") {
                 Text("读取当前系统允许访问的非隐藏照片和视频，预览数量后再决定是否加入待分享。有限照片权限只覆盖你已授权的项目，不代表整个 iPhone 图库。")
-                Text("本步骤不读取原件、不从 iCloud 下载、不发送目录。确认后，所选范围会用于之后你手动发起的同步与归档；新增照片不会自动加入。已有待分享项目保留。")
+                Text(newBatch ? "仅选择既有任务范围之外的内容，不按拍摄日期筛选。先保留原任务记录，再用预览范围准备下一次导入；此步不读取或发送原件。" : "本步骤不读取原件、不从 iCloud 下载、不发送目录。确认后，所选范围会用于之后你手动发起的同步与归档；新增照片不会自动加入。已有待分享项目保留。")
             }
             Section {
                 Button(busy ? "正在核对…" : "预览已授权范围") {
@@ -1480,7 +2086,7 @@ private struct LocalBulkShareView: View {
                     busy = true
                     work = Task {
                         defer { busy = false }
-                        do { preview = try await model.prepareBulkSharePreview(); message = nil }
+                        do { preview = try await (newBatch ? model.prepareNewBatchPreview() : model.prepareBulkSharePreview()); message = nil }
                         catch { message = "预览未完成或范围已变化，请刷新后重试。" }
                     }
                 }
@@ -1493,8 +2099,10 @@ private struct LocalBulkShareView: View {
                         work = Task {
                             defer { busy = false; self.preview = nil }
                             do {
-                                let added = try await model.confirmBulkSharePreview(preview)
-                                message = "已新增 \(added) 项到待分享，其余已在范围内。尚未同步目录或传输原件。"
+                                let added = try await (newBatch ? model.confirmNewBatchPreview(preview) : model.confirmBulkSharePreview(preview))
+                                message = newBatch ? "已准备 \(added) 项新内容；返回待分享后开始导入。原任务记录已保留。" : "已新增 \(added) 项到待分享，其余已在范围内。尚未同步目录或传输原件。"
+                            } catch LocalLibraryError.migrationSyncPending {
+                                message = "还有待同步的整理修改，请先完成同步后再准备新批次。原有选择保留。"
                             } catch {
                                 message = "未批量加入：授权、来源或分享范围已变化，请重新预览。原有选择保留。"
                             }
@@ -1505,7 +2113,7 @@ private struct LocalBulkShareView: View {
                 if let message { Text(message) }
             }
         }
-        .navigationTitle("批量准备分享范围")
+        .navigationTitle(newBatch ? "准备新增内容" : "批量准备分享范围")
         .onDisappear {
             work?.cancel()
             model.cancelBulkSharePreview()
@@ -1640,7 +2248,8 @@ private struct LocalShareScopeView: View {
     @State private var isExportingFacts = false
     @State private var savedStreamingArchives: [LocalStreamingArchive] = []
     @State private var isStreamingArchive = false
-    @State private var includeAlbumCatalog = false
+    @State private var confirmsVerifiedSubsetSeal = false
+    private var includeAlbumCatalog: Bool { model.shareIncludeAlbumCatalog }
     @State private var streamTask: Task<Void, Never>?
     @State private var isUploadingArchive = false
     @State private var exportedArchive: URL?
@@ -1659,38 +2268,257 @@ private struct LocalShareScopeView: View {
     @State private var closesUnknownRetirement: LocalSourceRetirementRecord?
     @State private var tagAliasCandidate: LocalSharedTagAliasCandidate?
     @State private var collectionAliasCandidate: LocalSharedCollectionAliasCandidate?
+    @State private var shareSheet: LocalShareSheet?
 
+    private var workBusy: Bool {
+        model.exportCleanupBusy || model.legacyAssociationInProgress || isStreamingArchive || model.shareTask.phase == .running || model.shareTask.phase == .pausing
+            || isSending || isExporting || isUploadingArchive || isExportingFacts
+            || isCheckingCollectionHistory || isFetchingCleanupRecheck || model.shareSelectionEditing
+    }
+    private var selectionMatches: Bool {
+        model.shareTaskSelectionIDs == Set(model.sharedSelections.map(\.id))
+            && model.shareTaskAlbumCatalog == includeAlbumCatalog
+    }
+    private var presentation: LocalSharePresentation {
+        if let error = model.shareTaskPersistenceError {
+            return LocalSharePresentation(title: "任务记录需要检查", message: error,
+                buttonTitle: "已停止新传输", action: .none, isEnabled: false, isError: true)
+        }
+        return LocalSharePresentation.resolve(task: model.shareTask, selectedCount: model.sharedSelections.count,
+            canReadPhotos: model.authorization == .authorized || model.authorization == .limited,
+            needsFullAccess: includeAlbumCatalog && model.authorization != .authorized,
+            connected: remoteModel.isConnected, awaitingConsent: remoteModel.usbPendingOffer != nil,
+            otherWork: workBusy, selectionMatches: selectionMatches,
+            targetMatches: model.shareTaskHostID == remoteModel.savedPairingHostID && model.shareTaskFingerprint == remoteModel.savedPairingFingerprint,
+            transferPhase: remoteModel.migrationPhase)
+    }
+    private var targetName: String {
+        remoteModel.usbPendingOffer?.hostDisplayName ?? (remoteModel.host.isEmpty ? "未指定 Mac" : remoteModel.host)
+    }
+    private var selectionItems: [LocalShareItem] {
+        model.sharedSelections.map { LocalShareItem(id: $0.id, localIdentifier: $0.localIdentifier,
+            isVideo: $0.kind == "video", date: $0.creationDate) }
+    }
     var body: some View {
-        List {
-            Section {
-                Text("已选择 \(model.sharedSelections.count) 项。只会发送当前仍获准访问的目录及整理信息；权限暂时收缩不会撤销选择，也不会被当作删除。")
-                    .font(.footnote)
-            }
-            Section("待分享资产") {
-                ForEach(model.sharedSelections) { selection in
-                    HStack {
-                        VStack(alignment: .leading) {
-                            Text(selection.kind == "video" ? "视频" : "照片")
-                            if let date = selection.creationDate {
-                                Text(date, format: .dateTime.year().month().day())
-                                    .font(.caption).foregroundStyle(.secondary)
-                            }
-                            Text(selection.id.uuidString.prefix(8))
-                                .font(.caption2).foregroundStyle(.tertiary)
-                        }
-                        Spacer()
-                        Button("移除") {
-                            Task {
-                                await model.setShared(
-                                    false, assetID: selection.id,
-                                    localIdentifier: selection.localIdentifier
-                                )
-                            }
-                        }
-                        .buttonStyle(.borderless)
+        TimelineView(.periodic(from: .now, by: 1)) { _ in
+            LocalShareDashboard(photoCount: model.sharedSelections.filter { $0.kind != "video" }.count,
+                videoCount: model.sharedSelections.filter { $0.kind == "video" }.count,
+                target: targetName,
+                connection: "\(remoteModel.importTransportLabel) · \(remoteModel.isConnected ? "已连接" : (remoteModel.usbPendingOffer != nil ? "等待确认" : "未连接"))",
+                presentation: presentation, detail: model.shareTask.phase == .received
+                    ? model.macImportStatusMessage : model.shareTask.detail,
+                progress: model.shareTask.phase == .running || model.shareTask.phase == .pausing
+                    ? remoteModel.migrationProgressText : nil,
+                busy: workBusy, conflictCount: model.sharedConflicts.count,
+                previewItems: model.sharedSelections.prefix(4).map {
+                    LocalShareItem(id: $0.id, localIdentifier: $0.localIdentifier,
+                                   isVideo: $0.kind == "video", date: $0.creationDate)
+                },
+                open: { shareSheet = $0 }, perform: performPrimaryAction) {
+                if model.canReleaseExportPayload || model.exportCleanupBusy {
+                    Section("导出暂存") {
+                        Button(model.exportCleanupBusy ? "正在核验与收尾…" : "释放导出暂存") {
+                            Task { await model.releaseExportPayload(remoteModel) }
+                        }.disabled(model.exportCleanupBusy || !remoteModel.isConnected)
+                        Text("先核验 Mac 最终副本，再释放此任务的手机临时载荷；手机照片保持不变。")
+                            .font(.footnote).foregroundStyle(.secondary)
+                        if let message = model.automaticCleanupMessage { Text(message).font(.footnote) }
+                        if let message = model.exportCleanupMessage { Text(message).font(.footnote) }
+                    }
+                }
+                Section("导入选项") {
+                    Toggle("包含相簿目录（含空相簿）", isOn: $model.shareIncludeAlbumCatalog).disabled(workBusy)
+                    if includeAlbumCatalog {
+                        Text("需完整照片权限。只传输已选媒体，目录选项不扩大选片范围。")
+                            .font(.footnote).foregroundStyle(.secondary)
+                    }
+                    if model.authorization == .limited {
+                        Text("有限照片访问：仅发送可访问的所选媒体，来源相簿不可读取。")
+                            .font(.footnote).foregroundStyle(.secondary)
+                    }
+                }
+                if model.shareTask.phase == .idle {
+                    Section("已经导入过？") {
+                        Button(model.legacyAssociationInProgress ? "正在核对旧批次…" : "关联已导入批次（不重传）") {
+                            Task { await model.associatePreviouslyPublishedTask(remoteModel, target: targetName) }
+                        }.disabled(workBusy || !remoteModel.isConnected)
+                            .accessibilityIdentifier("share.associatePublishedBatch")
+                        Text("连接原 Mac 后核对手机旧清单与 Mac 发布结果。保留现有选择和待处理项目，不重新上传。")
+                            .font(.footnote).foregroundStyle(.secondary)
+                        if let message = model.legacyAssociationMessage { Text(message).font(.footnote) }
                     }
                 }
             }
+        }
+        .task(id: scenePhase) {
+            guard scenePhase == .active else { return }
+            while !Task.isCancelled {
+                if remoteModel.isConnected { await model.refreshMacImportStatus(remoteModel) }
+                await model.advanceAutomaticCleanup(remoteModel)
+                do { try await Task.sleep(for: .seconds(5)) } catch { break }
+            }
+        }
+        .confirmationDialog("封存已接收的可读项目？", isPresented: $confirmsVerifiedSubsetSeal, titleVisibility: .visible) {
+            Button("封存已接收项目") { startImport(sealVerifiedSubset: true) }
+            Button("取消", role: .cancel) { }
+        } message: {
+            Text("仅复用原批次中已有 Mac 校验回执的原件，缺少回执就停止。保留原选择与未完成项目，不删除手机内容。相簿、红心、标签和集合一并封存。")
+        }
+        .sheet(item: $shareSheet) { destination in
+            NavigationStack {
+                Group {
+                    switch destination {
+                    case .selection:
+                        LocalShareSelectionPage(items: selectionItems, locked: workBusy,
+                            remove: { await model.removeSharedSelections($0) }) {
+                            NavigationLink("预览并批量加入已授权照片／视频") { LocalBulkShareView(model: model) }
+                            if !selectionMatches, model.shareTask.phase == .paused || model.shareTask.phase == .failed {
+                                Button("恢复本次任务的选择与选项") { Task { await model.restoreShareTaskSelection() } }
+                            }
+                        }
+                    case .connection:
+                        Form {
+                            Section("当前连接") {
+                                LabeledContent("目标 Mac", value: targetName)
+                                LabeledContent("通道", value: remoteModel.importTransportLabel)
+                                USBPhoneConnectionSection(model: remoteModel).disabled(workBusy)
+                            }
+                            Section {
+                                Text("USB：在 Mac“设置 → 设备与导入”发起连接，在此核对身份。系统信任、照片权限与 ImageAll 配对是不同步骤。")
+                                Text("网络：到“Mac 图库”扫码配对。USB 断线暂停，不会自动切换到网络；归档禁止走蜂窝。")
+                                Text("正在执行任务时连接设置暂时锁定；请先暂停。")
+                                    .foregroundStyle(.secondary)
+                            }.font(.footnote)
+                        }
+                    case .more:
+                        List {
+                            if model.shareTask.phase == .received {
+                                Section {
+                                    NavigationLink("仅准备上次任务范围之外的内容") { LocalBulkShareView(model: model, newBatch: true) }
+                                    Button("按当前选择开始下一次导入") { model.resetReceivedShareTask(); shareSheet = nil }
+                                }
+                            }
+                            Section {
+                                Button("封存已接收项目（不重传原件）") {
+                                    shareSheet = nil; confirmsVerifiedSubsetSeal = true
+                                }.disabled(workBusy || !remoteModel.isConnected || model.sharedSelections.isEmpty)
+                            }
+                            syncSection; conflictSections.disabled(workBusy); offlineSection
+                            Section("共享集合") {
+                                NavigationLink("重命名共享集合") { LocalCollectionRenameView(model: model, remote: remoteModel) }
+                                    .disabled(workBusy)
+                            }
+                        }
+                    case .advanced:
+                        List { advancedSection }
+                    case .macNextStep:
+                        VStack {
+                            Text(presentation.title).font(.headline)
+                            Text(presentation.message).font(.callout)
+                            Button("刷新 Mac 状态") { Task { await model.refreshMacImportStatus(remoteModel) } }
+                            if let message = model.macImportStatusMessage { Text(message).font(.footnote) }
+                            LocalShareMacNextStep(isBrowsable: remoteModel.isConnected
+                                && model.shareTaskHostID == remoteModel.savedPairingHostID
+                                && model.shareTaskFingerprint == remoteModel.savedPairingFingerprint
+                                && model.shareTask.macStatus?.phase == .browsable,
+                                macOwnsProcessing: model.shareTask.macOwnsProcessing == true)
+                        }.padding()
+                    }
+                }
+                .navigationTitle(destination.title).navigationBarTitleDisplayMode(.inline)
+                .toolbar {
+                    if destination != .selection {
+                        ToolbarItem(placement: .confirmationAction) {
+                            Button("完成") { shareSheet = nil }
+                                .disabled(workBusy && destination != .connection)
+                        }
+                    }
+                }
+            }
+            .interactiveDismissDisabled(workBusy && destination != .connection && (destination != .selection || model.shareSelectionEditing))
+        }
+        .onDisappear {
+            guard shareSheet == nil else { return }
+            // The main import is owned by the model and survives navigation.
+            // Auxiliary source/cleanup checks remain tied to their visible UI.
+            streamTask?.cancel()
+            cleanupSourceCheckMessage = nil; cleanupSourceReport = nil; confirmsSourceRetirement = false
+        }
+        .onChange(of: scenePhase) { _, phase in
+            if phase == .background {
+                model.pauseActiveImport(reason: .appBackground); streamTask?.cancel()
+                cleanupSourceCheckMessage = nil; cleanupSourceReport = nil; confirmsSourceRetirement = false
+            }
+        }
+    }
+
+    private func performPrimaryAction() {
+        guard presentation.isEnabled else { return }
+        switch presentation.action {
+        case .select: shareSheet = .selection
+        case .permission:
+            if model.authorization == .notDetermined { Task { await model.requestAccess() } }
+            else if let url = URL(string: UIApplication.openSettingsURLString) { UIApplication.shared.open(url) }
+        case .connect: shareSheet = .connection
+        case .start: startImport()
+        case .resume, .retry: startImport(sealVerifiedSubset: model.shareTask.intent == .sealReceived)
+        case .pause: pauseImportIfNeeded()
+        case .macNextStep: shareSheet = .macNextStep
+        case .none: break
+        }
+    }
+    private func pauseImportIfNeeded() {
+        model.pauseActiveImport()
+    }
+    private func startImport(sealVerifiedSubset: Bool = false) {
+        guard !workBusy, remoteModel.isConnected, !model.sharedSelections.isEmpty else { return }
+        do {
+            try model.beginShareTask(target: targetName, hostID: remoteModel.savedPairingHostID,
+                fingerprint: remoteModel.savedPairingFingerprint, includeAlbumCatalog: includeAlbumCatalog,
+                intent: sealVerifiedSubset ? .sealReceived : .transferSelection)
+        } catch {
+            model.errorMessage = error.localizedDescription
+            return
+        }
+        remoteModel.setMigrationPhase("准备目录与整理信息")
+        isStreamingArchive = true
+        model.activeImportTask = Task {
+            defer {
+                isStreamingArchive = false; model.activeImportTask = nil
+                remoteModel.recordMigrationOutcome(String(describing: model.shareTask.phase),
+                    stopReason: model.shareTask.pauseReason?.rawValue)
+            }
+            do {
+                let receipt = try await model.importSelectedPhotos(to: remoteModel, includeAlbumCatalog: includeAlbumCatalog, sealVerifiedSubset: sealVerifiedSubset)
+                try model.receiveShareTask(receipt)
+                let deferred = model.sharedSelections.count - receipt.itemCount
+                model.shareTask.detail = (receipt.hostProcessingVersion == 1
+                    ? "Mac 已接收 \(receipt.itemCount) 项照片与信息，可以拔线。完整校验、入库和收尾将在 Mac 继续；手机原件保留。"
+                    : "Mac 已接收并复验 \(receipt.itemCount) 项照片与信息、\(receipt.resourceCount) 个资源。手机原件保留；此回执不代表已入库。")
+                    + (deferred > 0 ? "另有 \(deferred) 项仍保留待处理，本次归档不包含这些项目。" : "")
+            } catch is CancellationError {
+                model.shareTask.pause()
+                model.shareTask.detail = (model.shareTask.pauseReason?.message ?? "")
+                    + "恢复原连接后可按原范围继续，Mac 已落盘进度保留。"
+            } catch ImageAllUSBError.disconnected {
+                model.shareTask.pause(reason: .usbDisconnected)
+                model.shareTask.detail = (model.shareTask.pauseReason?.message ?? "")
+                    + "恢复原 Mac 连接后手动继续，已落盘进度保留；不会自动改走网络。"
+            } catch {
+                remoteModel.recordMigrationOutcome("error", error: error)
+                if model.shareTask.phase == .pausing {
+                    model.shareTask.pause()
+                    model.shareTask.detail = (model.shareTask.pauseReason?.message ?? "")
+                        + "旧进度保留。结束阶段：\(remoteModel.migrationPhase)；\(error.localizedDescription)"
+                } else {
+                    model.shareTask.phase = .failed
+                    model.shareTask.detail = "\(remoteModel.migrationPhase)：\(error.localizedDescription)"
+                }
+            }
+        }
+    }
+
+    @ViewBuilder private var conflictSections: some View {
             if !model.sharedConflicts.isEmpty {
                 Section("整理信息冲突") {
                     ForEach(model.sharedConflicts) { operation in
@@ -1870,10 +2698,13 @@ private struct LocalShareScopeView: View {
                     }
                 }
             }
+    }
+    private var syncSection: some View {
             Section {
                 Button(isSending ? "正在提交…" : "同步目录与整理信息到 Mac") {
+                    guard !workBusy else { return }
+                    isSending = true
                     Task {
-                        isSending = true
                         defer { isSending = false }
                         do {
                             let snapshot = try await model.prepareSharedSnapshotRecoveringReceipt(
@@ -1925,34 +2756,23 @@ private struct LocalShareScopeView: View {
                         }
                     }
                 }
-                .disabled(isSending || isCheckingCollectionHistory || !remoteModel.isConnected)
+                .disabled(workBusy || !remoteModel.isConnected)
                 if let statusMessage {
                     Text(statusMessage).font(.footnote).foregroundStyle(.secondary)
                 }
-                Text("连接 Mac 后可手动同步目录与整理信息；原件归档需单独点按下方按钮。")
+                Text("只整理信息时可在此手动同步；导入照片请返回“待分享”，使用固定导入入口一起发送原件与信息。")
                     .font(.footnote).foregroundStyle(.secondary)
             }
-            Section("批量范围") {
-                NavigationLink("预览并批量加入已授权照片／视频") {
-                    LocalBulkShareView(model: model)
-                }
-            }
-            Section("共享集合") {
-                NavigationLink("重命名共享集合") {
-                    LocalCollectionRenameView(model: model, remote: remoteModel)
-                }
-            }
-            archiveSection
-        }
-        .navigationTitle("待分享范围")
-        .onDisappear { streamTask?.cancel(); cleanupSourceCheckMessage = nil; cleanupSourceReport = nil; confirmsSourceRetirement = false }
-        .onChange(of: scenePhase) { _, phase in
-            if phase != .active { streamTask?.cancel(); cleanupSourceCheckMessage = nil; cleanupSourceReport = nil; confirmsSourceRetirement = false }
-        }
     }
 
-    private var archiveSection: some View {
-        Section("本机原件归档") {
+    private var advancedSection: some View {
+        Section("迁移验收与来源核对") {
+            if isStreamingArchive {
+                Text("当前正在执行核对操作，请保持前台与连接。").font(.footnote)
+                Button("停止等待当前操作") { streamTask?.cancel() }
+            }
+            Text("只有完成 Mac 入库、独立备份与逐项核验后才进入此流程。接收回执不代表允许清理；原有来源核验和系统确认仍须完成。")
+                .font(.footnote).foregroundStyle(.secondary)
             Button(isFetchingCleanupRecheck ? "正在读取核对请求…" : "查看 Mac 清理核对请求") {
                 Task {
                     guard !isFetchingCleanupRecheck else { return }
@@ -1971,7 +2791,7 @@ private struct LocalShareScopeView: View {
                         }
                     } catch { archiveStatusMessage = "读取核对请求失败：\(error.localizedDescription)" }
                 }
-            }.disabled(isFetchingCleanupRecheck || isStreamingArchive || isExporting || isUploadingArchive)
+            }.disabled(workBusy)
             if let request = cleanupRecheck {
                 Text("Mac 预检记录：\(request.candidateCount) 项待来源核对，\(request.favoriteProtectedCount) 项收藏保护。")
                 Text("收到请求不代表允许删除。后续仍需逐项复查当前原件版本和收藏，再由您在手机前台确认。")
@@ -2003,7 +2823,7 @@ private struct LocalShareScopeView: View {
                             cleanupSourceCheckMessage = "来源复查未通过：\(error.localizedDescription)"
                         }
                     }
-                }.disabled(isStreamingArchive || isExporting || isUploadingArchive || isSending || isFetchingCleanupRecheck)
+                }.disabled(workBusy)
                 if let report = cleanupSourceReport {
                     Button("请求 Mac 重新核验副本") {
                         guard !isStreamingArchive else { return }
@@ -2018,12 +2838,12 @@ private struct LocalShareScopeView: View {
                                 cleanupSourceCheckMessage = "已停止等待副本核验；Mac 只读检查可能仍在结束，未执行删除。"
                             } catch { cleanupSourceCheckMessage = "副本核验未通过：\(error.localizedDescription)" }
                         }
-                    }.disabled(isStreamingArchive || isExporting || isUploadingArchive || isSending || isFetchingCleanupRecheck)
+                    }.disabled(workBusy)
                 }
                 if let report = cleanupSourceReport, report.request.candidateCount > 0 {
                     Button("从系统照片删除已迁移的非收藏项…", role: .destructive) {
                         confirmsSourceRetirement = true
-                    }.disabled(isStreamingArchive || isExporting || isUploadingArchive || isSending || isFetchingCleanupRecheck)
+                    }.disabled(workBusy)
                     .confirmationDialog("从系统照片删除 \(report.request.candidateCount) 项？",
                         isPresented: $confirmsSourceRetirement, titleVisibility: .visible) {
                         Button("重新核验后从系统照片删除", role: .destructive) {
@@ -2062,7 +2882,7 @@ private struct LocalShareScopeView: View {
                         if retirementHistory.isEmpty { archiveStatusMessage = "暂无来源清理记录。" }
                     } catch { archiveStatusMessage = error.localizedDescription }
                 }
-            }.disabled(isStreamingArchive)
+            }.disabled(workBusy)
             ForEach(Array(retirementHistory.prefix(20))) { record in
                 VStack(alignment: .leading, spacing: 4) {
                     Text("\(record.plan.candidateAssetIDs.count) 项 · \(Date(timeIntervalSince1970: Double(record.updatedAtMs) / 1_000).formatted(date: .abbreviated, time: .shortened))")
@@ -2076,12 +2896,12 @@ private struct LocalShareScopeView: View {
                                     retirementHistory = try await model.sourceRetirementHistory()
                                 } catch { archiveStatusMessage = error.localizedDescription }
                             }
-                        }.disabled(isStreamingArchive)
+                        }.disabled(workBusy)
                     case .submitted, .outcomeUnknown:
                         Text("提交结果待核实，不会自动重试。请先在系统照片检查；暂时不可见不代表已删除。")
                         if record.canManuallyClose {
                             Button("核实后结束待核实记录…") { closesUnknownRetirement = record }
-                                .disabled(isStreamingArchive)
+                                .disabled(workBusy)
                         } else {
                             Text("本次启动内可能仍有系统回调；请先重启 App，再核实和结束记录。")
                         }
@@ -2100,7 +2920,7 @@ private struct LocalShareScopeView: View {
                                         retirementHistory = try await model.sourceRetirementHistory()
                                     } catch { archiveStatusMessage = "回传未确认：\(error.localizedDescription)" }
                                 }
-                            }.disabled(isStreamingArchive)
+                            }.disabled(workBusy)
                         }
                     }
                 }.font(.footnote).foregroundStyle(.secondary)
@@ -2126,37 +2946,6 @@ private struct LocalShareScopeView: View {
                     Text("请先在系统照片核实这批 \(record.plan.candidateAssetIDs.count) 项，并确认 Mac 归档和备份保留。结束记录只停止等待旧回调，不判定删除成功或失败，也不再次删除。若以后再清理，必须重新核验和确认。")
                 }
 
-            Toggle("保存可访问用户相册目录（含空相册）", isOn: $includeAlbumCatalog)
-                .disabled(isStreamingArchive || isExporting || isUploadingArchive)
-            if includeAlbumCatalog {
-                Text("需完整照片权限。会保存所有可访问用户相册／文件夹的名称、层级和成员数量；只传输已选择的照片和视频，不复制未选成员。")
-                    .font(.footnote).foregroundStyle(.secondary)
-            }
-            Text("有限照片权限下仅归档可访问媒体，来源相册不可读取，不能完成相册完整性验收。")
-                .font(.footnote).foregroundStyle(.secondary)
-            Text("归档仅通过 Wi-Fi 或有线网络发送。切到蜂窝或断网后保留已接收进度，恢复网络后可重试原批次。")
-                .font(.footnote).foregroundStyle(.secondary)
-            Button(isStreamingArchive ? "正在处理逐资源批次…" : "所选项目逐资源传到 Mac（减少暂存）") {
-                guard !isStreamingArchive else { return }
-                isStreamingArchive = true
-                streamTask = Task {
-                    archiveStatusMessage = nil
-                    defer { isStreamingArchive = false; streamTask = nil }
-                    do {
-                        let receipt = try await model.streamSelectedArchive(to: remoteModel, includeAlbumCatalog: includeAlbumCatalog)
-                        archiveStatusMessage = "Mac 已接收并复验 \(receipt.itemCount) 项、\(receipt.resourceCount) 个资源；手机原件保留。请在 Mac 接收目录中入库，再完成尾部对账和独立恢复验收。"
-                    } catch is CancellationError {
-                        archiveStatusMessage = "传输已暂停。恢复连接后可按原范围重试，Mac 已落盘进度保留。"
-                    } catch {
-                        archiveStatusMessage = "逐资源传输未完成：\(error.localizedDescription)；请恢复原范围和连接后重试。"
-                    }
-                }
-            }
-            .disabled(isStreamingArchive || isExporting || isUploadingArchive || isSending
-                      || model.sharedSelections.isEmpty || !remoteModel.isConnected)
-            if isStreamingArchive {
-                Button("暂停逐资源传输") { streamTask?.cancel() }
-            }
             Button("查找逐资源批次以继续来源验收") {
                 do {
                     savedStreamingArchives = try LocalPhotoArchiveExporter.existingStreamingArchives()
@@ -2165,7 +2954,7 @@ private struct LocalShareScopeView: View {
                     }
                 } catch { archiveStatusMessage = "读取逐资源批次失败：\(error.localizedDescription)" }
             }
-            .disabled(isStreamingArchive || isExporting || isUploadingArchive)
+            .disabled(workBusy)
             ForEach(savedStreamingArchives) { archive in
                 Button("为批次 \(archive.migrationID.uuidString.prefix(8)) 生成并上传来源检查点") {
                     guard !isStreamingArchive else { return }
@@ -2180,130 +2969,13 @@ private struct LocalShareScopeView: View {
                         } catch { archiveStatusMessage = "来源检查点未提交：\(error.localizedDescription)" }
                     }
                 }
-                .disabled(isStreamingArchive || isExporting || isUploadingArchive || isSending
-                          || !remoteModel.isConnected)
-            }
-            Text("每次仅暂存一个资源，Mac 校验后释放手机暂存，保留 Photos 原件。仍需容纳单个最大资源；请保持 App 在前台。重试会重新准备资源，并继续 Mac 已落盘进度。")
-                .font(.footnote).foregroundStyle(.secondary)
-            Button(isExporting ? "正在读取并核对原件…" : "生成所选项目的本机归档包") {
-                Task {
-                    isExporting = true
-                    exportedArchive = nil
-                    exportedArchiveComplete = false
-                    exportedVerification = nil
-                    archiveStatusMessage = nil
-                    defer { isExporting = false }
-                    do {
-                        let (url, verification) = try await model.exportSelectedArchive(includeAlbumCatalog: includeAlbumCatalog)
-                        exportedArchive = url
-                        exportedArchiveComplete = verification.isComplete
-                        exportedVerification = verification
-                        archiveStatusMessage = archiveSummary(verification)
-                    } catch {
-                        archiveStatusMessage = "归档未完成：\(error.localizedDescription)"
-                    }
-                }
-            }
-            .disabled(isStreamingArchive || isExporting || isSending || model.sharedSelections.isEmpty)
-            if let exportedArchive {
-                LocalArchiveShareButton(
-                    url: exportedArchive, isComplete: exportedArchiveComplete
-                )
-                Button(isUploadingArchive ? "正在分片上传到 Mac…" : "上传已校验归档到 Mac") {
-                    Task {
-                        isUploadingArchive = true
-                        defer { isUploadingArchive = false }
-                        do {
-                            let receipt = try await remoteModel.uploadMigrationArchive(
-                                at: exportedArchive
-                            )
-                            archiveStatusMessage = "Mac 已接收并复验 \(receipt.itemCount) 项、\(receipt.resourceCount) 个资源；请在 Mac 接收目录中点击入库。此回执不是迁移完成确认。"
-                        } catch {
-                            archiveStatusMessage = "上传未完成；重连后可继续同一归档：\(error.localizedDescription)"
-                        }
-                    }
-                }
-                .disabled(!exportedArchiveComplete || !remoteModel.isConnected
-                          || isUploadingArchive || isExporting || isStreamingArchive)
-            }
-            Button("查找本机已生成的归档以继续上传") {
-                do {
-                    savedArchives = try LocalPhotoArchiveExporter.existingArchives()
-                    if savedArchives.isEmpty {
-                        archiveStatusMessage = "本机没有可继续上传的归档包。"
-                    }
-                } catch {
-                    archiveStatusMessage = "读取已有归档失败：\(error.localizedDescription)"
-                }
-            }
-            .disabled(isStreamingArchive || isExporting || isUploadingArchive)
-            ForEach(savedArchives, id: \.self) { archive in
-                Button("选用归档 \(archive.deletingPathExtension().lastPathComponent)") {
-                    Task {
-                        exportedArchive = nil
-                        exportedArchiveComplete = false
-                        exportedVerification = nil
-                        do {
-                            let verification = try await Task.detached(priority: .utility) {
-                                try ImageAllMigrationArchive.verify(at: archive)
-                            }.value
-                            exportedArchive = archive
-                            exportedArchiveComplete = verification.isComplete
-                            exportedVerification = verification
-                            archiveStatusMessage = verification.isComplete
-                                ? "已选用现有完整归档；连接 Mac 后会从接收端已提交的分片继续上传。"
-                                : archiveSummary(verification)
-                        } catch {
-                            archiveStatusMessage = "现有归档不可继续上传：\(error.localizedDescription)"
-                        }
-                    }
-                }
-                .disabled(isStreamingArchive || isExporting || isUploadingArchive)
-            }
-            Button(isExportingFacts ? "正在生成整理信息快照…" : "导出最新整理信息快照") {
-                Task {
-                    isExportingFacts = true
-                    exportedFacts = nil
-                    defer { isExportingFacts = false }
-                    do {
-                        exportedFacts = try await model.exportSelectedFacts()
-                        archiveStatusMessage = "整理信息快照已生成；请在 Mac 选中对应归档批次后导入。此操作不代表迁移完成。"
-                    } catch {
-                        archiveStatusMessage = "整理信息快照未生成：\(error.localizedDescription)"
-                    }
-                }
-            }
-            .disabled(isExporting || isExportingFacts || model.sharedSelections.isEmpty)
-            if let exportedFacts {
-                LocalFactsShareButton(url: exportedFacts)
+                .disabled(workBusy || !remoteModel.isConnected)
             }
             if let exportedArchive {
-                Button(isUploadingArchive ? "正在上传整理信息…" : "生成并上传最新整理信息到 Mac") {
-                    Task {
-                        isUploadingArchive = true
-                        defer { isUploadingArchive = false }
-                        do {
-                            let facts = try await model.exportSelectedFacts()
-                            try await Task.detached(priority: .utility) {
-                                try LocalMigrationFactExporter.attach(
-                                    facts, to: exportedArchive
-                                )
-                            }.value
-                            exportedFacts = facts
-                            let receipt = try await remoteModel.uploadMigrationArchive(
-                                at: exportedArchive
-                            )
-                            archiveStatusMessage = "Mac 已复验最新整理信息；请在 Mac 对同一批次再次点击入库以对账。已接收 \(receipt.itemCount) 项，此回执不是迁移完成确认。"
-                        } catch {
-                            archiveStatusMessage = "整理信息上传未完成：\(error.localizedDescription)"
-                        }
-                    }
-                }
-                .disabled(!exportedArchiveComplete || !remoteModel.isConnected
-                          || isUploadingArchive || isExporting || isExportingFacts || isStreamingArchive)
                 Button(isUploadingArchive ? "正在上传检查点…" : "生成并上传验收检查点") {
+                    guard !workBusy else { return }
+                    isUploadingArchive = true
                     Task {
-                        isUploadingArchive = true
                         defer { isUploadingArchive = false }
                         do {
                             let facts = try await model.exportCompletionCheckpointFacts(
@@ -2325,7 +2997,137 @@ private struct LocalShareScopeView: View {
                     }
                 }
                 .disabled(!exportedArchiveComplete || !remoteModel.isConnected
-                          || isUploadingArchive || isExporting || isExportingFacts || isStreamingArchive)
+                          || workBusy)
+            }
+            if let archiveStatusMessage { Text(archiveStatusMessage).font(.footnote) }
+        }
+    }
+    private var offlineSection: some View {
+        Section("离线归档与整理信息快照") {
+            Button(isExporting ? "正在读取并核对原件…" : "生成所选项目的本机归档包") {
+                guard !workBusy else { return }
+                isExporting = true
+                Task {
+                    exportedArchive = nil
+                    exportedArchiveComplete = false
+                    exportedVerification = nil
+                    archiveStatusMessage = nil
+                    defer { isExporting = false }
+                    do {
+                        let (url, verification) = try await model.exportSelectedArchive(includeAlbumCatalog: includeAlbumCatalog)
+                        exportedArchive = url
+                        exportedArchiveComplete = verification.isComplete
+                        exportedVerification = verification
+                        archiveStatusMessage = archiveSummary(verification)
+                    } catch {
+                        archiveStatusMessage = "归档未完成：\(error.localizedDescription)"
+                    }
+                }
+            }
+            .disabled(workBusy || model.sharedSelections.isEmpty)
+            if let exportedArchive {
+                LocalArchiveShareButton(
+                    url: exportedArchive, isComplete: exportedArchiveComplete
+                )
+                Button(isUploadingArchive ? "正在分片上传到 Mac…" : "上传已校验归档到 Mac") {
+                    guard !workBusy else { return }
+                    isUploadingArchive = true
+                    Task {
+                        defer { isUploadingArchive = false }
+                        do {
+                            let receipt = try await remoteModel.uploadMigrationArchive(
+                                at: exportedArchive
+                            )
+                            archiveStatusMessage = "Mac 已接收并复验 \(receipt.itemCount) 项、\(receipt.resourceCount) 个资源；请在 Mac 接收目录中点击入库。此回执不是迁移完成确认。"
+                        } catch {
+                            archiveStatusMessage = "上传未完成；重连后可继续同一归档：\(error.localizedDescription)"
+                        }
+                    }
+                }
+                .disabled(!exportedArchiveComplete || !remoteModel.isConnected
+                          || workBusy)
+            }
+            Button("查找本机已生成的归档以继续上传") {
+                do {
+                    savedArchives = try LocalPhotoArchiveExporter.existingArchives()
+                    if savedArchives.isEmpty {
+                        archiveStatusMessage = "本机没有可继续上传的归档包。"
+                    }
+                } catch {
+                    archiveStatusMessage = "读取已有归档失败：\(error.localizedDescription)"
+                }
+            }
+            .disabled(workBusy)
+            ForEach(savedArchives, id: \.self) { archive in
+                Button("选用归档 \(archive.deletingPathExtension().lastPathComponent)") {
+                    guard !workBusy else { return }
+                    isExporting = true
+                    Task {
+                        defer { isExporting = false }
+                        exportedArchive = nil
+                        exportedArchiveComplete = false
+                        exportedVerification = nil
+                        do {
+                            let verification = try await Task.detached(priority: .utility) {
+                                try ImageAllMigrationArchive.verify(at: archive)
+                            }.value
+                            exportedArchive = archive
+                            exportedArchiveComplete = verification.isComplete
+                            exportedVerification = verification
+                            archiveStatusMessage = verification.isComplete
+                                ? "已选用现有完整归档；连接 Mac 后会从接收端已提交的分片继续上传。"
+                                : archiveSummary(verification)
+                        } catch {
+                            archiveStatusMessage = "现有归档不可继续上传：\(error.localizedDescription)"
+                        }
+                    }
+                }
+                .disabled(workBusy)
+            }
+            Button(isExportingFacts ? "正在生成整理信息快照…" : "导出最新整理信息快照") {
+                guard !workBusy else { return }
+                isExportingFacts = true
+                Task {
+                    exportedFacts = nil
+                    defer { isExportingFacts = false }
+                    do {
+                        exportedFacts = try await model.exportSelectedFacts()
+                        archiveStatusMessage = "整理信息快照已生成；请在 Mac 选中对应归档批次后导入。此操作不代表迁移完成。"
+                    } catch {
+                        archiveStatusMessage = "整理信息快照未生成：\(error.localizedDescription)"
+                    }
+                }
+            }
+            .disabled(workBusy || model.sharedSelections.isEmpty)
+            if let exportedFacts {
+                LocalFactsShareButton(url: exportedFacts)
+            }
+            if let exportedArchive {
+                Button(isUploadingArchive ? "正在上传整理信息…" : "生成并上传最新整理信息到 Mac") {
+                    guard !workBusy else { return }
+                    isUploadingArchive = true
+                    Task {
+                        defer { isUploadingArchive = false }
+                        do {
+                            let facts = try await model.exportSelectedFacts()
+                            try await Task.detached(priority: .utility) {
+                                try LocalMigrationFactExporter.attach(
+                                    facts, to: exportedArchive
+                                )
+                            }.value
+                            exportedFacts = facts
+                            let receipt = try await remoteModel.uploadMigrationArchive(
+                                at: exportedArchive
+                            )
+                            archiveStatusMessage = "Mac 已复验最新整理信息；请在 Mac 对同一批次再次点击入库以对账。已接收 \(receipt.itemCount) 项，此回执不是迁移完成确认。"
+                        } catch {
+                            archiveStatusMessage = "整理信息上传未完成：\(error.localizedDescription)"
+                        }
+                    }
+                }
+                .disabled(!exportedArchiveComplete || !remoteModel.isConnected
+                          || workBusy)
+
             }
             if let archiveStatusMessage {
                 Text(archiveStatusMessage).font(.footnote).foregroundStyle(.secondary)
@@ -2397,6 +3199,10 @@ private enum LocalArchiveExportError: LocalizedError {
     case selectionNotVisible
     case selectionChanged
     case sourceChanged
+    case resumeResourceMismatch
+    case subsetRequiresVerifiedResources
+    case localResourcesPending(Int)
+    case selectedAssetsPending(Int)
     case incompleteArchive
     case archiveScopeChanged
     case syncPending
@@ -2408,6 +3214,10 @@ private enum LocalArchiveExportError: LocalizedError {
         case .selectionNotVisible: "所选项目中有当前无权访问或已隐藏的资产；请先恢复访问，再生成完整范围归档。"
         case .selectionChanged: "导出期间分享范围已变化；请重新生成归档。"
         case .sourceChanged: "导出期间来源照片或视频已变化；请重新生成归档。"
+        case .subsetRequiresVerifiedResources: "封存已接收项目需要原批次每个资源的匹配回执；当前证据不足。没有重新上传原件，原选择与断点保留。"
+        case .resumeResourceMismatch: "待恢复缓存无法对应当前所选原件，旧进度已保留；请核对照片范围和版本。"
+        case .localResourcesPending(let count): "已有可读取原件已发送并保留进度；还有 \(count) 个资源暂时无法从手机本地读取。整批尚未完成，原件在本地可用后重试即可继续，不会自动下载 iCloud 原件。"
+        case .selectedAssetsPending(let count): "当前可访问的项目已传输并保留进度；还有 \(count) 项暂时不可访问，仍保留在待分享范围。请恢复这些项目的访问，或在预览中确认后调整选择；整批尚未完成。"
         case .incompleteArchive: "现有归档缺少必需原件，不能上传为完整迁移归档。"
         case .archiveScopeChanged: "整理信息范围或来源与此归档不一致，请重新选择对应归档。"
         case .syncPending: "仍有待发送整理操作或未解决冲突；请先同步并处理，再生成验收检查点。"
@@ -2622,6 +3432,15 @@ private enum LocalMigrationFactExporter {
     }
 }
 
+#if DEBUG
+@MainActor
+func runSyntheticPhotoResourceCallbackProbe(
+    progress: (@MainActor (Int64) -> Void)? = nil
+) async throws -> [String: Any] {
+    try await LocalPhotoArchiveExporter.syntheticResourceCallbackProbe(progress: progress)
+}
+#endif
+
 private struct LocalStreamingArchive: Identifiable {
     let root: URL
     let migrationID: UUID
@@ -2657,6 +3476,11 @@ private enum LocalPhotoArchiveExporter {
             defer { lock.unlock() }
             guard !overflow else { throw LocalArchiveExportError.sourceChanged }
             return (byteCount, digest.finalize().map { String(format: "%02x", $0) }.joined())
+        }
+        func bytesRead() -> Int64 {
+            lock.lock()
+            defer { lock.unlock() }
+            return overflow ? 0 : byteCount
         }
     }
 
@@ -2765,22 +3589,119 @@ private enum LocalPhotoArchiveExporter {
         }
     }
 
-    private static func hashSourceResource(_ resource: PHAssetResource) async throws -> (Int64, String) {
-        let sink = ResourceDigestSink()
+    private static func hashSourceResource(_ resource: PHAssetResource,
+        progress: (@MainActor (Int64) -> Void)? = nil
+    ) async throws -> (Int64, String) {
         let options = PHAssetResourceRequestOptions()
         options.isNetworkAccessAllowed = false
-        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+        return try await hashResourceStream(progress: progress) { receive, complete in
             PHAssetResourceManager.default().requestData(
                 for: resource, options: options,
-                dataReceivedHandler: { chunk in sink.append(chunk) },
-                completionHandler: { error in
-                    if let error { continuation.resume(throwing: error) }
-                    else { continuation.resume(returning: ()) }
-                }
+                dataReceivedHandler: receive,
+                completionHandler: complete
             )
         }
-        return try sink.result()
     }
+
+    /// PhotoKit invokes these Objective-C callbacks on its own I/O queues.
+    /// Explicit Sendable closures must not inherit this exporter's MainActor.
+    /// Hash synchronously under the sink lock to preserve chunk order and avoid
+    /// queuing an unbounded number of Data values on the UI actor.
+    private static func hashResourceStream(
+        progress: (@MainActor (Int64) -> Void)? = nil,
+        request: (_ receive: @escaping @Sendable (Data) -> Void,
+                  _ complete: @escaping @Sendable (Error?) -> Void) -> Void
+    ) async throws -> (Int64, String) {
+        let sink = ResourceDigestSink()
+        // One sampler per read; never enqueue PhotoKit chunks on MainActor.
+        let sampler: Task<Void, Never>? = progress.map { report in
+            Task { @MainActor in
+                while !Task.isCancelled {
+                    report(sink.bytesRead())
+                    do { try await Task.sleep(for: .milliseconds(500)) } catch { return }
+                }
+            }
+        }
+        defer { sampler?.cancel() }
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+            let receive: @Sendable (Data) -> Void = { chunk in sink.append(chunk) }
+            let complete: @Sendable (Error?) -> Void = { error in
+                if let error { continuation.resume(throwing: error) }
+                else { continuation.resume(returning: ()) }
+            }
+            request(receive, complete)
+        }
+        let result = try sink.result()
+        progress?(result.0)
+        return result
+    }
+
+    private static func awaitResourceWrite(
+        request: (_ complete: @escaping @Sendable (Error?) -> Void) -> Void
+    ) async throws {
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+            let complete: @Sendable (Error?) -> Void = { error in
+                if let error { continuation.resume(throwing: error) }
+                else { continuation.resume(returning: ()) }
+            }
+            request(complete)
+        }
+    }
+
+    #if DEBUG
+    /// Invokes the exact production callback adapters from a background queue.
+    /// No PhotoKit calls, local library model, USB, or source files are involved.
+    static func syntheticResourceCallbackProbe(
+        progress: (@MainActor (Int64) -> Void)? = nil
+    ) async throws -> [String: Any] {
+        enum ProbeError: Error { case expected }
+        let queue = DispatchQueue(label: "imageall.synthetic-resource-callbacks")
+        let payload = Data((0..<1_048_576).map { UInt8(truncatingIfNeeded: $0) })
+        let expected = SHA256.hash(data: payload).map { String(format: "%02x", $0) }.joined()
+        let observationWindow = progress != nil
+        let result = try await hashResourceStream(progress: progress) { receive, complete in
+            queue.async {
+                dispatchPrecondition(condition: .notOnQueue(.main))
+                for offset in stride(from: 0, to: payload.count, by: 65_536) {
+                    receive(payload.subdata(in: offset..<min(offset + 65_536, payload.count)))
+                    if observationWindow { Thread.sleep(forTimeInterval: 1) }
+                }
+                complete(nil)
+            }
+        }
+        var readErrorPassed = false
+        do {
+            _ = try await hashResourceStream { receive, complete in
+                queue.async {
+                    dispatchPrecondition(condition: .notOnQueue(.main))
+                    receive(Data([1, 2, 3]))
+                    complete(ProbeError.expected)
+                }
+            }
+        } catch ProbeError.expected { readErrorPassed = true }
+        try await awaitResourceWrite { complete in
+            queue.async {
+                dispatchPrecondition(condition: .notOnQueue(.main))
+                complete(nil)
+            }
+        }
+        var writeErrorPassed = false
+        do {
+            try await awaitResourceWrite { complete in
+                queue.async {
+                    dispatchPrecondition(condition: .notOnQueue(.main))
+                    complete(ProbeError.expected)
+                }
+            }
+        } catch ProbeError.expected { writeErrorPassed = true }
+        let hashPassed = result.0 == Int64(payload.count) && result.1 == expected
+        return ["passed": hashPassed && readErrorPassed && writeErrorPassed,
+                "bytes": result.0, "digestMatched": hashPassed,
+                "readErrorPropagated": readErrorPassed, "writeCompleted": true,
+                "writeErrorPropagated": writeErrorPassed, "backgroundCallbacks": true,
+                "photosAccessed": false, "macUploads": false]
+    }
+    #endif
 
     static func existingStreamingArchives() throws -> [LocalStreamingArchive] {
         let manager = FileManager.default
@@ -2830,7 +3751,15 @@ private enum LocalPhotoArchiveExporter {
 
     struct Stream {
         let destination: String
+        let sealVerifiedSubset: Bool
+        let expectedMigrationID: UUID?
+        let reportItem: @MainActor (Int, Int) -> Void
+        let resumeCheckpoint: @MainActor (UUID) async throws -> [String: ImageAllMigrationResourceVerificationReceipt]
         let beforeResource: @MainActor () async throws -> Void
+        let beforeSourceRevalidation: @MainActor (Int64) async throws -> Void
+        let sourceRevalidationRead: @MainActor (Int64) -> Void
+        let sourceRevalidationVerified: @MainActor () -> Void
+        let verifyExistingResource: @MainActor (UUID, ImageAllMigrationResource) async throws -> ImageAllMigrationResourceVerificationReceipt
         let uploadResource: @MainActor (UUID, URL, ImageAllMigrationResource) async throws -> ImageAllMigrationResourceVerificationReceipt
         let finish: @MainActor (URL, ImageAllMigrationHeader, [ImageAllMigrationItem]) async throws -> ImageAllMigrationTransferSealReceipt
     }
@@ -2854,10 +3783,89 @@ private enum LocalPhotoArchiveExporter {
         return receipt
     }
 
+    #if DEBUG
+    /// Metadata-only by default. An explicit diagnostic flag may read/hash one
+    /// already-selected pending local resource; neither mode uploads or resets.
+    static func preparationDiagnostics(
+        snapshot: LocalSharedSnapshot, verifyOnePendingLocalResource: Bool = false
+    ) async throws -> [String: Any] {
+        let manager = FileManager.default
+        let options = PHFetchOptions()
+        options.includeHiddenAssets = false; options.includeAssetSourceTypes = .typeUserLibrary
+        let fetched = PHAsset.fetchAssets(withLocalIdentifiers: snapshot.assets.map(\.localIdentifier), options: options)
+        var sources: [String: PHAsset] = [:]
+        fetched.enumerateObjects { asset, _, _ in sources[asset.localIdentifier] = asset }
+        var report: [String: Any] = ["selectedCount": snapshot.selectedAssetIDs.count,
+            "visibleCount": sources.count, "sourceBytesRead": false, "macUploads": false]
+        var sourceReadAttempted = false
+        do {
+            let albums = try captureAlbumMemberships(selectedLocators: Set(sources.keys), includeCatalog: true)
+            report["albumCapturePassed"] = true
+            report["albumCatalogCount"] = albums.catalog?.count ?? 0
+        } catch {
+            report["albumCapturePassed"] = false; report["albumCaptureError"] = error.localizedDescription
+        }
+        let support = try manager.url(for: .applicationSupportDirectory, in: .userDomainMask,
+                                      appropriateFor: nil, create: false)
+        let parent = support.appendingPathComponent("LocalLibrary/MigrationStreaming", isDirectory: true)
+        var checkpoints: [[String: Any]] = []
+        if manager.fileExists(atPath: parent.path) {
+            for root in try manager.contentsOfDirectory(at: parent, includingPropertiesForKeys: [.isDirectoryKey, .isSymbolicLinkKey]) {
+                guard root.lastPathComponent.hasPrefix(".staging-") else { continue }
+                let context = root.appendingPathComponent("stream-context.json")
+                guard manager.fileExists(atPath: context.path) else { continue }
+                let lease = try ImageAllMigrationExportCheckpoint(streamingRoot: root)
+                defer { lease.close() }
+                let pending = try lease.streamingResourceWindow()
+                let frozen = try JSONDecoder().decode(LocalSharedSnapshot.self, from: Data(contentsOf: context))
+                guard Set(frozen.selectedAssetIDs) == Set(snapshot.selectedAssetIDs) else { continue }
+                let paths = Set(pending.map(\.path)), filenames = Set(pending.map(\.lastPathComponent))
+                let relativePaths = try lease.streamingResourceWindowRelativePaths()
+                var exact = Set<String>(), byName = Set<String>(), relativeMatches = Set<String>()
+                if !pending.isEmpty {
+                    for selected in frozen.assets {
+                        guard let source = sources[selected.localIdentifier] else { continue }
+                        for (index, resource) in PHAssetResource.assetResources(for: source).enumerated() {
+                            let location = try lease.resourceLocation(key: "\(selected.id.uuidString)|\(index)",
+                                fileExtension: fileExtension(for: resource))
+                            if paths.contains(location.url.path) { exact.insert(location.url.path) }
+                            if relativePaths.contains(location.relativePath) {
+                                relativeMatches.insert(location.relativePath)
+                                if verifyOnePendingLocalResource && !sourceReadAttempted {
+                                    sourceReadAttempted = true
+                                    report["sourceReadAttempted"] = true
+                                    report["networkAccessAllowed"] = false
+                                    do {
+                                        let result = try await hashSourceResource(resource)
+                                        report["sourceBytesRead"] = result.0 > 0
+                                        report["verifiedSourceCount"] = 1
+                                        report["verifiedSourceBytes"] = result.0
+                                        report["sourceReadPassed"] = true
+                                    } catch {
+                                        report["sourceReadPassed"] = false
+                                        report["sourceReadError"] = error.localizedDescription
+                                    }
+                                }
+                            }
+                            if filenames.contains(location.url.lastPathComponent) { byName.insert(location.url.lastPathComponent) }
+                        }
+                    }
+                }
+                checkpoints.append(["pendingCount": pending.count, "matchedAbsolutePaths": exact.count,
+                    "matchedResourceNames": byName.count, "matchedRelativePaths": relativeMatches.count])
+            }
+        }
+        report["matchingCheckpoints"] = checkpoints
+        return report
+    }
+    #endif
+
     private static func build(
         snapshot initialSnapshot: LocalSharedSnapshot, includeAlbumCatalog: Bool = false, stream: Stream? = nil
     ) async throws -> Output {
         var snapshot = initialSnapshot
+        let availability = try LocalMigrationAvailability(snapshot: snapshot)
+        if stream == nil { try availability.requireComplete() }
         let manager = FileManager.default
         let support = try manager.url(
             for: .applicationSupportDirectory, in: .userDomainMask,
@@ -2895,21 +3903,58 @@ private enum LocalPhotoArchiveExporter {
             let unavailableAlbumCoverage: ImageAllMigrationAppleAlbumCoverage?
             let albumCatalog: [ImageAllMigrationAppleCollection]?
             let destination: String?
+            // Keep legacy complete bindings stable; bind partial work to every
+            // retained selection, including temporarily invisible members.
+            let retainedSelection: [String]?
         }
         let binding = ResumeBinding(installID: snapshot.installID, sourceEpoch: snapshot.sourceEpoch,
             scopeRevision: snapshot.scopeRevision,
             mediaLocators: Dictionary(uniqueKeysWithValues: snapshot.assets.map { ($0.id.uuidString, $0.localIdentifier) }),
             sources: sourceVersions, albums: albumMemberships.memberships,
             unavailableAlbumCoverage: albumMemberships.coverage == .selectedAssetsOnly ? nil : albumMemberships.coverage,
-            albumCatalog: albumMemberships.catalog, destination: stream?.destination)
+            albumCatalog: albumMemberships.catalog, destination: stream?.destination,
+            retainedSelection: availability.pendingCount > 0 ? snapshot.selectedAssetIDs.map(\.uuidString).sorted() : nil)
         let bindingEncoder = JSONEncoder()
         bindingEncoder.outputFormatting = [.sortedKeys]
-        let checkpoint = try ImageAllMigrationExportCheckpoint(parent: parent, binding: bindingEncoder.encode(binding))
+        let bindingData = try bindingEncoder.encode(binding)
+        // Snapshot sequence advances on catalogue sync even when the selected
+        // identities and facts are unchanged. Keep it out of active-batch identity.
+        func resumeScope(_ value: LocalSharedSnapshot) throws -> Data {
+            guard var object = try JSONSerialization.jsonObject(with: bindingEncoder.encode(value)) as? [String: Any] else {
+                throw LocalArchiveExportError.archiveScopeChanged
+            }
+            object.removeValue(forKey: "snapshotSequence")
+            object["destination"] = stream?.destination
+            object["includeAlbumCatalog"] = includeAlbumCatalog
+            return try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])
+        }
+        let scopeData = try resumeScope(initialSnapshot)
+        var legacyMigrationID: UUID?
+        #if DEBUG
+        let arguments = ProcessInfo.processInfo.arguments
+        if let index = arguments.firstIndex(of: "--resume-existing-migration") {
+            guard arguments.indices.contains(index + 1), let id = UUID(uuidString: arguments[index + 1]) else {
+                throw LocalArchiveExportError.archiveScopeChanged
+            }
+            legacyMigrationID = id
+        }
+        #endif
+        guard legacyMigrationID == nil || stream?.expectedMigrationID == nil
+                || legacyMigrationID == stream?.expectedMigrationID else {
+            throw LocalArchiveExportError.archiveScopeChanged
+        }
+        let requestedMigrationID = stream?.expectedMigrationID ?? legacyMigrationID
+        let checkpoint = try stream == nil
+            ? ImageAllMigrationExportCheckpoint(parent: parent, binding: bindingData)
+            : ImageAllMigrationExportCheckpoint.streaming(parent: parent, binding: bindingData,
+                scope: scopeData, legacyMigrationID: requestedMigrationID,
+                requireExisting: requestedMigrationID != nil || stream?.sealVerifiedSubset == true)
         defer { checkpoint.close() }
         if stream != nil {
             let frozen = try checkpoint.frozenContext(bindingEncoder.encode(initialSnapshot))
             snapshot = try JSONDecoder().decode(LocalSharedSnapshot.self, from: frozen)
-            guard snapshot.installID == initialSnapshot.installID,
+            guard try resumeScope(snapshot) == scopeData,
+                  snapshot.installID == initialSnapshot.installID,
                   snapshot.sourceEpoch == initialSnapshot.sourceEpoch,
                   snapshot.scopeRevision == initialSnapshot.scopeRevision,
                   snapshot.snapshotSequence <= initialSnapshot.snapshotSequence,
@@ -2923,7 +3968,7 @@ private enum LocalPhotoArchiveExporter {
             }
             try manager.setAttributes([.protectionKey: FileProtectionType.complete],
                 ofItemAtPath: checkpoint.root.appendingPathComponent("stream-context.json").path)
-            let pending = Set(try checkpoint.streamingResourceWindow().map(\.path))
+            let pending = try checkpoint.streamingResourceWindowRelativePaths()
             var revalidated = Set<String>()
             if !pending.isEmpty {
                 for selected in snapshot.assets {
@@ -2933,19 +3978,21 @@ private enum LocalPhotoArchiveExporter {
                     for (index, resource) in PHAssetResource.assetResources(for: source).enumerated() {
                         let location = try checkpoint.resourceLocation(
                             key: "\(selected.id.uuidString)|\(index)", fileExtension: fileExtension(for: resource))
-                        if pending.contains(location.url.path) {
-                            try await stream?.beforeResource()
-                            // Do not discard the interrupted cache if Photos can
-                            // no longer supply the current resource without cloud.
-                            _ = try await hashSourceResource(resource)
-                            revalidated.insert(location.url.path)
+                        if pending.contains(location.relativePath) {
+                            // Validate identity now; validate source bytes below,
+                            // per resource. One unavailable source must not stop
+                            // all other locally readable resources before the loop.
+                            revalidated.insert(location.relativePath)
                         }
                     }
                 }
-                guard revalidated == pending else { throw LocalArchiveExportError.sourceChanged }
+                guard revalidated == pending else {
+                    throw LocalArchiveExportError.resumeResourceMismatch
+                }
                 try await stream?.beforeResource()
             }
-            try checkpoint.resetStreamingResourceWindow()
+            // Preserve interrupted resources. The loop below revalidates cached
+            // bytes before reuse and releases only independently confirmed data.
         }
         let migrationID = checkpoint.migrationID
         let staging = checkpoint.root
@@ -2953,8 +4000,22 @@ private enum LocalPhotoArchiveExporter {
         try manager.setAttributes([.protectionKey: FileProtectionType.complete], ofItemAtPath: staging.path)
         try checkpoint.removeUnpublishedManifest()
 
+        // Receiver receipts remain bound to this original migration and paired
+        // destination. A changed source binding requires per-resource validation;
+        // successful validations survive interruptions, without repeated upload.
+        let resumeReceipts = try await stream?.resumeCheckpoint(migrationID) ?? [:]
+        let originalBindingMatches = checkpoint.matchesOriginalBinding(bindingData)
+        if stream != nil {
+            guard legacyMigrationID == nil || !resumeReceipts.isEmpty else {
+                throw LocalArchiveExportError.resumeResourceMismatch
+            }
+            try checkpoint.rememberStreamingScope(scopeData)
+        }
+
         var items: [ImageAllMigrationItem] = []
-        for selected in snapshot.assets {
+        var pendingLocalResources = 0
+        for (selectedIndex, selected) in snapshot.assets.enumerated() {
+            stream?.reportItem(selectedIndex + 1, snapshot.selectedAssetIDs.count)
             try Task.checkCancellation()
             guard let source = byLocator[selected.localIdentifier] else {
                 throw LocalArchiveExportError.selectionNotVisible
@@ -2970,6 +4031,37 @@ private enum LocalPhotoArchiveExporter {
                 let fileExtension = Self.fileExtension(for: resource)
                 let location = try checkpoint.resourceLocation(key: "\(selected.id.uuidString)|\(index)", fileExtension: fileExtension)
                 let id = location.id, relativePath = location.relativePath, destination = location.url
+                if let stream, let prior = try checkpoint.verifiedStreamingResource(id: id) {
+                    guard prior.relativePath == relativePath, prior.role == role,
+                          prior.uniformTypeIdentifier == uti,
+                          prior.originalFilename == (resource.originalFilename.isEmpty ? nil : resource.originalFilename) else {
+                        throw LocalArchiveExportError.sourceChanged
+                    }
+                    let version = try bindingEncoder.encode(sourceVersions[selected.localIdentifier])
+                    if !originalBindingMatches,
+                       try !checkpoint.isStreamingSourceVerified(prior, version: version) {
+                        try await stream.beforeSourceRevalidation(prior.byteCount ?? 0)
+                        let current = try await hashSourceResource(resource, progress: stream.sourceRevalidationRead)
+                        try checkpoint.recordStreamingSourceVerification(prior, version: version,
+                            byteCount: current.0, sha256: current.1)
+                        stream.sourceRevalidationVerified()
+                    }
+                    if let receipt = resumeReceipts[relativePath] {
+                        guard receipt.migrationID == migrationID,
+                              receipt.resource.byteCount == prior.byteCount,
+                              receipt.resource.sha256 == prior.sha256 else {
+                            throw LocalArchiveExportError.sourceChanged
+                        }
+                    } else {
+                        guard !stream.sealVerifiedSubset else { throw LocalArchiveExportError.subsetRequiresVerifiedResources }
+                        let receipt = try await stream.verifyExistingResource(migrationID, prior)
+                        try checkpoint.recordVerifiedStreamingResource(prior, receipt: receipt)
+                    }
+                    if manager.fileExists(atPath: destination.path) { try manager.removeItem(at: destination) }
+                    exported.append(prior)
+                    continue
+                }
+                guard stream?.sealVerifiedSubset != true else { throw LocalArchiveExportError.subsetRequiresVerifiedResources }
                 var preserveCachedResource = manager.fileExists(atPath: destination.path)
                 do {
                     try Task.checkCancellation()
@@ -3011,6 +4103,10 @@ private enum LocalPhotoArchiveExporter {
                               receipt.resource.sha256 == digest.1 else {
                             throw LocalArchiveExportError.sourceChanged
                         }
+                        try checkpoint.recordVerifiedStreamingResource(record, receipt: receipt)
+                        try checkpoint.recordStreamingSourceVerification(record,
+                            version: bindingEncoder.encode(sourceVersions[selected.localIdentifier]),
+                            byteCount: digest.0, sha256: digest.1)
                         // Only our deterministic scratch resource is removed,
                         // after independent receiver verification. Never PhotoKit.
                         let checked = try checkpoint.resourceLocation(
@@ -3019,7 +4115,15 @@ private enum LocalPhotoArchiveExporter {
                     }
                     exported.append(record)
                 } catch {
-                    if stream != nil { throw error }
+                    if stream != nil {
+                        let failure = error as NSError
+                        let code = failure.domain == PHPhotosError.errorDomain ? PHPhotosError.Code(rawValue: failure.code) : nil
+                        if !Task.isCancelled, code == .networkAccessRequired || code == .missingResource || code == .requestNotSupportedForAsset {
+                            pendingLocalResources += 1
+                            continue
+                        }
+                        throw error
+                    }
                     // If source revalidation fails, keep the prior cache and stop this attempt.
                     if preserveCachedResource { throw error }
                     try? manager.removeItem(at: destination)
@@ -3084,6 +4188,15 @@ private enum LocalPhotoArchiveExporter {
                 sourceMetadata: sourceMetadata(source)
             ))
         }
+        guard pendingLocalResources == 0 else { throw LocalArchiveExportError.localResourcesPending(pendingLocalResources) }
+        if stream?.sealVerifiedSubset != true {
+            guard availability.pendingCount == 0 else {
+                throw LocalArchiveExportError.selectedAssetsPending(availability.pendingCount)
+            }
+            try availability.requireComplete()
+        }
+        _ = try snapshot.archiveSnapshot(mediaIDs: Set(items.map(\.mediaID)),
+            allowVerifiedSubset: stream?.sealVerifiedSubset == true)
         let finalResult = PHAsset.fetchAssets(
             withLocalIdentifiers: snapshot.assets.map(\.localIdentifier), options: options
         )
@@ -3100,7 +4213,8 @@ private enum LocalPhotoArchiveExporter {
             migrationID: migrationID, sourceDeviceID: snapshot.installID,
             sourceEpoch: snapshot.sourceEpoch, scopeRevision: snapshot.scopeRevision,
             inventoryWatermark: snapshot.snapshotSequence, declaredItemCount: items.count,
-            appleAlbumCoverage: albumMemberships.coverage, appleAlbumCatalog: albumMemberships.catalog
+            appleAlbumCoverage: albumMemberships.coverage, appleAlbumCatalog: albumMemberships.catalog,
+            retainedSelectionIDs: availability.pendingCount > 0 ? snapshot.selectedAssetIDs : nil
         )
         let resourcesDirectory = staging.appendingPathComponent("resources", isDirectory: true)
         if manager.fileExists(atPath: resourcesDirectory.path),
@@ -3291,13 +4405,10 @@ private enum LocalPhotoArchiveExporter {
     private static func writeLocalResource(_ resource: PHAssetResource, to url: URL) async throws {
         let options = PHAssetResourceRequestOptions()
         options.isNetworkAccessAllowed = false
-        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+        try await awaitResourceWrite { complete in
             PHAssetResourceManager.default().writeData(
-                for: resource, toFile: url, options: options
-            ) { error in
-                if let error { continuation.resume(throwing: error) }
-                else { continuation.resume(returning: ()) }
-            }
+                for: resource, toFile: url, options: options, completionHandler: complete
+            )
         }
     }
 
@@ -3306,7 +4417,7 @@ private enum LocalPhotoArchiveExporter {
         defer { try? handle.close() }
         var hash = SHA256()
         var count: Int64 = 0
-        while let block = try handle.read(upToCount: 1_048_576), !block.isEmpty {
+        while let block = try autoreleasepool(invoking: { try handle.read(upToCount: 1_048_576) }), !block.isEmpty {
             count += Int64(block.count)
             hash.update(data: block)
         }
@@ -3323,6 +4434,12 @@ private struct LocalAssetDetailView: View {
     @State private var isEditingTags = false
     @State private var collectionUndo: [UUID: UUID] = [:]
     @State private var isEditingCollections = false
+    @State private var showsPreview = false
+
+    private var photoItem: LocalShareItem {
+        LocalShareItem(id: asset.id, localIdentifier: asset.localIdentifier,
+                       isVideo: asset.kind == "video", date: asset.creationDate)
+    }
 
     private var currentAsset: LocalAsset {
         model.assets.first(where: { $0.id == asset.id }) ?? asset
@@ -3330,9 +4447,11 @@ private struct LocalAssetDetailView: View {
 
     var body: some View {
         List {
-            LocalThumbnailView(localIdentifier: asset.localIdentifier)
-                .frame(maxWidth: .infinity)
-                .frame(height: 280)
+            Button { showsPreview = true } label: {
+                LocalPhotoThumbnail(item: photoItem, preview: true)
+                    .frame(maxWidth: .infinity).frame(height: 320).background(Color.black)
+            }.buttonStyle(.plain).listRowInsets(EdgeInsets())
+                .accessibilityLabel(asset.kind == "video" ? "预览视频封面" : "预览照片")
             Section("收藏") {
                 Button(currentAsset.favoriteTarget ?? currentAsset.observedFavorite ? "取消 Photos 收藏" : "收藏到 Photos") {
                     Task {
@@ -3450,6 +4569,17 @@ private struct LocalAssetDetailView: View {
             }
         }
         .navigationTitle("本机照片")
+        .navigationBarTitleDisplayMode(.inline)
+        .sheet(isPresented: $showsPreview) {
+            NavigationStack {
+                LocalPhotoThumbnail(item: photoItem, preview: true).background(Color.black)
+                    .navigationTitle(asset.kind == "video" ? "视频封面预览" : "照片预览")
+                    .navigationBarTitleDisplayMode(.inline)
+                    .toolbarBackground(.visible, for: .navigationBar)
+                    .toolbarColorScheme(.dark, for: .navigationBar)
+                    .toolbar { ToolbarItem(placement: .confirmationAction) { Button("完成") { showsPreview = false } } }
+            }.environment(\.colorScheme, .dark)
+        }
         .task(id: asset.id) {
             await reloadTagState()
             await reloadCollectionState()
@@ -3472,33 +4602,6 @@ private struct LocalAssetDetailView: View {
         case .pending: "收藏目标已保存在本机，等待 Photos 回读。"
         case .matched: "Photos 回读与本机收藏目标一致。"
         case .failed: "Photos 写回未完成；本机目标已保留，可重新操作。"
-        }
-    }
-}
-
-private struct LocalThumbnailView: View {
-    let localIdentifier: String
-    @State private var image: UIImage?
-
-    var body: some View {
-        Group {
-            if let image { Image(uiImage: image).resizable().scaledToFit() }
-            else { Rectangle().fill(.quaternary).overlay { Image(systemName: "photo") } }
-        }
-        .task(id: localIdentifier) {
-            let result = PHAsset.fetchAssets(withLocalIdentifiers: [localIdentifier], options: nil)
-            guard let asset = result.firstObject else { return }
-            let options = PHImageRequestOptions()
-            options.isNetworkAccessAllowed = false
-            options.deliveryMode = .opportunistic
-            PHImageManager.default().requestImage(
-                for: asset, targetSize: CGSize(width: 560, height: 560),
-                contentMode: .aspectFit, options: options
-            ) { candidate, info in
-                guard (info?[PHImageCancelledKey] as? Bool) != true,
-                      info?[PHImageErrorKey] == nil else { return }
-                Task { @MainActor in image = candidate }
-            }
         }
     }
 }

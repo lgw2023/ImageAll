@@ -10,6 +10,13 @@
 	<true/>
 	<key>com.apple.security.personal-information.photos-library</key>
 	<true/>
+	<key>com.apple.security.device.usb</key>
+	<true/>
+	<!-- USB tunnel uses only the system daemon socket; no filesystem access is granted. -->
+	<key>com.apple.security.temporary-exception.sbpl</key>
+	<array>
+		<string>(allow network-outbound (literal "/private/var/run/usbmuxd"))</string>
+	</array>
 	<key>com.apple.security.network.client</key>
 	<true/>
 	<key>com.apple.security.network.server</key>

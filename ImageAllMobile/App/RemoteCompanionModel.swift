@@ -28,6 +28,191 @@ final class RemoteCompanionModel: ObservableObject {
     @Published var accessToken: String
     @Published var pairingOfferJSON: String = ""
     @Published var isConnected = false
+    @Published private(set) var usbSelected = false
+    @Published private(set) var usbStatus = "USB 有线连接未开启"
+    @Published private(set) var usbPendingOffer: RemotePairingOffer?
+    #if DEBUG
+    private(set) var usbExplicitRejectionCount = 0
+    #endif
+    @Published private(set) var migrationConfirmedBytes: Int64 = 0
+    @Published private(set) var migrationItemIndex = 0
+    @Published private(set) var migrationItemCount = 0
+    private var migrationMetrics = RemoteMigrationTransferMetrics()
+    @Published private(set) var migrationPhase = "准备目录与整理信息"
+    @Published private(set) var sourceRevalidation = LocalShareSourceRevalidationProgress()
+    private let usbBridge = ImageAllUSBPhoneTunnel()
+    private var usbLoopbackPort: UInt16?
+    private var usbOffer: RemotePairingOffer?
+    private(set) var transportGeneration = UUID()
+    var importTransportLabel: String { usbSelected ? (usbLoopbackPort == nil ? "USB 已暂停" : "USB 有线") : "网络连接" }
+    var migrationProgressText: String {
+        let now = ProcessInfo.processInfo.systemUptime
+        let amount = ByteCountFormatter.string(fromByteCount: migrationConfirmedBytes, countStyle: .binary)
+        let rate: String
+        if migrationPhase == "传输原件", let value = migrationMetrics.uploadBytesPerSecond(at: now) {
+            rate = "传输均速 " + ByteCountFormatter.string(fromByteCount: Int64(value), countStyle: .binary) + "/s"
+        } else { rate = migrationIntent == .sealReceived ? "仅封存，不上传原件" : "本阶段暂无原件传输速率" }
+        let elapsed = Int(migrationMetrics.elapsedSeconds(at: now))
+        let item = migrationItemCount > 0 ? " · 第 \(migrationItemIndex)/\(migrationItemCount) 项" : ""
+        let pending = migrationPendingAssetCount > 0 ? " · \(migrationPendingAssetCount) 项不可访问，保留待处理" : ""
+        let phase = migrationPhase == "核对旧批次手机原件，保留已确认进度"
+            ? sourceRevalidation.message : migrationPhase
+        return "\(phase)\(item)\(pending) · 已确认原件 \(amount) · \(rate) · 总耗时 \(elapsed)s · \(importTransportLabel)"
+    }
+    private var migrationIdleTimerWasDisabled: Bool?
+    private var sessionRefreshWork: (id: UUID, generation: UInt64, task: Task<RemoteLibraryClient, Error>)?
+    private var migrationLastDiagnosticAt: TimeInterval = 0
+    private var migrationDiagnosticError: [String: Any] = [:]
+    private var migrationRecoveryEvidence: [String: Any] = [:]
+
+    private let migrationDiagnosticHeartbeat = RemoteMigrationDiagnosticHeartbeat()
+    private var migrationIntent: LocalShareTask.Intent = .transferSelection
+
+    func beginMigrationProgress(intent: LocalShareTask.Intent = .transferSelection) {
+        migrationDiagnosticHeartbeat.stop()
+        migrationIntent = intent
+        migrationDiagnosticError = [:]
+        migrationRecoveryEvidence = [:]
+        sourceRevalidation = LocalShareSourceRevalidationProgress()
+        migrationItemIndex = 0; migrationItemCount = 0; migrationPendingAssetCount = 0
+        if migrationIdleTimerWasDisabled == nil {
+            migrationIdleTimerWasDisabled = UIApplication.shared.isIdleTimerDisabled
+            UIApplication.shared.isIdleTimerDisabled = true
+        }
+        migrationConfirmedBytes = 0
+        migrationMetrics.begin(at: ProcessInfo.processInfo.systemUptime)
+        migrationPhase = "准备目录与整理信息"
+        recordMigrationOutcome("running")
+        migrationDiagnosticHeartbeat.start { [weak self] in
+            self?.recordMigrationOutcome("running")
+        }
+    }
+    @Published private(set) var migrationPendingAssetCount = 0
+    func setMigrationAvailability(available: Int, pending: Int) {
+        migrationPendingAssetCount = pending
+        migrationItemCount = available + pending
+    }
+    func recordMigrationTask(id: UUID) {
+        migrationRecoveryEvidence["taskID"] = id.uuidString
+        recordMigrationOutcome("running")
+    }
+    func recordMigrationRecovery(id: UUID, receiptCount: Int) {
+        migrationRecoveryEvidence["migrationID"] = id.uuidString
+        migrationRecoveryEvidence["resumeReceiptCount"] = receiptCount
+        recordMigrationOutcome("running")
+    }
+    func beginSourceRevalidation(expectedBytes: Int64) {
+        sourceRevalidation.begin(expectedBytes: expectedBytes)
+        setMigrationPhase("核对旧批次手机原件，保留已确认进度")
+        recordMigrationOutcome("running")
+    }
+    func recordSourceRevalidationRead(_ bytes: Int64) {
+        sourceRevalidation.recordReadBytes(bytes)
+    }
+    func finishSourceRevalidation() {
+        sourceRevalidation.didVerify()
+        recordMigrationOutcome("running")
+    }
+    func setMigrationPhase(_ phase: String) {
+        migrationPhase = phase
+        let category: RemoteMigrationTransferMetrics.Phase
+        switch phase {
+        case "传输原件": category = .upload
+        case "Mac 复验原件", "核对 Mac 已接收原件，跳过手机重复导出",
+             "核对旧批次手机原件，保留已确认进度": category = .verification
+        case "恢复 Mac 已确认断点": category = .recovery
+        case "同步整理信息与封存批次": category = .finalization
+        default: category = phase.hasPrefix("连接短暂中断") ? .recovery : .preparation
+        }
+        let now = ProcessInfo.processInfo.systemUptime
+        migrationMetrics.enterPhase(category, at: now)
+        if migrationDiagnosticHeartbeat.isRunning,
+           category == .finalization || now - migrationLastDiagnosticAt >= 1 {
+            recordMigrationOutcome("running")
+        }
+    }
+    func reportMigrationItem(index: Int, total: Int) {
+        migrationItemIndex = index; migrationItemCount = total
+        if ProcessInfo.processInfo.systemUptime - migrationLastDiagnosticAt >= 10 { recordMigrationOutcome("running") }
+    }
+    func beginMigrationUpload() {
+        migrationMetrics.beginUpload(at: ProcessInfo.processInfo.systemUptime)
+        setMigrationPhase("传输原件")
+    }
+    func endMigrationUpload() { migrationMetrics.endUpload(at: ProcessInfo.processInfo.systemUptime) }
+    func finishMigrationProgress() {
+        migrationDiagnosticHeartbeat.stop()
+        sourceRevalidation.stopReading()
+        migrationMetrics.finish(at: ProcessInfo.processInfo.systemUptime)
+        restoreMigrationIdleTimer()
+    }
+    private func restoreMigrationIdleTimer() {
+        if let previous = migrationIdleTimerWasDisabled {
+            UIApplication.shared.isIdleTimerDisabled = previous
+            migrationIdleTimerWasDisabled = nil
+        }
+    }
+    func recordMigrationBytes(_ count: Int64) {
+        migrationMetrics.recordCommittedBytes(count)
+        migrationConfirmedBytes = migrationMetrics.confirmedBytes
+        if ProcessInfo.processInfo.systemUptime - migrationLastDiagnosticAt >= 10 {
+            recordMigrationOutcome("running")
+        }
+    }
+    /// Aggregate local diagnostics only: no bearer, locator, filename or error
+    /// description (system descriptions may contain private source paths).
+    func recordMigrationOutcome(_ outcome: String, error: Error? = nil, stopReason: String? = nil) {
+        if let error {
+            let value = error as NSError
+            migrationDiagnosticError = ["errorDomain": value.domain, "errorCode": value.code]
+            if let api = error as? RemoteAPIError { migrationDiagnosticError["apiCode"] = api.code.rawValue }
+        }
+        migrationLastDiagnosticAt = ProcessInfo.processInfo.systemUptime
+        var record: [String: Any] = ["outcome": outcome, "phase": migrationPhase, "intent": migrationIntent.rawValue,
+            "itemIndex": migrationItemIndex, "itemCount": migrationItemCount, "pendingAssetCount": migrationPendingAssetCount,
+            "confirmedBytes": migrationConfirmedBytes, "atMs": Int64(Date().timeIntervalSince1970 * 1_000),
+            "elapsedSeconds": migrationMetrics.elapsedSeconds(at: migrationLastDiagnosticAt),
+            "activeUploadSeconds": migrationMetrics.activeUploadSeconds(at: migrationLastDiagnosticAt),
+            "phaseSeconds": migrationMetrics.phaseSeconds(at: migrationLastDiagnosticAt)]
+        if let rate = migrationMetrics.uploadBytesPerSecond(at: migrationLastDiagnosticAt) {
+            record["uploadBytesPerSecond"] = rate
+        }
+        if let stopReason { record["stopReason"] = stopReason }
+        record.merge(migrationDiagnosticError) { _, new in new }
+        record.merge(migrationRecoveryEvidence) { _, new in new }
+        if sourceRevalidation.wasRequired {
+            record["sourceRevalidation"] = [
+                "reason": LocalShareSourceRevalidationProgress.reasonCode,
+                "reading": sourceRevalidation.isReading,
+                "readBytes": sourceRevalidation.readBytes,
+                "expectedBytes": sourceRevalidation.expectedBytes,
+                "verifiedResources": sourceRevalidation.verifiedResources
+            ] as [String: Any]
+        }
+        do {
+            let parent = try FileManager.default.url(for: .applicationSupportDirectory, in: .userDomainMask,
+                appropriateFor: nil, create: true).appendingPathComponent("ImportDiagnostics", isDirectory: true)
+            try FileManager.default.createDirectory(at: parent, withIntermediateDirectories: true)
+            try JSONSerialization.data(withJSONObject: record, options: [.sortedKeys])
+                .write(to: parent.appendingPathComponent("latest.json"), options: .atomic)
+        } catch { /* Diagnostics must not interrupt the transfer. */ }
+    }
+    var usbPairingConflict: ImageAllUSBPairingConflict? {
+        guard let offer = usbPendingOffer else { return nil }
+        return ImageAllUSBPairingConflict.detect(hasStoredPairing: hasStoredPairing,
+            storedHostID: defaults.string(forKey: DefaultsKey.hostID),
+            storedFingerprint: defaults.string(forKey: DefaultsKey.fingerprint), offer: offer)
+    }
+    var savedPairingHostID: String { defaults.string(forKey: DefaultsKey.hostID) ?? "未保存" }
+    var savedPairingFingerprint: String { defaults.string(forKey: DefaultsKey.fingerprint) ?? "未保存" }
+    var usbPairingConflictText: String {
+        switch usbPairingConflict {
+        case .differentHost: "当前 Mac ID 与旧配对不同。请核对 Mac 设置中的身份后重新配对。"
+        case .differentCertificate: "Mac ID 相同，但证书指纹已变化。请核对 Mac 设置中的指纹后重新配对。"
+        case .missingSavedIdentity: "旧配对缺少身份信息。请核对 Mac 设置中的身份后重新配对。"
+        case nil: ""
+        }
+    }
     @Published var isBusy = false
     @Published var statusMessage: String?
     @Published var discoveredHosts: [RemoteDiscoveredHost] = []
@@ -135,6 +320,7 @@ final class RemoteCompanionModel: ObservableObject {
     }
 
     private enum DefaultsKey {
+        static let usbMode = "imageall.mobile.usbMode"
         static let host = "imageall.mobile.host"
         static let port = "imageall.mobile.port"
         static let token = "imageall.mobile.accessToken"
@@ -146,12 +332,10 @@ final class RemoteCompanionModel: ObservableObject {
         static let publicBaseURL = "imageall.mobile.publicBaseURL"
     }
 
-    init() {
-        let defaults = UserDefaults.standard
-        let credentialVault = RemoteSessionCredentialVault(
+    init(defaults: UserDefaults = .standard, credentialVault: RemoteSessionCredentialVault = RemoteSessionCredentialVault(
             service: "com.gwlee.ImageAllMobile.remote-session",
             account: "paired-refresh-token"
-        )
+        )) {
         var storedRefreshToken: String?
         var initialStatusMessage: String?
         var shouldPreserveLegacyCredentials = false
@@ -192,6 +376,7 @@ final class RemoteCompanionModel: ObservableObject {
         statusMessage = initialStatusMessage
         hasStoredPairing = storedRefreshToken != nil
         startNetworkMonitoring()
+        if defaults.bool(forKey: DefaultsKey.usbMode) { enableUSB() }
     }
 
     deinit {
@@ -199,7 +384,83 @@ final class RemoteCompanionModel: ObservableObject {
         reconnectTask?.cancel()
     }
 
+    func enableUSB() {
+        usbBridge.stop(); usbLoopbackPort = nil; usbOffer = nil; usbPendingOffer = nil
+        usbSelected = true; transportGeneration = UUID()
+        defaults.set(true, forKey: DefaultsKey.usbMode)
+        disconnect(); stopBrowsing()
+        usbBridge.onOffer = { [weak self] hello in
+            guard let self else { return }
+            self.transportGeneration = UUID()
+            self.usbPendingOffer = hello.offer
+            self.usbStatus = self.usbPairingConflict == nil
+                ? "收到 Mac 有线连接请求，请确认身份" : self.usbPairingConflictText
+        }
+        usbBridge.onReady = { [weak self] port, offer in
+            guard let self else { return }
+            self.usbLoopbackPort = port; self.usbOffer = offer
+            self.usbPendingOffer = nil; self.transportGeneration = UUID()
+            let transportID = self.transportGeneration
+            self.usbStatus = "USB 通道已连接，正在验证 Mac 配对身份"
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                if self.hasStoredPairing { await self.reconnectStoredSession() }
+                else if let data = try? JSONEncoder().encode(offer), let json = String(data: data, encoding: .utf8) {
+                    await self.pair(using: json)
+                }
+                guard self.transportGeneration == transportID, self.usbOffer == offer else { return }
+                self.usbStatus = self.isConnected ? "USB 有线已连接 · 数据沿线缆传输" : "USB 通道已建立，但配对未完成：\(self.statusMessage ?? "请重试")"
+            }
+        }
+        usbBridge.onClosed = { [weak self] reason in
+            guard let self, self.usbSelected else { return }
+            self.usbLoopbackPort = nil; self.usbOffer = nil; self.usbPendingOffer = nil
+            self.transportGeneration = UUID(); self.disconnect()
+            self.usbStatus = reason
+        }
+        do { try usbBridge.start(); usbStatus = "等待 Mac 从“设备与导入”发起 USB 连接" }
+        catch { usbStatus = error.localizedDescription }
+    }
+    func approveUSB() {
+        guard let offer = usbPendingOffer else { return }
+        guard usbPairingConflict == nil else {
+            usbStatus = usbPairingConflictText
+            return
+        }
+        guard offer.expiresAtMs > Int64(Date().timeIntervalSince1970 * 1000) else {
+            usbBridge.reject(); usbStatus = "配对请求已过期，请在 Mac 重新发起 USB 连接"; return
+        }
+        do { try usbBridge.approve() } catch { usbStatus = error.localizedDescription }
+    }
+    func replaceUSBPairing(confirming consent: ImageAllUSBPairingConsent) {
+        // Bind consent to the request that was displayed, before deleting credentials.
+        guard usbSelected, consent.isCurrent(pendingOffer: usbPendingOffer, transportID: transportGeneration) else {
+            let reason: String
+            if !usbSelected { reason = "当前已切换到网络连接" }
+            else if usbPendingOffer == nil { reason = "USB 请求已关闭（\(usbStatus)）" }
+            else if consent.offer.expiresAtMs <= Int64(Date().timeIntervalSince1970 * 1000) { reason = "配对确认已超时" }
+            else { reason = "USB 请求已更换，请核实新的连接请求" }
+            usbStatus = "\(reason)。旧配对未清除，请从 Mac 重新连接。"
+            return
+        }
+        guard forgetStoredPairing() else { usbStatus = statusMessage ?? "清除旧配对失败"; return }
+        approveUSB()
+    }
+    func rejectUSB() {
+        #if DEBUG
+        usbExplicitRejectionCount += 1
+        #endif
+        usbBridge.reject()
+    }
+    func useNetworkConnection() {
+        usbSelected = false; transportGeneration = UUID()
+        defaults.set(false, forKey: DefaultsKey.usbMode)
+        usbBridge.stop(); usbLoopbackPort = nil; usbOffer = nil; usbPendingOffer = nil
+        usbStatus = "已选择网络连接"; disconnect()
+    }
+
     func startBrowsing() {
+        guard !usbSelected else { return }
         guard publicBaseURL == nil else {
             isBrowsing = false
             discoveredHosts = []
@@ -246,7 +507,11 @@ final class RemoteCompanionModel: ObservableObject {
             )
             publicBaseURL = publicURL
             let pairingHost: String
-            if let publicURL,
+            if usbSelected {
+                guard usbOffer?.hostID == offer.hostID, usbLoopbackPort != nil else { throw ImageAllUSBError.disconnected }
+                pairingHost = offer.hostDisplayName
+                host = pairingHost; port = String(offer.listenPort)
+            } else if let publicURL,
                let publicHost = URL(string: publicURL)?.host
             {
                 pairingHost = publicHost
@@ -287,6 +552,7 @@ final class RemoteCompanionModel: ObservableObject {
                 expectedCertificateFingerprintSHA256: offer.certificateFingerprintSHA256,
                 expectedPublicBaseURL: publicURL
             )
+            guard recoveryMachine.isCurrent(generation) else { throw CancellationError() }
             let storageWarning = applySession(tokens)
             let pairedClient = try makeClient(
                 accessToken: tokens.accessToken,
@@ -399,12 +665,13 @@ final class RemoteCompanionModel: ObservableObject {
         startBrowsing()
     }
 
-    func forgetStoredPairing() {
+    @discardableResult
+    func forgetStoredPairing() -> Bool {
         do {
             try credentialVault.deleteRefreshToken()
         } catch {
             statusMessage = "无法清除此 iPhone 的配对：\(error.localizedDescription)"
-            return
+            return false
         }
 
         stopEventRecovery()
@@ -455,13 +722,32 @@ final class RemoteCompanionModel: ObservableObject {
         defaults.removeObject(forKey: DefaultsKey.fingerprint)
         defaults.removeObject(forKey: DefaultsKey.usesTLS)
         defaults.removeObject(forKey: DefaultsKey.publicBaseURL)
-        statusMessage = "已清除此 iPhone 的配对，请扫描 Mac 上的新配对二维码"
+        statusMessage = usbSelected
+            ? "已清除旧配对，请通过 USB 确认 Mac 身份"
+            : "已清除此 iPhone 的配对，请扫描 Mac 上的新配对二维码"
         startBrowsing()
+        return true
     }
 
-    func setSceneActive(_ isActive: Bool) {
+    func setScenePhase(_ phase: ScenePhase) {
+        // Temporary loss of focus (including system confirmation UI) is not
+        // background execution and must not invalidate a pending USB consent.
+        switch phase {
+        case .active: setSceneActive(true)
+        case .background: setSceneActive(false)
+        case .inactive: break
+        @unknown default: break
+        }
+    }
+
+    private func setSceneActive(_ isActive: Bool) {
         guard isForeground != isActive else { return }
         isForeground = isActive
+        if !isActive { restoreMigrationIdleTimer() }
+        if usbSelected {
+            if isActive { enableUSB() }
+            else { usbBridge.stop() }
+        }
         if isActive {
             resumeEventRecoveryIfNeeded()
         } else {
@@ -652,6 +938,10 @@ final class RemoteCompanionModel: ObservableObject {
     }
 
     private func validateMigrationNetwork() throws {
+        if usbSelected {
+            guard usbLoopbackPort != nil else { throw ImageAllUSBError.disconnected }
+            return
+        }
         guard networkPathSignature != nil, networkAvailable else {
             throw RemoteAPIError(code: .conflict, message: "迁移已暂停：等待可用的 Wi-Fi 或有线网络；恢复后可重试原批次。")
         }
@@ -738,7 +1028,7 @@ final class RemoteCompanionModel: ObservableObject {
         }
     }
 
-    func migrationStreamingConnection() throws -> (client: RemoteLibraryClient, hostID: UUID, deviceID: UUID) {
+    func migrationStreamingConnection() throws -> (client: RemoteLibraryClient, hostID: UUID, deviceID: UUID, transportID: UUID) {
         try validateMigrationNetwork()
         guard isConnected, let client, let sessionTokens, let capabilities,
               capabilities.hostID == sessionTokens.hostID,
@@ -746,14 +1036,46 @@ final class RemoteCompanionModel: ObservableObject {
               capabilities.capabilities.contains(.migrationResourceVerification) else {
             throw RemoteAPIError(code: .unauthorized, message: "请连接支持逐资源校验且已设置接收目录的 Mac")
         }
-        return (client, sessionTokens.hostID, sessionTokens.deviceID)
+        return (client, sessionTokens.hostID, sessionTokens.deviceID, transportGeneration)
     }
 
-    func validateMigrationStreamingConnection(hostID: UUID, deviceID: UUID) throws {
+    // Status remains available after receiver staging/target is retired.
+    func importStatusConnection() throws -> (client: RemoteLibraryClient, hostID: UUID, deviceID: UUID, transportID: UUID) {
+        try validateMigrationNetwork()
+        guard isConnected, let client, let sessionTokens,
+              capabilities?.hostID == sessionTokens.hostID else {
+            throw RemoteAPIError(code: .unauthorized, message: "请连接原配对 Mac")
+        }
+        return (client, sessionTokens.hostID, sessionTokens.deviceID, transportGeneration)
+    }
+
+    func validateImportStatusConnection(hostID: UUID, deviceID: UUID, transportID: UUID) throws {
+        let current = try importStatusConnection()
+        guard current.hostID == hostID, current.deviceID == deviceID, current.transportID == transportID else {
+            throw RemoteAPIError(code: .conflict, message: "Mac 连接已变化，已丢弃旧状态")
+        }
+    }
+
+    func validateMigrationStreamingConnection(hostID: UUID, deviceID: UUID, transportID: UUID? = nil) throws {
         let current = try migrationStreamingConnection()
-        guard current.hostID == hostID, current.deviceID == deviceID else {
+        guard current.hostID == hostID, current.deviceID == deviceID,
+              transportID == nil || transportID == current.transportID else {
             throw RemoteAPIError(code: .conflict, message: "迁移期间配对身份已变化，请重新连接原 Mac")
         }
+    }
+
+    func migrationAccessToken(rejected: String?, hostID: UUID, deviceID: UUID, transportID: UUID) async throws -> String {
+        try validateMigrationStreamingConnection(hostID: hostID, deviceID: deviceID, transportID: transportID)
+        guard let tokens = sessionTokens else { throw ImageAllUSBError.disconnected }
+        if tokens.accessExpiresAtMs <= Int64(Date().timeIntervalSince1970 * 1_000) + 60_000
+            || rejected == tokens.accessToken {
+            let refreshed = try await refreshClientForEventRecovery(generation: recoveryMachine.generation)
+            try Task.checkCancellation()
+            try validateMigrationStreamingConnection(hostID: hostID, deviceID: deviceID, transportID: transportID)
+            client = refreshed
+        }
+        guard let current = sessionTokens else { throw ImageAllUSBError.disconnected }
+        return current.accessToken
     }
 
     func uploadMigrationArchive(
@@ -1844,6 +2166,7 @@ final class RemoteCompanionModel: ObservableObject {
                 expectedCertificateFingerprintSHA256: fingerprint,
                 expectedPublicBaseURL: expectedPublicURL
             )
+            guard recoveryMachine.isCurrent(generation) else { throw CancellationError() }
             let storageWarning = applySession(tokens)
             let client = try makeClient(
                 accessToken: tokens.accessToken,
@@ -2036,7 +2359,11 @@ final class RemoteCompanionModel: ObservableObject {
         do {
             let endpoint: RemoteHostEndpoint
             let pinnedFingerprint: String?
-            if let publicBaseURL {
+            if usbSelected {
+                guard let port = usbLoopbackPort else { throw ImageAllUSBError.disconnected }
+                endpoint = try RemoteHostEndpoint(host: "127.0.0.1", port: Int(port), accessToken: accessToken, usesTLS: true)
+                pinnedFingerprint = certificateFingerprint
+            } else if let publicBaseURL {
                 endpoint = try RemoteHostEndpoint(
                     publicHTTPSBaseURL: publicBaseURL,
                     accessToken: accessToken
@@ -2117,7 +2444,7 @@ final class RemoteCompanionModel: ObservableObject {
     private func resumeEventRecoveryIfNeeded() {
         guard isConnected,
               isForeground,
-              networkAvailable,
+              (usbSelected ? usbLoopbackPort != nil : networkAvailable),
               let retry = recoveryMachine.resumeImmediately()
         else {
             return
@@ -2181,7 +2508,7 @@ final class RemoteCompanionModel: ObservableObject {
               recoveryMachine.automaticRecoveryEnabled,
               isConnected,
               isForeground,
-              networkAvailable,
+              (usbSelected ? usbLoopbackPort != nil : networkAvailable),
               let activeClient = client
         else {
             return
@@ -2234,6 +2561,17 @@ final class RemoteCompanionModel: ObservableObject {
     private func refreshClientForEventRecovery(
         generation: UInt64
     ) async throws -> RemoteLibraryClient {
+        if let pending = sessionRefreshWork, pending.generation == generation {
+            return try await pending.task.value
+        }
+        let id = UUID()
+        let work = Task { try await self.performSessionRefresh(generation: generation) }
+        sessionRefreshWork = (id, generation, work)
+        defer { if sessionRefreshWork?.id == id { sessionRefreshWork = nil } }
+        return try await work.value
+    }
+
+    private func performSessionRefresh(generation: UInt64) async throws -> RemoteLibraryClient {
         guard let refresh = storedRefreshToken,
               let deviceIDRaw = defaults.string(forKey: DefaultsKey.deviceID),
               let deviceID = UUID(uuidString: deviceIDRaw),
@@ -2332,6 +2670,7 @@ final class RemoteCompanionModel: ObservableObject {
         networkPathSignature = signature
         networkAvailable = isAvailable
         networkUsesCellular = usesCellular
+        guard !usbSelected else { return }
         guard previous != nil, previous != signature, isConnected else { return }
         if isAvailable {
             resumeEventRecoveryIfNeeded()
@@ -2350,6 +2689,15 @@ final class RemoteCompanionModel: ObservableObject {
         certificateFingerprint: String?,
         sendAuthorization: Bool = true
     ) throws -> RemoteLibraryClient {
+        if usbSelected {
+            guard let port = usbLoopbackPort, let offer = usbOffer,
+                  usesTLS, certificateFingerprint?.lowercased() == offer.certificateFingerprintSHA256.lowercased() else {
+                throw ImageAllUSBError.disconnected
+            }
+            return try RemoteLibraryClient.pinned(host: "127.0.0.1", port: Int(port), accessToken: accessToken,
+                certificateFingerprintSHA256: offer.certificateFingerprintSHA256,
+                sendAuthorization: sendAuthorization)
+        }
         if let publicBaseURL {
             return RemoteLibraryClient(
                 endpoint: try RemoteHostEndpoint(

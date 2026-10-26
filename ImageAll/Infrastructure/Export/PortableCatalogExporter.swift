@@ -52,7 +52,7 @@ struct PortableExportSourceIsolationValidator: Sendable {
     let bookmarkPort: any SecurityScopedBookmarkPort
     let relationshipChecker: any FolderRootRelationshipChecking
 
-    func validate(parentDirectoryURL: URL) throws {
+    func validate(parentDirectoryURL: URL, includeManagedPhoneSources: Bool = true) throws {
         let didAccessDestination = parentDirectoryURL.startAccessingSecurityScopedResource()
         defer {
             if didAccessDestination {
@@ -61,7 +61,7 @@ struct PortableExportSourceIsolationValidator: Sendable {
         }
         let sources: [StoredFolderSourceRecord]
         do {
-            sources = try sourceRepository.fetchAllFolderSources()
+            sources = try sourceRepository.fetchAllFolderSources(includeManagedPhoneSources: includeManagedPhoneSources)
         } catch {
             throw PortableCatalogExportError.destinationIsolationIndeterminate
         }

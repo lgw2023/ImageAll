@@ -118,6 +118,7 @@ struct CatalogDatabase: Sendable {
         V061AddPhoneAlbumCatalogMigration.register(on: &migrator)
         V062AddIndependentMigrationBackup.register(on: &migrator)
         V063ProtectMigrationLocations.register(on: &migrator)
+        V064PhoneNativeLibrary.register(on: &migrator)
         return migrator
     }
 
@@ -706,12 +707,18 @@ enum V040RetirePDFDocumentsMigration {
 /// the previous complete tree.
 enum SourceFolderIndex {
     static func rebuildAll(in db: Database) throws {
-        try db.execute(sql: "DELETE FROM source_folder")
+        if try db.tableExists("phone_library_source") {
+            try db.execute(sql: "DELETE FROM source_folder WHERE source_id NOT IN (SELECT source_id FROM phone_library_source)")
+        } else {
+            try db.execute(sql: "DELETE FROM source_folder")
+        }
         try insertFolders(in: db, sourceID: nil)
     }
 
     static func rebuild(in db: Database, sourceID: UUID) throws {
         let sourceID = sourceID.uuidString.lowercased()
+        if try db.tableExists("phone_library_source"),
+           try Bool.fetchOne(db, sql: "SELECT EXISTS(SELECT 1 FROM phone_library_source WHERE source_id = ?)", arguments: [sourceID]) == true { return }
         try db.execute(
             sql: "DELETE FROM source_folder WHERE source_id = ?",
             arguments: [sourceID]
@@ -720,7 +727,10 @@ enum SourceFolderIndex {
     }
 
     private static func insertFolders(in db: Database, sourceID: String?) throws {
-        let sourceClause = sourceID == nil ? "" : "AND asset.source_id = ?"
+        var sourceClause = sourceID == nil ? "" : "AND asset.source_id = ?"
+        if try db.tableExists("phone_library_source") {
+            sourceClause += " AND asset.source_id NOT IN (SELECT source_id FROM phone_library_source)"
+        }
         let arguments: StatementArguments = sourceID.map { [$0] } ?? []
         try db.execute(
             sql: """

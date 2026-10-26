@@ -6,8 +6,26 @@ import ImageAllRemoteProtocol
 struct ImageAllMobileApp: App {
     var body: some Scene {
         WindowGroup {
-            #if DEBUG
-            if ProcessInfo.processInfo.arguments.contains("--adr102-local-probe") {
+            #if DEBUG && USB_IMPORT_ACCEPTANCE
+            if ProcessInfo.processInfo.arguments.contains("--cold-resume") {
+                USBColdResumeProbeView()
+            } else {
+                USBImportTaskProbeView()
+            }
+            #elseif DEBUG
+            if ProcessInfo.processInfo.arguments.contains("--share-ui-probe") || ProcessInfo.processInfo.arguments.contains("--photos-ui-probe") {
+                LocalShareUIProbeView()
+            } else if ProcessInfo.processInfo.arguments.contains("--resource-callback-probe") {
+                ResourceCallbackProbeView()
+            } else if ProcessInfo.processInfo.arguments.contains("--usb-import-preparation-probe") {
+                USBImportPreparationProbeView()
+            } else if ProcessInfo.processInfo.arguments.contains("--usb-pairing-ui-probe") {
+                USBPairingUIProbeView()
+            } else if ProcessInfo.processInfo.arguments.contains("--usb-pairing-lifecycle-probe") {
+                USBPairingLifecycleProbeView()
+            } else if ProcessInfo.processInfo.arguments.contains("--usb-synthetic-probe") {
+                USBDeviceProbeView()
+            } else if ProcessInfo.processInfo.arguments.contains("--adr102-local-probe") {
                 if let run = DeviceLocalLibraryProbe.arguments {
                     DeviceLocalLibraryProbeView(run: run)
                 } else {
@@ -39,13 +57,281 @@ private struct ImageAllMobileRootView: View {
                 .tabItem { Label("Mac 图库", systemImage: "desktopcomputer") }
         }
         .onChange(of: scenePhase) { _, phase in
-            model.setSceneActive(phase == .active)
+            model.setScenePhase(phase)
+            if phase == .background { localModel.pauseActiveImport(reason: .appBackground) }
         }
     }
 }
 
 #if DEBUG
+private struct ResourceCallbackProbeView: View {
+    @State private var status = "验证原件回调线程（合成数据）"
+    var body: some View {
+        Text(status).task {
+            let args = ProcessInfo.processInfo.arguments
+            guard let index = args.firstIndex(of: "--resource-callback-probe"), index + 1 < args.count,
+                  let run = UUID(uuidString: args[index + 1]) else { return }
+            do {
+                let report = try await runSyntheticPhotoResourceCallbackProbe()
+                let documents = try FileManager.default.url(for: .documentDirectory, in: .userDomainMask,
+                                                           appropriateFor: nil, create: true)
+                let root = documents.appendingPathComponent("Resource-Callback-Probe/" + run.uuidString)
+                try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+                try JSONSerialization.data(withJSONObject: report, options: [.prettyPrinted, .sortedKeys])
+                    .write(to: root.appendingPathComponent("report.json"), options: .atomic)
+                status = report["passed"] as? Bool == true ? "回调线程验证通过；未访问照片。" : "回调验证失败"
+            } catch { status = "回调验证失败：\(error.localizedDescription)" }
+        }
+    }
+}
+
+private struct USBImportPreparationProbeView: View {
+    @State private var status = "只读核对所选目录与续传缓存"
+    var body: some View {
+        Text(status).task {
+            let args = ProcessInfo.processInfo.arguments
+            guard let index = args.firstIndex(of: "--usb-import-preparation-probe"), index + 1 < args.count,
+                  let run = UUID(uuidString: args[index + 1]) else { return }
+            let model = LocalLibraryModel()
+            let readOne = args.contains("--verify-pending-local-resource")
+            let report = args.contains("--availability-only")
+                ? await model.diagnoseSelectedAvailability()
+                : await model.diagnoseImportPreparation(verifyOnePendingLocalResource: readOne)
+            do {
+                let documents = try FileManager.default.url(for: .documentDirectory, in: .userDomainMask,
+                                                           appropriateFor: nil, create: true)
+                let root = documents.appendingPathComponent("USB-Preparation-Probe/" + run.uuidString)
+                try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+                try JSONSerialization.data(withJSONObject: report, options: [.prettyPrinted, .sortedKeys])
+                    .write(to: root.appendingPathComponent("report.json"), options: .atomic)
+                status = readOne ? "只读原件回调诊断已完成；未向 Mac 上传。" : "只读诊断已完成；未读取原件、未向 Mac 上传。"
+            } catch { status = "无法保存诊断结果" }
+        }
+    }
+}
+#endif
+
+#if DEBUG
 import ImageAllLocalLibrary
+import Network
+import CryptoKit
+
+/// Exercises the production companion model with isolated synthetic credentials
+/// and a loopback control peer. Never constructs LocalLibraryModel or PhotoKit.
+@MainActor
+private final class USBPairingLifecycleProbe: ObservableObject {
+    @Published var status = "正在验证合成配对生命周期（不读取照片）"
+    @Published var companion: RemoteCompanionModel?
+    func run(interactive: Bool = false) async {
+        let args = ProcessInfo.processInfo.arguments
+        let flag = interactive ? "--usb-pairing-ui-probe" : "--usb-pairing-lifecycle-probe"
+        guard let index = args.firstIndex(of: flag), index + 1 < args.count,
+              let id = UUID(uuidString: args[index + 1]) else { status = "缺少合成运行 ID"; return }
+        let suite = "imageall.usb-pairing-probe.\(id.uuidString)"
+        guard let defaults = UserDefaults(suiteName: suite) else { return }
+        #if targetEnvironment(simulator)
+        let vault = RemoteSessionCredentialVault.syntheticInMemory()
+        #else
+        let vault = RemoteSessionCredentialVault(service: suite, account: "synthetic-only")
+        #endif
+        var model: RemoteCompanionModel?
+        var peer: NWConnection?
+        defer {
+            model?.setScenePhase(.background); peer?.cancel()
+            try? vault.deleteRefreshToken(); defaults.removePersistentDomain(forName: suite)
+        }
+        var checks: [String: Bool] = [:]
+        var failure = ""
+        do {
+            try vault.saveRefreshToken("synthetic-only")
+            defaults.set(UUID().uuidString, forKey: "imageall.mobile.hostID")
+            defaults.set(String(repeating: "b", count: 64), forKey: "imageall.mobile.certFingerprint")
+            let companion = RemoteCompanionModel(defaults: defaults, credentialVault: vault)
+            model = companion
+            self.companion = companion
+            companion.enableUSB()
+            let candidate = RemotePairingOffer(hostID: UUID(), hostDisplayName: "Synthetic lifecycle Mac",
+                listenPort: 8787, usesTLS: true, certificateFingerprintSHA256: String(repeating: "a", count: 64),
+                pairingToken: "synthetic-only", expiresAtMs: Int64(Date().addingTimeInterval(300).timeIntervalSince1970 * 1000))
+            let control = NWConnection(host: "127.0.0.1", port: .init(rawValue: ImageAllUSBHello.devicePort)!, using: .tcp)
+            peer = control; control.start(queue: .main)
+            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+                control.send(content: try? ImageAllUSBHello(role: .control, sessionKey: String(repeating: "1", count: 64), offer: candidate).framed(),
+                             completion: .contentProcessed { error in
+                    if let error { continuation.resume(throwing: error) } else { continuation.resume() }
+                })
+            }
+            for _ in 0..<100 where companion.usbPendingOffer == nil { try await Task.sleep(for: .milliseconds(20)) }
+            guard companion.usbPendingOffer == candidate else { throw ImageAllUSBError.unavailable("pending offer absent") }
+            checks["mismatchVisible"] = companion.usbPairingConflict == .differentHost
+            if !interactive {
+                companion.replaceUSBPairing(confirming: .init(offer: candidate, transportID: UUID()))
+                let preservedToken = try vault.loadRefreshToken()
+                checks["staleConsentPreservesCredential"] = companion.hasStoredPairing && preservedToken == "synthetic-only"
+                let consent = ImageAllUSBPairingConsent(offer: candidate, transportID: companion.transportGeneration)
+                companion.setScenePhase(.inactive)
+                companion.setScenePhase(.active)
+                checks["inactivePreservesPendingConsent"] = consent.isCurrent(pendingOffer: companion.usbPendingOffer, transportID: companion.transportGeneration)
+                guard checks["inactivePreservesPendingConsent"] == true else { throw ImageAllUSBError.unavailable("inactive invalidated pending consent") }
+                companion.replaceUSBPairing(confirming: consent)
+            }
+            let ack: Data = try await withCheckedThrowingContinuation { continuation in
+                control.receive(minimumIncompleteLength: 1, maximumLength: 1) { data, _, _, error in
+                    if let error { continuation.resume(throwing: error) }
+                    else if let data { continuation.resume(returning: data) }
+                    else { continuation.resume(throwing: ImageAllUSBError.disconnected) }
+                }
+            }
+            let clearedToken = try vault.loadRefreshToken()
+            checks["explicitReplacementAcknowledged"] = ack == Data([1]) && !companion.hasStoredPairing && clearedToken == nil
+            companion.setScenePhase(.background)
+            checks["backgroundPausesWithoutNetworkFallback"] = companion.usbSelected && !companion.isConnected && companion.usbPendingOffer == nil && companion.importTransportLabel == "USB 已暂停"
+            guard checks.values.allSatisfy({ $0 }) else { throw ImageAllUSBError.unavailable("lifecycle check failed") }
+            status = "合成配对生命周期通过"
+        } catch { failure = error.localizedDescription; status = failure }
+        if interactive { checks["noAccidentalRejection"] = model?.usbExplicitRejectionCount == 0 }
+        if let documents = try? FileManager.default.url(for: .documentDirectory, in: .userDomainMask, appropriateFor: nil, create: true) {
+            let root = documents.appendingPathComponent("USB-Pairing-Probe").appendingPathComponent(id.uuidString)
+            try? FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+            let report: [String: Any] = ["checks": checks, "error": failure, "passed": failure.isEmpty && checks.count == (interactive ? 4 : 5) && checks.values.allSatisfy({ $0 }), "explicitRejectionCount": model?.usbExplicitRejectionCount ?? 0, "photosAccessed": false, "interactive": interactive, "route": "synthetic phone loopback control peer"]
+            if let data = try? JSONSerialization.data(withJSONObject: report, options: [.prettyPrinted, .sortedKeys]) {
+                try? data.write(to: root.appendingPathComponent("report.json"), options: .atomic)
+            }
+        }
+    }
+}
+private struct USBPairingLifecycleProbeView: View {
+    @StateObject private var probe = USBPairingLifecycleProbe()
+    var body: some View { Text(probe.status).padding().task { await probe.run() } }
+}
+private struct USBPairingUIProbeView: View {
+    @StateObject private var probe = USBPairingLifecycleProbe()
+    @Environment(\.scenePhase) private var phase
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section("合成验收 · 不读取照片") { Text(probe.status) }
+                if let model = probe.companion {
+                    Section("导入到 Mac") { USBPhoneConnectionSection(model: model) }
+                }
+            }.navigationTitle("USB 点击验收")
+        }
+        .task { await probe.run(interactive: true) }
+        .onChange(of: phase) { _, phase in probe.companion?.setScenePhase(phase) }
+    }
+}
+
+/// Explicit USB acceptance mode, with no production models or Photos access.
+@MainActor
+private final class USBDeviceProbe: ObservableObject {
+    @Published var status = "USB 合成探针等待 Mac（不读取照片）"
+    private let bridge = ImageAllUSBPhoneTunnel()
+    private var started = false
+    private var confirmedBytes = 0
+    private var digest: String?
+    private var tlsMismatchRejected = false
+    private var mainActorBlockedSeconds = 0
+    private var requestCount = 0
+    private var expectedBytes = 8_388_608
+    private var root: URL?
+    func start() {
+        guard !started else { return }; started = true
+        let args = ProcessInfo.processInfo.arguments
+        if let index = args.firstIndex(of: "--usb-synthetic-probe"), index + 1 < args.count,
+           let runID = UUID(uuidString: args[index + 1]),
+           let documents = try? FileManager.default.url(for: .documentDirectory, in: .userDomainMask, appropriateFor: nil, create: true) {
+            root = documents.appendingPathComponent("USB-Synthetic-Probe").appendingPathComponent(runID.uuidString)
+            try? FileManager.default.createDirectory(at: root!, withIntermediateDirectories: true)
+        }
+        bridge.onOffer = { [weak self] hello in
+            guard let self else { return }
+            guard hello.offer?.hostDisplayName == "ImageAll USB synthetic acceptance" else { self.bridge.reject(); return }
+            do { try self.bridge.approve() } catch { self.status = error.localizedDescription }
+        }
+        bridge.onReady = { [weak self] port, offer in
+            Task { @MainActor [weak self] in await self?.transfer(port: port, fingerprint: offer.certificateFingerprintSHA256) }
+        }
+        bridge.onClosed = { [weak self] reason in
+            self?.status = "USB 已断开 · \(self?.confirmedBytes ?? 0) 合成字节已核验"
+            self?.save(closed: true, error: nil)
+        }
+        do { try bridge.start(); save(closed: false, error: nil) }
+        catch { status = error.localizedDescription; save(closed: false, error: status) }
+    }
+    private func transfer(port: UInt16, fingerprint: String) async {
+        let session = RemotePinnedURLSessionFactory.makeSession(certificateFingerprintSHA256: fingerprint)
+        defer { session.invalidateAndCancel() }
+        do {
+            if ProcessInfo.processInfo.arguments.contains("--usb-synthetic-ui-stall") {
+                mainActorBlockedSeconds = 10
+                blockUIForSyntheticProbe()
+            }
+            var hash = SHA256()
+            let stress = ProcessInfo.processInfo.arguments.contains("--usb-synthetic-stress")
+            let socketChurn = ProcessInfo.processInfo.arguments.contains("--usb-synthetic-websocket")
+            let iterations = stress ? 8_192 : 128
+            let payloadSize = stress ? 1_024 : 65_536
+            expectedBytes = iterations * payloadSize
+            for index in 0..<iterations {
+                if socketChurn {
+                    let events = RemoteEventSocket()
+                    try events.connect(endpoint: RemoteHostEndpoint(host: "127.0.0.1", port: Int(port), accessToken: "synthetic-only", usesTLS: true),
+                                       certificateFingerprintSHA256: fingerprint,
+                                       onEvent: { _ in }, onStateChange: { _ in })
+                    try await Task.sleep(for: .milliseconds(250))
+                    events.stop()
+                }
+                let bytes = Data((0..<payloadSize).map { UInt8(($0 + index) % 251) })
+                var request = URLRequest(url: URL(string: "https://127.0.0.1:\(port)/synthetic")!)
+                request.httpMethod = "POST"; request.httpBody = bytes
+                request.allowsCellularAccess = false
+                let (received, response) = try await session.data(for: request)
+                guard (response as? HTTPURLResponse)?.statusCode == 200 else { throw ImageAllUSBError.invalidHeader }
+                guard received == bytes else { throw ImageAllUSBError.invalidHeader }
+                hash.update(data: received); confirmedBytes += bytes.count; requestCount += 1
+                status = "USB 合成字节已核验：\(confirmedBytes) / 8388608"
+                if socketChurn || (stress && requestCount.isMultiple(of: 100)) { save(closed: false, error: nil) }
+            }
+            digest = hash.finalize().map { String(format: "%02x", $0) }.joined()
+            let wrongPin = RemotePinnedURLSessionFactory.makeSession(certificateFingerprintSHA256: String(repeating: "0", count: 64))
+            defer { wrongPin.invalidateAndCancel() }
+            do {
+                _ = try await wrongPin.data(from: URL(string: "https://127.0.0.1:\(port)/synthetic")!)
+                throw ImageAllUSBError.unavailable("TLS wrong pin unexpectedly accepted")
+            } catch {
+                guard !(error is ImageAllUSBError) else { throw error }
+                tlsMismatchRejected = true
+            }
+            status = "USB 8 MiB 双向合成数据核验通过；等待断线验证"
+            save(closed: false, error: nil)
+        } catch { status = error.localizedDescription; save(closed: false, error: status) }
+    }
+    private func blockUIForSyntheticProbe() { Thread.sleep(forTimeInterval: 10) }
+    private func save(closed: Bool, error: String?) {
+        guard let root else { return }
+        let report: [String: Any] = ["confirmedBytes": confirmedBytes, "sha256": digest ?? "",
+            "passed": confirmedBytes == expectedBytes && digest != nil && tlsMismatchRejected && error == nil,
+            "requestCount": requestCount,
+            "mainActorBlockedSeconds": mainActorBlockedSeconds,
+            "tlsMismatchRejected": tlsMismatchRejected,
+            "controlClosed": closed, "error": error ?? "", "photosAccessed": false,
+            "route": "phone-loopback -> USBMux -> Mac-loopback"]
+        if let data = try? JSONSerialization.data(withJSONObject: report, options: [.prettyPrinted, .sortedKeys]) {
+            try? data.write(to: root.appendingPathComponent("report.json"), options: .atomic)
+        }
+    }
+}
+private struct USBDeviceProbeView: View {
+    @StateObject private var probe = USBDeviceProbe()
+    var body: some View {
+        VStack(spacing: 16) {
+            Text("USB 合成通道验收").font(.title)
+            Text(probe.status)
+            Text("不读取系统照片、不使用真实图库。正常启动 App 返回日常界面。")
+                .font(.footnote).foregroundStyle(.secondary)
+        }.padding().task { probe.start() }
+    }
+}
 
 /// Explicit launch-only device acceptance. This branch never constructs either
 /// production model, PhotoKit source, observer or network client.

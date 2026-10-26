@@ -1,12 +1,47 @@
+import AppKit
 import AVFoundation
 import CryptoKit
 import Foundation
 import GRDB
 import ImageAllRemoteProtocol
+import ImageIO
 import XCTest
 @testable import ImageAll
 
 final class PhoneArchiveImportTests: XCTestCase {
+    func testOrdinaryReceiveDirectoryIsRejectedAsOfflinePackageBeforeAnyImportWrites() throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        let importer = VerifiedPhoneArchiveImporter(database: fixture.database)
+        XCTAssertThrowsError(try importer.importArchive(from: fixture.incoming, to: fixture.target)) {
+            XCTAssertEqual($0 as? PhoneArchiveImportError, .invalidArchiveDirectory)
+        }
+        XCTAssertTrue(try importer.importedBatches().isEmpty)
+        XCTAssertTrue(try FileManager.default.contentsOfDirectory(atPath: fixture.target.path).isEmpty)
+        let resource = try fixture.resource("original", bytes: Data("synthetic-original".utf8))
+        try fixture.write(header: fixture.header(count: 1), items: [fixture.item(resource: resource)])
+        XCTAssertNoThrow(try VerifiedPhoneArchiveImporter.validateIncomingArchiveDirectory(fixture.incoming))
+        XCTAssertEqual(try importer.importArchive(from: fixture.incoming, to: fixture.target).itemCount, 1)
+    }
+
+    func testReceiveTargetAllowsIndependentYearDirectoryAndRejectsPhotosLibraryPackage() throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        let importer = VerifiedPhoneArchiveImporter(database: fixture.database)
+        // Synthetic paths only: a year prefix is not a product-level rejection rule.
+        let target = fixture.root.appendingPathComponent("2026-2", isDirectory: true)
+        try FileManager.default.createDirectory(at: target, withIntermediateDirectories: true)
+        XCTAssertNoThrow(try importer.validateTargetDirectory(target))
+        let library = fixture.root.appendingPathComponent("Synthetic.PHOTOSLIBRARY", isDirectory: true)
+        let nested = library.appendingPathComponent("Nested", isDirectory: true)
+        try FileManager.default.createDirectory(at: nested, withIntermediateDirectories: true)
+        for rejected in [library, nested] {
+            XCTAssertThrowsError(try importer.validateTargetDirectory(rejected)) {
+                XCTAssertEqual($0 as? PhoneArchiveImportError, .targetIsPhotosLibrary)
+            }
+        }
+    }
+
     func testOfflineVideoArchivePlaysAfterPhoneStageIsRemoved() async throws {
         let fixture = try Fixture()
         defer { fixture.remove() }
@@ -1648,6 +1683,312 @@ final class PhoneArchiveImportTests: XCTestCase {
         })?.revision, 1)
     }
 
+    func testVerifiedPhoneSourceUsesNativeGalleryAndPreservesLocalEditsOnRestart() throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        let resource = try fixture.resource("original", bytes: Data("synthetic-photo".utf8), uti: "public.jpeg", originalFilename: "Holiday.jpg")
+        let tagID = UUID(), collectionID = UUID()
+        let item = ImageAllMigrationItem(mediaID: UUID(), sourceLocalIdentifier: "synthetic-photo",
+            mediaKind: .image, createdAtMs: 123, favoriteTarget: true, observedFavorite: false,
+            factRevision: 0, tagDecisions: [.init(tagID: tagID, tagName: "Travel", decision: .accepted)],
+            collections: [.init(collectionID: collectionID, collectionName: "My trip", included: true)],
+            resources: [resource], appleAlbums: [
+                .init(albumLocalIdentifier: "album-a", albumTitle: "Holiday", folderPath: [.init(localIdentifier: "folder", title: "Trips")], sourceOrdinal: 8),
+                .init(albumLocalIdentifier: "album-b", albumTitle: "Holiday", folderPath: [], sourceOrdinal: 2)
+            ], sourceMetadata: .init(pixelWidth: 100, pixelHeight: 80))
+        let header = ImageAllMigrationHeader(migrationID: UUID(), sourceDeviceID: fixture.sourceDeviceID,
+            sourceEpoch: fixture.sourceEpoch, scopeRevision: 1, inventoryWatermark: 7, declaredItemCount: 1,
+            appleAlbumCoverage: .selectedAssetsOnly, appleAlbumCatalog: [
+                .init(localIdentifier: "folder", title: "Trips", kind: .folder, parentLocalIdentifier: nil, sourceOrdinal: 0, observedAssetCount: nil),
+                .init(localIdentifier: "album-a", title: "Holiday", kind: .album, parentLocalIdentifier: "folder", sourceOrdinal: 0, observedAssetCount: 9),
+                .init(localIdentifier: "album-b", title: "Holiday", kind: .album, parentLocalIdentifier: nil, sourceOrdinal: 1, observedAssetCount: 3),
+                .init(localIdentifier: "empty", title: "Empty", kind: .album, parentLocalIdentifier: nil, sourceOrdinal: 2, observedAssetCount: 0)
+            ])
+        try fixture.write(header: header, items: [item])
+        let importer = VerifiedPhoneArchiveImporter(database: fixture.database)
+        let receipt = try importer.importArchive(from: fixture.incoming, to: fixture.target)
+        let publisher = PhoneNativeLibraryPublisher(database: fixture.database)
+        let taskQuery = RemoteImportTaskQuery(taskID: UUID(), migrationID: header.migrationID,
+            sourceInstallID: header.sourceDeviceID, sourceEpoch: header.sourceEpoch,
+            manifestSHA256: try ImageAllMigrationArchive.verify(at: receipt.archiveURL).manifestSHA256)
+        XCTAssertEqual(try publisher.importTaskStatus(taskQuery)?.phase, .needsAttention)
+        let sourceID = try publisher.publish(migrationID: header.migrationID, archiveRoot: receipt.archiveURL)
+        let query = GRDBAssetCatalogQueryRepository(database: fixture.database)
+        func page(_ filter: AssetPageFilter) throws -> AssetPageResult {
+            try query.fetchAssetPage(.init(filter: filter, sort: .fileNameAscending, cursor: nil, limit: 100))
+        }
+        let native = try page(.init(sourceIDs: [sourceID]))
+        XCTAssertEqual(native.items.count, 1)
+        let assetID = try XCTUnwrap(native.items.first?.assetID)
+        XCTAssertEqual(native.items.first?.fileName, "Holiday.jpg")
+        XCTAssertEqual(native.items.first?.width, 100)
+        XCTAssertEqual(try page(.init(sourceIDs: [sourceID], favorite: .favorited)).items.count, 1)
+        XCTAssertEqual(native.items.first?.acceptedTagCount, 1)
+        let folders = try query.fetchSourceFolders(sourceID: sourceID)
+        XCTAssertEqual(folders.filter { $0.name == "Holiday" }.count, 2)
+        for folder in folders {
+            let expected = folder.name == "Empty" ? 0 : 1
+            XCTAssertEqual(try page(.init(folderScope: folder.id)).items.count, expected, folder.name)
+        }
+        let auth = GRDBFolderSourceAuthorizationRepository(database: fixture.database)
+        XCTAssertTrue(try auth.isManagedPhoneSource(sourceID))
+        let access = FolderReconcileSourceAccessService(repository: auth,
+            bookmarkPort: FoundationSecurityScopedBookmarkAdapter(), rootValidator: FolderRootValidator(), clock: SystemJobClock())
+        XCTAssertThrowsError(try access.withActiveSourceRootURL(sourceID: sourceID, allowManagedPhoneSource: false) { _ in XCTFail("must not enumerate phone source") })
+        XCTAssertThrowsError(try fixture.database.pool.write { db in
+            try db.execute(sql: "INSERT INTO source_mutation_authorization VALUES (?, ?, ?)", arguments: [sourceID.uuidString.lowercased(), Data([1]), 1])
+        })
+        XCTAssertTrue(try auth.fetchAllFolderSources(includeManagedPhoneSources: false).isEmpty)
+        try fixture.database.pool.write { db in
+            try SourceFolderIndex.rebuild(in: db, sourceID: sourceID)
+            try db.execute(sql: "UPDATE asset_favorite_state SET desired_value = 0 WHERE asset_id = ?", arguments: [assetID.uuidString.lowercased()])
+            try db.execute(sql: "DELETE FROM asset_tag_decision WHERE asset_id = ?", arguments: [assetID.uuidString.lowercased()])
+        }
+        XCTAssertEqual(try query.fetchSourceFolders(sourceID: sourceID).count, folders.count)
+        let ordinarySource = UUID(), ordinaryAsset = UUID()
+        try DatabaseTestSupport.makeFolderSourceWithFileAsset(repository: .init(database: fixture.database), sourceID: ordinarySource, assetID: ordinaryAsset)
+        try fixture.database.pool.write { db in try SourceFolderIndex.rebuildAll(in: db) }
+        XCTAssertEqual(try query.fetchSourceFolders(sourceID: sourceID).count, folders.count)
+        XCTAssertEqual(try page(.init(folderScope: .init(sourceID: ordinarySource, relativePath: "album"))).items.map(\.assetID), [ordinaryAsset])
+        // Cold-start fast path works with originals offline, and never reapplies phone facts.
+        try FileManager.default.moveItem(at: receipt.archiveURL, to: fixture.root.appendingPathComponent("offline"))
+        let restarted = PhoneNativeLibraryPublisher(database: try CatalogDatabase.open(at: fixture.databaseURL))
+        let observed = try XCTUnwrap(restarted.importTaskStatus(taskQuery))
+        XCTAssertEqual(observed.query, taskQuery)
+        XCTAssertEqual(observed.phase, .browsable)
+        XCTAssertEqual(observed.sourceID, sourceID)
+        XCTAssertEqual(observed.itemCount, 1)
+        XCTAssertThrowsError(try restarted.importTaskStatus(.init(taskID: taskQuery.taskID,
+            migrationID: header.migrationID, sourceInstallID: UUID(), sourceEpoch: header.sourceEpoch,
+            manifestSHA256: taskQuery.manifestSHA256)))
+        XCTAssertThrowsError(try restarted.importTaskStatus(.init(taskID: taskQuery.taskID,
+            migrationID: header.migrationID, sourceInstallID: header.sourceDeviceID, sourceEpoch: header.sourceEpoch,
+            manifestSHA256: String(repeating: "0", count: 64))))
+        XCTAssertTrue(try restarted.unpublishedBatches().isEmpty)
+        XCTAssertEqual(try restarted.publish(migrationID: header.migrationID, archiveRoot: receipt.archiveURL), sourceID)
+        XCTAssertEqual(try page(.init(sourceIDs: [sourceID])).items.count, 1)
+        XCTAssertEqual(try page(.init(sourceIDs: [sourceID], favorite: .favorited)).items.count, 0)
+        XCTAssertEqual(try page(.init(sourceIDs: [sourceID])).items.first?.acceptedTagCount, 0)
+    }
+
+    func testNativePhoneSourceRendersThroughExistingMacThumbnailPipeline() async throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        let bitmap = try XCTUnwrap(NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: 64, pixelsHigh: 48,
+            bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
+            colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0))
+        let bytes = try XCTUnwrap(bitmap.representation(using: .png, properties: [:]))
+        let imageResource = try fixture.resource("original", bytes: bytes, uti: "public.png", originalFilename: "Synthetic.png")
+        let sample = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+            .deletingLastPathComponent().appendingPathComponent("docs/evidence/time-story-phase-1-20260918/synthetic-silent.mp4")
+        let videoBytes = try Data(contentsOf: sample)
+        let videoResource = try fixture.resource("original", bytes: videoBytes, uti: "public.mpeg-4", originalFilename: "Synthetic.mp4")
+        let duration = try await AVURLAsset(url: sample).load(.duration).seconds
+        let image = fixture.item(resource: imageResource, sourceMetadata: .init(pixelWidth: 64, pixelHeight: 48))
+        let video = ImageAllMigrationItem(mediaID: UUID(), sourceLocalIdentifier: "synthetic-video", mediaKind: .video,
+            createdAtMs: nil, favoriteTarget: nil, observedFavorite: false, factRevision: 0, tagDecisions: [], collections: [],
+            resources: [videoResource], sourceMetadata: .init(pixelWidth: 640, pixelHeight: 360, durationSeconds: duration))
+        let header = fixture.header(count: 2)
+        try fixture.write(header: header, items: [image, video])
+        let receipt = try VerifiedPhoneArchiveImporter(database: fixture.database).importArchive(from: fixture.incoming, to: fixture.target)
+        let sourceID = try PhoneNativeLibraryPublisher(database: fixture.database).publish(migrationID: header.migrationID, archiveRoot: receipt.archiveURL)
+        let access = FolderReconcileSourceAccessService(repository: .init(database: fixture.database),
+            bookmarkPort: FoundationSecurityScopedBookmarkAdapter(), rootValidator: FolderRootValidator(), clock: SystemJobClock())
+        let cacheRoot = fixture.root.appendingPathComponent("Caches/ImageAll", isDirectory: true)
+        try FileManager.default.createDirectory(at: cacheRoot, withIntermediateDirectories: true)
+        let cache = DerivedImageCacheService(database: fixture.database, cachesDirectory: cacheRoot, sourceAccess: access)
+        let assets = try GRDBAssetCatalogQueryRepository(database: fixture.database).fetchAssetPage(
+            .init(filter: .init(sourceIDs: [sourceID]), sort: .fileNameAscending, cursor: nil, limit: 100)).items
+        XCTAssertEqual(assets.count, 2)
+        for asset in assets {
+            let generated = try await cache.loadOrGenerate(.init(assetID: asset.assetID, variant: .gridRegular))
+            XCTAssertFalse(generated.encodedBytes.isEmpty)
+            let cached = try await cache.loadOrGenerate(.init(assetID: asset.assetID, variant: .gridRegular))
+            XCTAssertEqual(cached.origin, .cacheHit)
+        }
+        XCTAssertEqual(try Data(contentsOf: receipt.archiveURL.appendingPathComponent(imageResource.relativePath!)), bytes)
+        XCTAssertEqual(try Data(contentsOf: receipt.archiveURL.appendingPathComponent(videoResource.relativePath!)), videoBytes)
+    }
+
+    func testDerivedGenerationBudgetBoundsWorkAndReleasesAfterErrors() async throws {
+        let budget = DerivedImageGenerationBudget(capacity: 100)
+        let state = GenerationConcurrencyProbe()
+        await withTaskGroup(of: Void.self) { group in
+            for index in 0..<32 { group.addTask {
+                do {
+                    _ = try await budget.run(estimatedBytes: 50) {
+                        state.begin()
+                        defer { state.end() }
+                        Thread.sleep(forTimeInterval: 0.01)
+                        if index % 4 == 0 { throw CocoaError(.fileReadUnknown) }
+                        return index
+                    }
+                } catch { }
+            } }
+        }
+        XCTAssertEqual(state.peak, 2)
+        let result = try await budget.run(estimatedBytes: 1_000) { 42 }
+        XCTAssertEqual(result, 42)
+    }
+
+    func testDerivedGenerationBudgetCancelsWaitingWork() async throws {
+        let budget = DerivedImageGenerationBudget(capacity: 100)
+        let started = expectation(description: "lease occupied")
+        let release = DispatchSemaphore(value: 0)
+        let holder = Task.detached {
+            try await budget.run(estimatedBytes: 100) {
+                started.fulfill()
+                _ = release.wait(timeout: .now() + 5)
+            }
+        }
+        await fulfillment(of: [started], timeout: 2)
+        let waiter = Task.detached {
+            try await budget.run(estimatedBytes: 100) { XCTFail("cancelled work must not decode") }
+        }
+        for _ in 0..<1_000 {
+            if await budget.waitingRequestCount == 1 { break }
+            try await Task.sleep(for: .milliseconds(1))
+        }
+        let waiting = await budget.waitingRequestCount
+        XCTAssertEqual(waiting, 1)
+        waiter.cancel()
+        do { try await waiter.value; XCTFail("expected cancellation") }
+        catch { XCTAssertTrue(error is CancellationError) }
+        release.signal()
+        try await holder.value
+        let result = try await budget.run(estimatedBytes: 100) { 1 }
+        XCTAssertEqual(result, 1)
+    }
+
+    func testNativePhoneSourceLargeImageBurstAndWarmCache() async throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        let bytes: Data = try autoreleasepool {
+            let w = 4032, h = 3024
+            let context = try XCTUnwrap(CGContext(data: nil, width: w, height: h,
+                bitsPerComponent: 8, bytesPerRow: w * 4, space: CGColorSpaceCreateDeviceRGB(),
+                bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue))
+            let pixels = try XCTUnwrap(context.data).assumingMemoryBound(to: UInt32.self)
+            for y in 0..<h { for x in 0..<w {
+                pixels[y * w + x] = UInt32(truncatingIfNeeded: (x &* 134775813) ^ (y &* 1103515245)) | 0xff000000
+            } }
+            let data = NSMutableData()
+            let destination = try XCTUnwrap(CGImageDestinationCreateWithData(data, "public.jpeg" as CFString, 1, nil))
+            CGImageDestinationAddImage(destination, try XCTUnwrap(context.makeImage()),
+                [kCGImageDestinationLossyCompressionQuality: 0.85] as CFDictionary)
+            XCTAssertTrue(CGImageDestinationFinalize(destination))
+            return data as Data
+        }
+        let items = try (0..<24).map { index in
+            ImageAllMigrationItem(mediaID: UUID(), sourceLocalIdentifier: "synthetic-large-\(index)",
+                mediaKind: .image, createdAtMs: nil, favoriteTarget: nil, observedFavorite: false,
+                factRevision: 0, tagDecisions: [], collections: [],
+                resources: [try fixture.resource("original", bytes: bytes, uti: "public.jpeg")],
+                sourceMetadata: .init(pixelWidth: 4032, pixelHeight: 3024))
+        }
+        let header = fixture.header(count: items.count)
+        try fixture.write(header: header, items: items)
+        let receipt = try VerifiedPhoneArchiveImporter(database: fixture.database).importArchive(from: fixture.incoming, to: fixture.target)
+        let sourceID = try PhoneNativeLibraryPublisher(database: fixture.database).publish(migrationID: header.migrationID, archiveRoot: receipt.archiveURL)
+        let access = FolderReconcileSourceAccessService(repository: .init(database: fixture.database),
+            bookmarkPort: FoundationSecurityScopedBookmarkAdapter(), rootValidator: FolderRootValidator(), clock: SystemJobClock())
+        let cacheRoot = fixture.root.appendingPathComponent("Caches/ImageAll", isDirectory: true)
+        try FileManager.default.createDirectory(at: cacheRoot, withIntermediateDirectories: true)
+        let cache = DerivedImageCacheService(database: fixture.database, cachesDirectory: cacheRoot, sourceAccess: access)
+        let assets = try GRDBAssetCatalogQueryRepository(database: fixture.database).fetchAssetPage(
+            .init(filter: .init(sourceIDs: [sourceID]), sort: .fileNameAscending, cursor: nil, limit: 100)).items
+        XCTAssertEqual(assets.count, 24)
+        for warm in [false, true] {
+            try await withThrowingTaskGroup(of: Void.self) { group in
+                for asset in assets { group.addTask {
+                    let result = try await cache.loadOrGenerate(.init(assetID: asset.assetID, variant: .gridRegular))
+                    XCTAssertEqual(result.pixelWidth, 512)
+                    XCTAssertEqual(result.pixelHeight, 512)
+                    XCTAssertEqual(result.origin, warm ? .cacheHit : .generated)
+                } }
+                try await group.waitForAll()
+            }
+        }
+        XCTAssertTrue(try PhoneNativeLibraryPublisher(database: fixture.database).unpublishedBatches().isEmpty)
+    }
+
+    func testSynthetic2866ItemPhonePublicationAndColdRestart() throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        var items: [ImageAllMigrationItem] = []
+        for index in 0..<2866 {
+            var resources = [try fixture.resource("original", bytes: Data("synthetic-\(index)".utf8), uti: "public.jpeg")]
+            if index < 1303 { resources.append(try fixture.resource("pairedVideo", bytes: Data("paired-\(index)".utf8), uti: "public.mpeg-4")) }
+            items.append(.init(mediaID: UUID(), sourceLocalIdentifier: "synthetic-\(index)", mediaKind: .image,
+                createdAtMs: Int64(index), favoriteTarget: nil, observedFavorite: index < 805, factRevision: 0,
+                tagDecisions: [], collections: [], resources: resources,
+                appleAlbums: [.init(albumLocalIdentifier: "album-\(index % 47)", albumTitle: "Album \(index % 47)", folderPath: [], sourceOrdinal: Int64(index))]))
+        }
+        let header = fixture.header(count: items.count, appleAlbumCoverage: .selectedAssetsOnly)
+        try fixture.write(header: header, items: items)
+        let receipt = try VerifiedPhoneArchiveImporter(database: fixture.database).importArchive(from: fixture.incoming, to: fixture.target)
+        XCTAssertEqual(receipt.resourceCount, 4169)
+        let publisher = PhoneNativeLibraryPublisher(database: fixture.database)
+        let start = Date()
+        let sourceID = try publisher.publish(migrationID: header.migrationID, archiveRoot: receipt.archiveURL)
+        let seconds = Date().timeIntervalSince(start)
+        items.removeAll()
+        let coldStart = Date()
+        let reopened = PhoneNativeLibraryPublisher(database: try CatalogDatabase.open(at: fixture.databaseURL))
+        XCTAssertTrue(try reopened.unpublishedBatches().isEmpty)
+        XCTAssertEqual(try reopened.publish(migrationID: header.migrationID, archiveRoot: receipt.archiveURL), sourceID)
+        print("SYNTHETIC_PHONE_NATIVE items=2866 resources=4169 publication_seconds=\(seconds) cold_restart_seconds=\(Date().timeIntervalSince(coldStart))")
+        try fixture.database.pool.read { db in
+            XCTAssertEqual(try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM asset"), 2866)
+            XCTAssertEqual(try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM asset_favorite_state WHERE desired_value = 1"), 805)
+            XCTAssertEqual(try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM source"), 1)
+            XCTAssertEqual(try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM phone_library_member"), 2866)
+        }
+    }
+
+    func testDisjointBatchesFromSamePhoneJoinOneNativeSource() throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        let importer = VerifiedPhoneArchiveImporter(database: fixture.database)
+        let publisher = PhoneNativeLibraryPublisher(database: fixture.database)
+        var sourceIDs: [UUID] = []
+        for index in 0..<2 {
+            let resource = try fixture.resource("original", bytes: Data("batch-\(index)".utf8), uti: "public.jpeg")
+            let header = fixture.header(count: 1)
+            let item = ImageAllMigrationItem(mediaID: UUID(), sourceLocalIdentifier: "batch-\(index)", mediaKind: .image,
+                createdAtMs: nil, favoriteTarget: nil, observedFavorite: false, factRevision: 0, tagDecisions: [], collections: [], resources: [resource])
+            let incoming = fixture.root.appendingPathComponent("incoming-\(index)", isDirectory: true)
+            try FileManager.default.createDirectory(at: incoming.appendingPathComponent("resources"), withIntermediateDirectories: true)
+            try FileManager.default.copyItem(at: fixture.incoming.appendingPathComponent(resource.relativePath!), to: incoming.appendingPathComponent(resource.relativePath!))
+            try ImageAllMigrationArchive.write(header: header, items: [item], to: incoming)
+            let receipt = try importer.importArchive(from: incoming, to: fixture.target)
+            sourceIDs.append(try publisher.publish(migrationID: header.migrationID, archiveRoot: receipt.archiveURL))
+        }
+        XCTAssertEqual(Set(sourceIDs).count, 1)
+        try fixture.database.pool.read { db in
+            XCTAssertEqual(try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM source"), 1)
+            XCTAssertEqual(try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM asset"), 2)
+            XCTAssertEqual(try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM phone_library_publication"), 2)
+        }
+    }
+
+    func testCorruptPhoneArchiveNeverPublishesPartialSource() throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        let resource = try fixture.resource("original", bytes: Data("synthetic".utf8))
+        let header = fixture.header(count: 1)
+        try fixture.write(header: header, items: [fixture.item(resource: resource)])
+        let receipt = try VerifiedPhoneArchiveImporter(database: fixture.database).importArchive(from: fixture.incoming, to: fixture.target)
+        try Data("broken".utf8).write(to: receipt.archiveURL.appendingPathComponent(resource.relativePath!))
+        let publisher = PhoneNativeLibraryPublisher(database: fixture.database)
+        XCTAssertThrowsError(try publisher.publish(migrationID: header.migrationID, archiveRoot: receipt.archiveURL))
+        try fixture.database.pool.read { db in
+            XCTAssertEqual(try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM phone_library_publication"), 0)
+            XCTAssertEqual(try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM source"), 0)
+            XCTAssertEqual(try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM asset"), 0)
+        }
+    }
+
     private final class Fixture {
         let root: URL
         let incoming: URL
@@ -1705,4 +2046,13 @@ final class PhoneArchiveImportTests: XCTestCase {
             try ImageAllMigrationArchive.write(header: header, items: items, to: incoming)
         }
     }
+}
+
+private final class GenerationConcurrencyProbe: @unchecked Sendable {
+    private let lock = NSLock()
+    private var active = 0
+    private var maximum = 0
+    func begin() { lock.lock(); active += 1; maximum = max(maximum, active); lock.unlock() }
+    func end() { lock.lock(); active -= 1; lock.unlock() }
+    var peak: Int { lock.lock(); defer { lock.unlock() }; return maximum }
 }

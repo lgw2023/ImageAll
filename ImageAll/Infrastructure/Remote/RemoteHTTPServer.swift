@@ -36,6 +36,68 @@ enum RemoteHTTPRangeSelection: Sendable, Equatable {
     case unsatisfiable
 }
 
+/// Incremental, bounded client-frame reader for the server-push event channel.
+/// TCP receive boundaries need not coincide with WebSocket frame boundaries.
+struct RemoteWebSocketControlDecoder: Sendable {
+    enum Action: Equatable { case pong(Data), close(Data) }
+    enum Failure: Error { case protocolViolation, tooLarge }
+    private var bytes: [UInt8] = []
+    private var fragmentedMessage = false
+
+    mutating func append(_ data: Data) throws -> [Action] {
+        guard bytes.count + data.count <= 2 * 65_536 + 14 else { throw Failure.tooLarge }
+        bytes.append(contentsOf: data)
+        var cursor = 0
+        var actions: [Action] = []
+        defer { bytes.removeFirst(cursor) }
+        while bytes.count - cursor >= 2 {
+            let first = bytes[cursor], second = bytes[cursor + 1]
+            let opcode = first & 0x0f, final = first & 0x80 != 0
+            guard first & 0x70 == 0, second & 0x80 != 0,
+                  [0, 1, 2, 8, 9, 10].contains(opcode) else { throw Failure.protocolViolation }
+            let control = opcode >= 8
+            var length = UInt64(second & 0x7f)
+            var header = 2
+            if control && (!final || length > 125) { throw Failure.protocolViolation }
+            if length == 126 {
+                guard bytes.count - cursor >= 4 else { break }
+                length = UInt64(bytes[cursor + 2]) << 8 | UInt64(bytes[cursor + 3]); header = 4
+                guard length >= 126 else { throw Failure.protocolViolation }
+            } else if length == 127 {
+                guard bytes.count - cursor >= 10 else { break }
+                length = bytes[(cursor + 2)..<(cursor + 10)].reduce(UInt64(0)) { ($0 << 8) | UInt64($1) }; header = 10
+                guard length >= 65_536, length >> 63 == 0 else { throw Failure.protocolViolation }
+            }
+            guard length <= 65_536 else { throw Failure.tooLarge }
+            let size = Int(length)
+            guard bytes.count - cursor >= header + 4 + size else { break }
+            let mask = cursor + header, payloadStart = mask + 4
+            let payload = Data((0..<size).map { bytes[payloadStart + $0] ^ bytes[mask + $0 % 4] })
+            cursor += header + 4 + size
+            switch opcode {
+            case 8:
+                guard size != 1 else { throw Failure.protocolViolation }
+                if size >= 2 {
+                    let code = UInt16(payload[0]) << 8 | UInt16(payload[1])
+                    guard ((1000...1014).contains(code) && ![1004, 1005, 1006].contains(code))
+                            || (3000...4999).contains(code),
+                          String(data: payload.dropFirst(2), encoding: .utf8) != nil else { throw Failure.protocolViolation }
+                }
+                actions.append(.close(payload)); return actions
+            case 9: actions.append(.pong(payload))
+            case 10: break
+            case 0:
+                guard fragmentedMessage else { throw Failure.protocolViolation }
+                if final { fragmentedMessage = false }
+            default:
+                guard !fragmentedMessage else { throw Failure.protocolViolation }
+                fragmentedMessage = !final
+            }
+        }
+        return actions
+    }
+}
+
 private actor RemoteCloudPreviewDownloadCoordinator {
     private struct Entry {
         var snapshot: RemoteCloudPreviewSnapshot
@@ -223,6 +285,10 @@ actor RemoteHTTPServer {
     private let localLibrarySyncStore: RemoteLocalLibrarySyncStore?
     private let phoneCopyAuditor: (@Sendable (RemotePhoneCleanupSourceReport) async throws -> Void)?
     private let migrationTransferStore: ImageAllMigrationTransferStore?
+    private let migrationHandoffAccepted: (@Sendable () async -> Void)?
+    private let automaticCleanupProvider: (@Sendable (RemoteImportTaskQuery, UUID, UUID) async throws -> RemoteExportCleanupReceipt)?
+    private let exportCleanupReceiptProvider: (@Sendable (RemoteImportTaskQuery, UUID, UUID) async throws -> RemoteExportCleanupReceipt)?
+    private let importTaskStatusProvider: (@Sendable (RemoteImportTaskQuery) async throws -> RemoteImportTaskStatus?)?
     private var migrationTransferScopeURL: URL?
     private let accessAccountStore: RemoteAccessAccountStore
     private let eventBroker: RemoteEventBroker
@@ -238,9 +304,25 @@ actor RemoteHTTPServer {
     private var listener: NWListener?
     private var localWebListener: NWListener?
     private var webSocketConnections: [ObjectIdentifier: NWConnection] = [:]
+    private var webSocketDeviceIDs: [ObjectIdentifier: UUID] = [:]
+
+    /// Current authenticated event connections, never inferred from saved snapshots.
+    func connectedDeviceIDs() -> Set<UUID> {
+        Set(webSocketDeviceIDs.compactMap { key, deviceID in
+            guard let connection = webSocketConnections[key],
+                  case .ready = connection.state else { return nil }
+            return deviceID
+        })
+    }
     private var activeTransferUploads = 0
     private let jsonEncoder = JSONEncoder()
     private let jsonDecoder = JSONDecoder()
+    #if DEBUG
+    private var transportRequests: [ObjectIdentifier: (stage: String, started: TimeInterval)] = [:]
+    private var transportDiagnosticTask: Task<Void, Never>?
+    private var acceptedTransportRequests = 0
+    private var closedTransportRequests = 0
+    #endif
 
     var usesTLS: Bool { secIdentity != nil }
 
@@ -250,6 +332,10 @@ actor RemoteHTTPServer {
         localLibrarySyncStore: RemoteLocalLibrarySyncStore? = nil,
         phoneCopyAuditor: (@Sendable (RemotePhoneCleanupSourceReport) async throws -> Void)? = nil,
         migrationTransferStore: ImageAllMigrationTransferStore? = nil,
+        migrationHandoffAccepted: (@Sendable () async -> Void)? = nil,
+        automaticCleanupProvider: (@Sendable (RemoteImportTaskQuery, UUID, UUID) async throws -> RemoteExportCleanupReceipt)? = nil,
+        exportCleanupReceiptProvider: (@Sendable (RemoteImportTaskQuery, UUID, UUID) async throws -> RemoteExportCleanupReceipt)? = nil,
+        importTaskStatusProvider: (@Sendable (RemoteImportTaskQuery) async throws -> RemoteImportTaskStatus?)? = nil,
         migrationTransferScopeURL: URL? = nil,
         accessAccountStore: RemoteAccessAccountStore,
         eventBroker: RemoteEventBroker,
@@ -268,6 +354,10 @@ actor RemoteHTTPServer {
         self.localLibrarySyncStore = localLibrarySyncStore
         self.phoneCopyAuditor = phoneCopyAuditor
         self.migrationTransferStore = migrationTransferStore
+        self.migrationHandoffAccepted = migrationHandoffAccepted
+        self.automaticCleanupProvider = automaticCleanupProvider
+        self.exportCleanupReceiptProvider = exportCleanupReceiptProvider
+        self.importTaskStatusProvider = importTaskStatusProvider
         self.migrationTransferScopeURL = migrationTransferScopeURL
         self.accessAccountStore = accessAccountStore
         self.eventBroker = eventBroker
@@ -327,6 +417,9 @@ actor RemoteHTTPServer {
     }
 
     func stop() async {
+        #if DEBUG
+        transportDiagnosticTask?.cancel(); transportDiagnosticTask = nil
+        #endif
         listener?.cancel()
         listener = nil
         localWebListener?.cancel()
@@ -335,6 +428,7 @@ actor RemoteHTTPServer {
             connection.cancel()
         }
         webSocketConnections.removeAll()
+        webSocketDeviceIDs.removeAll()
         migrationTransferScopeURL?.stopAccessingSecurityScopedResource()
         migrationTransferScopeURL = nil
         await localLibrarySyncStore?.invalidateCopyAudits()
@@ -405,6 +499,19 @@ actor RemoteHTTPServer {
     }
 
     private func handle(connection: NWConnection) {
+        #if DEBUG
+        let key = ObjectIdentifier(connection)
+        acceptedTransportRequests += 1
+        transportRequests[key] = ("request-header", ProcessInfo.processInfo.systemUptime)
+        connection.stateUpdateHandler = { [weak self] state in
+            switch state {
+            case .cancelled, .failed:
+                Task { await self?.closeTransportDiagnostic(key) }
+            default: break
+            }
+        }
+        startTransportDiagnostics()
+        #endif
         connection.start(queue: .global(qos: .utility))
         let timeoutTask = Task {
             // `try?` alone would swallow `CancellationError` from an *intentional* early
@@ -421,6 +528,41 @@ actor RemoteHTTPServer {
         }
         receiveRequest(on: connection, buffer: Data(), timeoutTask: timeoutTask)
     }
+
+    #if DEBUG
+    private func closeTransportDiagnostic(_ key: ObjectIdentifier) {
+        if transportRequests.removeValue(forKey: key) != nil { closedTransportRequests += 1 }
+    }
+    private func startTransportDiagnostics() {
+        guard transportDiagnosticTask == nil else { return }
+        transportDiagnosticTask = Task { [weak self] in
+            while !Task.isCancelled {
+                guard let self else { return }
+                await self.saveTransportDiagnostics()
+                do { try await Task.sleep(for: .seconds(5)) } catch { return }
+            }
+        }
+    }
+    private func saveTransportDiagnostics() {
+        let now = ProcessInfo.processInfo.systemUptime
+        var stages: [String: Int] = [:]
+        var ages: [String: Double] = [:]
+        for request in transportRequests.values {
+            stages[request.stage, default: 0] += 1
+            ages[request.stage] = max(ages[request.stage, default: 0], now - request.started)
+        }
+        let report: [String: Any] = ["atMs": Int64(Date().timeIntervalSince1970 * 1000),
+            "accepted": acceptedTransportRequests, "closed": closedTransportRequests,
+            "stages": stages, "oldestSeconds": ages, "uploads": activeTransferUploads,
+            "webSockets": webSocketConnections.count]
+        guard let directory = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first else { return }
+        let root = directory.appendingPathComponent("ImageAll/USBTransportDiagnostics")
+        try? FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        if let bytes = try? JSONSerialization.data(withJSONObject: report, options: .sortedKeys) {
+            try? bytes.write(to: root.appendingPathComponent("mac-latest.json"), options: .atomic)
+        }
+    }
+    #endif
 
     private func receiveRequest(on connection: NWConnection, buffer: Data, timeoutTask: Task<Void, Never>) {
         connection.receive(minimumIncompleteLength: 1, maximumLength: 64 * 1024) { [weak self] data, _, isComplete, error in
@@ -663,6 +805,9 @@ actor RemoteHTTPServer {
     private func receiveTransferChunk(
         on connection: NWConnection, buffer: Data, timeoutTask: Task<Void, Never>
     ) async {
+        #if DEBUG
+        transportRequests[ObjectIdentifier(connection)]?.stage = "receiving-resource"
+        #endif
         var responseTimeoutTask = timeoutTask
         var temporaryURL: URL?
         defer { if let temporaryURL { try? FileManager.default.removeItem(at: temporaryURL) } }
@@ -714,11 +859,15 @@ actor RemoteHTTPServer {
                 }
                 try handle.synchronize()
                 try handle.close()
+                #if DEBUG
+                transportRequests[ObjectIdentifier(connection)]?.stage = "committing-resource"
+                #endif
                 let progress = try await migrationTransferStore.commitIncomingChunk(
                     migrationID: head.migrationID, authenticatedDeviceID: deviceID,
                     relativePath: head.relativePath, offset: head.offset,
                     temporaryURL: temporaryURL, byteCount: head.contentLength,
-                    sha256: head.sha256
+                    sha256: head.sha256,
+                    fileProgressOnly: head.headers["x-imageall-progress-scope"] == "file"
                 )
                 await respondJSON(
                     connection, status: 200, value: progress,
@@ -727,6 +876,9 @@ actor RemoteHTTPServer {
             } catch let transferError as ImageAllMigrationTransferError {
                 throw Self.transferAPIError(transferError)
             }
+        } catch let cleanup as ImageAllMigrationCleanupError {
+            await respond(connection, status: 409,
+                error: .init(code: .conflict, message: cleanup.localizedDescription), timeoutTask: responseTimeoutTask)
         } catch let api as RemoteAPIError {
             let status: Int = {
                 switch api.code {
@@ -781,6 +933,12 @@ actor RemoteHTTPServer {
         RemoteHTTPPaths.pairingRefresh,
     ]
 
+    static func photoImportProcessingSeconds(method: String, path: String,
+                                             pairedBearer: Bool) -> TimeInterval? {
+        guard pairedBearer else { return nil }
+        return RemotePhotoImportRequestBudget.processingSeconds(method: method, path: path)
+    }
+
     private func route(
         connection: NWConnection,
         method: String,
@@ -789,7 +947,11 @@ actor RemoteHTTPServer {
         body: Data,
         timeoutTask: Task<Void, Never>
     ) async {
+        var timeoutTask = timeoutTask
         let (path, query) = Self.splitPathAndQuery(pathAndQuery)
+        #if DEBUG
+        transportRequests[ObjectIdentifier(connection)]?.stage = path.hasPrefix("/v1/migration-transfers") ? "archive-request" : "other-request"
+        #endif
 
         if ["GET", "HEAD"].contains(method), ["/", "/index.html"].contains(path) {
             await respond(
@@ -1040,7 +1202,8 @@ actor RemoteHTTPServer {
         if method == "GET",
            path == RemoteHTTPPaths.eventsWebSocket,
            Self.isWebSocketUpgrade(headers: headers) {
-            guard (await authenticateRequest(headers: headers)).isAuthorized else {
+            let authentication = await authenticateRequest(headers: headers)
+            guard authentication.isAuthorized else {
                 timeoutTask.cancel()
                 await respond(connection, status: 401, error: .init(code: .unauthorized, message: "invalid credentials"))
                 return
@@ -1053,7 +1216,7 @@ actor RemoteHTTPServer {
             // WebSocket connections are long-lived by design: cancel the generic
             // request-parse timeout before completing the handshake.
             timeoutTask.cancel()
-            await upgradeToWebSocket(connection: connection, secWebSocketKey: secWebSocketKey)
+            await upgradeToWebSocket(connection: connection, secWebSocketKey: secWebSocketKey, deviceID: authentication.deviceID)
             return
         }
 
@@ -1079,12 +1242,24 @@ actor RemoteHTTPServer {
             }
         }
 
+        // Only a completely parsed, authenticated paired-device request gets
+        // a disk-work deadline. Slow headers and unauthorized clients stay at 15s.
+        if case .deviceBearer = requestAuthentication,
+           let seconds = Self.photoImportProcessingSeconds(method: method, path: path, pairedBearer: true) {
+            timeoutTask.cancel()
+            timeoutTask = Task {
+                do { try await Task.sleep(for: .seconds(seconds)) } catch { return }
+                connection.cancel()
+            }
+        }
+
         do {
             switch (method, path) {
             case ("GET", RemoteHTTPPaths.capabilities):
                 let payload = await facade.capabilities(
                     supportsLocalLibrarySnapshot: localLibrarySyncStore != nil,
                     supportsMigrationTransfer: migrationTransferStore != nil,
+                    supportsMigrationHandoff: migrationTransferStore != nil && migrationHandoffAccepted != nil,
                     supportsRevisionedVideoRanges: mediaResources.supportsRevisionedVideoRanges
                 )
                 await respondJSON(connection, status: 200, value: payload, timeoutTask: timeoutTask)
@@ -1706,7 +1881,76 @@ actor RemoteHTTPServer {
                 let payload = await pairingStore.listDevices()
                 await respondJSON(connection, status: 200, value: payload, timeoutTask: timeoutTask)
             default:
-                if let migrationID = Self.migrationTransferID(from: path),
+                let cleanupID = method == "POST" ? Self.migrationTransferID(from: path, suffix: "automatic-cleanup") : nil
+                let observationID = method == "GET" ? (Self.migrationTransferID(from: path, suffix: "import-status") ?? Self.migrationTransferID(from: path, suffix: "export-cleanup-receipt")) : nil
+                if let migrationID = cleanupID ?? observationID {
+                    guard case let .deviceBearer(deviceID) = requestAuthentication else {
+                        throw RemoteAPIError(code: .unauthorized, message: "paired bearer required")
+                    }
+                    guard let taskID = headers["x-imageall-task-id"].flatMap(UUID.init(uuidString:)),
+                          let installID = headers["x-imageall-source-install-id"].flatMap(UUID.init(uuidString:)),
+                          let epoch = headers["x-imageall-source-epoch"].flatMap(UUID.init(uuidString:)),
+                          let digest = headers["x-imageall-manifest-sha256"],
+                          digest.count == 64, digest.allSatisfy({ "0123456789abcdef".contains($0) }) else {
+                        throw RemoteAPIError(code: .badRequest, message: "invalid task binding")
+                    }
+                    guard let localLibrarySyncStore,
+                          let source = await localLibrarySyncStore.projection(deviceID: deviceID),
+                          source.installID == installID, source.sourceEpoch == epoch else {
+                        throw RemoteAPIError(code: .conflict, message: "paired source identity changed")
+                    }
+                    guard let importTaskStatusProvider else {
+                        throw RemoteAPIError(code: .notFound, message: "import status unavailable")
+                    }
+                    let query = RemoteImportTaskQuery(taskID: taskID, migrationID: migrationID,
+                        sourceInstallID: installID, sourceEpoch: epoch, manifestSHA256: digest)
+                    if cleanupID != nil {
+                        guard activeTransferUploads == 0 else { throw ImageAllMigrationCleanupError.busy }
+                        guard let nonce = headers["x-imageall-cleanup-nonce"].flatMap(UUID.init(uuidString:)),
+                              let automaticCleanupProvider else {
+                            throw RemoteAPIError(code: .badRequest, message: "automatic cleanup unavailable or invalid nonce")
+                        }
+                        let result = try await automaticCleanupProvider(query, nonce, deviceID)
+                        await respondJSON(connection, status: 200, value: result, timeoutTask: timeoutTask)
+                        return
+                    }
+                    if path.hasSuffix("/export-cleanup-receipt") {
+                        guard let nonce = headers["x-imageall-cleanup-nonce"].flatMap(UUID.init(uuidString:)),
+                              let exportCleanupReceiptProvider else {
+                            throw RemoteAPIError(code: .badRequest, message: "cleanup receipt unavailable or invalid nonce")
+                        }
+                        let result = try await exportCleanupReceiptProvider(query, nonce, deviceID)
+                        await respondJSON(connection, status: 200, value: result, timeoutTask: timeoutTask)
+                        return
+                    }
+                    if let result = try await importTaskStatusProvider(query) {
+                        if result.phase == .verifying || result.phase == .publishing {
+                            guard let migrationTransferStore else {
+                                throw RemoteAPIError(code: .notFound, message: "active transfer unavailable")
+                            }
+                            do {
+                                _ = try await migrationTransferStore.recordedSealState(
+                                    migrationID: migrationID, authenticatedDeviceID: deviceID, sourceInstallID: installID)
+                            } catch let error as ImageAllMigrationTransferError {
+                                throw Self.transferAPIError(error)
+                            }
+                        }
+                        await respondJSON(connection, status: 200, value: result, timeoutTask: timeoutTask)
+                    } else {
+                        guard let migrationTransferStore else {
+                            throw RemoteAPIError(code: .notFound, message: "import status unavailable")
+                        }
+                        do {
+                            let sealed = try await migrationTransferStore.recordedSealState(
+                                migrationID: migrationID, authenticatedDeviceID: deviceID, sourceInstallID: installID)
+                            let result = RemoteImportTaskStatus(query: query,
+                                phase: sealed ? .awaitingImport : .needsAttention)
+                            await respondJSON(connection, status: 200, value: result, timeoutTask: timeoutTask)
+                        } catch let error as ImageAllMigrationTransferError {
+                            throw Self.transferAPIError(error)
+                        }
+                    }
+                } else if let migrationID = Self.migrationTransferID(from: path),
                    ["GET", "POST"].contains(method) {
                     guard case let .deviceBearer(deviceID) = requestAuthentication else {
                         throw RemoteAPIError(code: .unauthorized, message: "paired bearer required")
@@ -1744,6 +1988,36 @@ actor RemoteHTTPServer {
                     } catch let error as ImageAllMigrationTransferError {
                         throw Self.transferAPIError(error)
                     }
+                } else if method == "GET",
+                          let migrationID = Self.migrationTransferID(from: path, suffix: "resume") {
+                    guard case let .deviceBearer(deviceID) = requestAuthentication else {
+                        throw RemoteAPIError(code: .unauthorized, message: "paired bearer required")
+                    }
+                    guard let migrationTransferStore else {
+                        throw RemoteAPIError(code: .notFound, message: "migration transfer unavailable")
+                    }
+                    do {
+                        let checkpoint = try await migrationTransferStore.resumeCheckpoint(
+                            migrationID: migrationID, authenticatedDeviceID: deviceID,
+                            allowDurableCustody: query["custody"] == "1")
+                        await respondJSON(connection, status: 200, value: checkpoint, timeoutTask: timeoutTask)
+                    } catch let error as ImageAllMigrationTransferError {
+                        throw Self.transferAPIError(error)
+                    }
+                } else if method == "POST",
+                          let migrationID = Self.migrationTransferID(from: path, suffix: "accept-resource") {
+                    guard case let .deviceBearer(deviceID) = requestAuthentication else {
+                        throw RemoteAPIError(code: .unauthorized, message: "paired bearer required")
+                    }
+                    guard let migrationTransferStore, migrationHandoffAccepted != nil else {
+                        throw RemoteAPIError(code: .notFound, message: "Mac custody handoff unavailable")
+                    }
+                    let request = try jsonDecoder.decode(ImageAllMigrationResourceVerificationRequest.self, from: body)
+                    do {
+                        let receipt = try await migrationTransferStore.acceptResource(migrationID: migrationID,
+                            authenticatedDeviceID: deviceID, request: request)
+                        await respondJSON(connection, status: 200, value: receipt, timeoutTask: timeoutTask)
+                    } catch let error as ImageAllMigrationTransferError { throw Self.transferAPIError(error) }
                 } else if method == "POST",
                           let migrationID = Self.migrationTransferID(from: path, suffix: "verify-resource") {
                     guard case let .deviceBearer(deviceID) = requestAuthentication else {
@@ -1761,6 +2035,28 @@ actor RemoteHTTPServer {
                     } catch let error as ImageAllMigrationTransferError {
                         throw Self.transferAPIError(error)
                     }
+                } else if ["POST", "GET"].contains(method),
+                          let migrationID = Self.migrationTransferID(from: path, suffix: "handoff") {
+                    guard case let .deviceBearer(deviceID) = requestAuthentication else {
+                        throw RemoteAPIError(code: .unauthorized, message: "paired bearer required")
+                    }
+                    guard let migrationTransferStore, let migrationHandoffAccepted else {
+                        throw RemoteAPIError(code: .notFound, message: "Mac 本地导入任务尚未就绪，请更新 Mac。")
+                    }
+                    do {
+                        if method == "POST" {
+                            let request = try jsonDecoder.decode(ImageAllMigrationHandoffRequest.self, from: body)
+                            let receipt = try await migrationTransferStore.acceptHandoff(migrationID: migrationID,
+                                authenticatedDeviceID: deviceID, manifestSHA256: request.manifestSHA256)
+                            await migrationHandoffAccepted()
+                            await respondJSON(connection, status: 200, value: receipt, timeoutTask: timeoutTask)
+                        } else {
+                            let receipt = try await migrationTransferStore.handoffReceipt(migrationID: migrationID,
+                                authenticatedDeviceID: deviceID)
+                            if receipt != nil { await migrationHandoffAccepted() }
+                            await respondJSON(connection, status: 200, value: receipt, timeoutTask: timeoutTask)
+                        }
+                    } catch let error as ImageAllMigrationTransferError { throw Self.transferAPIError(error) }
                 } else if method == "POST",
                           let migrationID = Self.migrationTransferID(from: path, suffix: "seal") {
                     guard case let .deviceBearer(deviceID) = requestAuthentication else {
@@ -2083,6 +2379,9 @@ actor RemoteHTTPServer {
                     await respond(connection, status: 404, error: .init(code: .notFound, message: "unknown route"), timeoutTask: timeoutTask)
                 }
             }
+        } catch let cleanup as ImageAllMigrationCleanupError {
+            await respond(connection, status: 409,
+                error: .init(code: .conflict, message: cleanup.localizedDescription), timeoutTask: timeoutTask)
         } catch is DecodingError {
             await respond(connection, status: 400, error: .init(code: .badRequest, message: "malformed request body"), timeoutTask: timeoutTask)
         } catch let pairingError as RemotePairingStore.PairingError {
@@ -2177,7 +2476,10 @@ actor RemoteHTTPServer {
         return Data(digest).base64EncodedString()
     }
 
-    private func upgradeToWebSocket(connection: NWConnection, secWebSocketKey: String) async {
+    private func upgradeToWebSocket(connection: NWConnection, secWebSocketKey: String, deviceID: UUID?) async {
+        #if DEBUG
+        transportRequests[ObjectIdentifier(connection)]?.stage = "events"
+        #endif
         let accept = Self.webSocketAcceptValue(secWebSocketKey: secWebSocketKey)
         var header = "HTTP/1.1 101 Switching Protocols\r\n"
         header += "Upgrade: websocket\r\n"
@@ -2196,35 +2498,66 @@ actor RemoteHTTPServer {
 
         let key = ObjectIdentifier(connection)
         webSocketConnections[key] = connection
+        webSocketDeviceIDs[key] = deviceID
         let subscriberID = await eventBroker.subscribe { event in
             guard let data = try? JSONEncoder().encode(event) else { return }
             let text = String(data: data, encoding: .utf8) ?? "{}"
             let frame = Self.encodeWebSocketTextFrame(text)
-            connection.send(content: frame, completion: .contentProcessed { _ in })
+            connection.send(content: frame, completion: .contentProcessed { error in
+                // Cancellation completes the pending receive and releases the
+                // subscriber as well as its bounded USB pipe.
+                if error != nil { connection.cancel() }
+            })
         }
         logger.info("Remote WebSocket client connected (subscriberID=\(subscriberID.uuidString, privacy: .private))")
         watchWebSocketConnection(connection, key: key, subscriberID: subscriberID)
     }
 
-    /// Best-effort connection-close detection: the server does not need to interpret
-    /// client-sent WebSocket frames (this channel is server-push only), only notice when
-    /// the socket goes away so it can unsubscribe from the broker and stop retaining it.
-    private func watchWebSocketConnection(_ connection: NWConnection, key: ObjectIdentifier, subscriberID: RemoteEventBroker.SubscriberID) {
-        connection.receive(minimumIncompleteLength: 1, maximumLength: 64 * 1024) { [weak self] _, _, isComplete, error in
+    /// A WebSocket Close is an application frame, not a TCP FIN. Reply and
+    /// release the connection even when the client waits for our half-close.
+    private func watchWebSocketConnection(_ connection: NWConnection, key: ObjectIdentifier,
+        subscriberID: RemoteEventBroker.SubscriberID, decoder: RemoteWebSocketControlDecoder = .init()) {
+        connection.receive(minimumIncompleteLength: 1, maximumLength: 64 * 1024) { [weak self] data, _, isComplete, error in
             Task {
-                guard let self else { return }
-                if isComplete || error != nil {
+                guard let self else { connection.cancel(); return }
+                if error != nil {
                     await self.cleanupWebSocketConnection(key: key, subscriberID: subscriberID)
                     connection.cancel()
-                } else {
-                    await self.watchWebSocketConnection(connection, key: key, subscriberID: subscriberID)
+                    return
                 }
+                var next = decoder
+                do {
+                    for action in try next.append(data ?? Data()) {
+                        switch action {
+                        case let .pong(payload):
+                            guard await self.send(connection, content: Data([0x8a, UInt8(payload.count)]) + payload, isFinal: false) else {
+                                await self.cleanupWebSocketConnection(key: key, subscriberID: subscriberID)
+                                connection.cancel(); return
+                            }
+                        case let .close(payload):
+                            await self.cleanupWebSocketConnection(key: key, subscriberID: subscriberID)
+                            _ = await self.send(connection, content: Data([0x88, UInt8(payload.count)]) + payload, isFinal: true)
+                            connection.cancel(); return
+                        }
+                    }
+                } catch {
+                    await self.cleanupWebSocketConnection(key: key, subscriberID: subscriberID)
+                    let tooLarge = (error as? RemoteWebSocketControlDecoder.Failure) == .tooLarge
+                    _ = await self.send(connection, content: Data([0x88, 2, 3, tooLarge ? 0xf1 : 0xea]), isFinal: true)
+                    connection.cancel(); return
+                }
+                if isComplete {
+                    await self.cleanupWebSocketConnection(key: key, subscriberID: subscriberID)
+                    connection.cancel(); return
+                }
+                await self.watchWebSocketConnection(connection, key: key, subscriberID: subscriberID, decoder: next)
             }
         }
     }
 
     private func cleanupWebSocketConnection(key: ObjectIdentifier, subscriberID: RemoteEventBroker.SubscriberID) async {
         webSocketConnections.removeValue(forKey: key)
+        webSocketDeviceIDs.removeValue(forKey: key)
         await eventBroker.unsubscribe(subscriberID)
     }
 
@@ -2307,6 +2640,9 @@ actor RemoteHTTPServer {
         includeBody: Bool = true
     ) async {
         timeoutTask?.cancel()
+        #if DEBUG
+        transportRequests[ObjectIdentifier(connection)]?.stage = "sending-response"
+        #endif
         let reason: String = {
             switch status {
             case 200: "OK"

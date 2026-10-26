@@ -1,6 +1,6 @@
 import CryptoKit
 import Foundation
-import ImageAllRemoteProtocol
+@testable import ImageAllRemoteProtocol
 import XCTest
 
 final class ImageAllMigrationArchiveTests: XCTestCase {
@@ -621,6 +621,186 @@ final class ImageAllMigrationArchiveTests: XCTestCase {
             } else {
                 XCTAssertThrowsError(try ImageAllMigrationArchive.verify(at: root))
             }
+        }
+    }
+
+    func testVerifiedVisitRejectsByteIdenticalObjectReplacement() throws {
+        let root = makeRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let bytes = Data("same bytes different object".utf8)
+        let item = try makeItem(root: root, resourceID: UUID(), bytes: bytes)
+        try ImageAllMigrationArchive.write(header: header(migrationID: UUID(), count: 1), items: [item], to: root)
+        XCTAssertThrowsError(try ImageAllMigrationArchive.visitVerifiedRecords(at: root,
+            onHeader: { _ in }, onItem: { item in
+                try bytes.write(to: root.appendingPathComponent(item.resources[0].relativePath!), options: .atomic)
+            }))
+    }
+
+    func testPriorVerificationRejectsDamageStaleVersionsAndOtherRoots() throws {
+        for change in ["same-size", "truncate", "replace", "restore-bytes", "other-root"] {
+            let root = makeRoot()
+            defer { try? FileManager.default.removeItem(at: root) }
+            let bytes = Data("prior verification fixture".utf8)
+            let item = try makeItem(root: root, resourceID: UUID(), bytes: bytes)
+            try ImageAllMigrationArchive.write(header: header(migrationID: UUID(), count: 1), items: [item], to: root)
+            let prior = try ImageAllMigrationArchive.readVerifiedHeader(at: root).1
+            let file = root.appendingPathComponent(item.resources[0].relativePath!)
+            var visited = false
+            var target = root
+            if change == "other-root" {
+                let copy = root.appendingPathComponent("copy")
+                try FileManager.default.createDirectory(at: copy, withIntermediateDirectories: false)
+                target = copy
+            } else if change == "replace" {
+                try bytes.write(to: file, options: .atomic)
+            } else {
+                let handle = try FileHandle(forWritingTo: file)
+                if change == "truncate" { try handle.truncate(atOffset: 1) }
+                else { try handle.write(contentsOf: Data(repeating: 74, count: bytes.count)) }
+                if change == "restore-bytes" { try handle.seek(toOffset: 0); try handle.write(contentsOf: bytes) }
+                try handle.close()
+            }
+            XCTAssertThrowsError(try ImageAllMigrationArchive.visitVerifiedRecords(at: target,
+                priorVerification: prior, onHeader: { _ in visited = true }, onItem: { _ in }), change)
+            XCTAssertFalse(visited, change)
+        }
+    }
+
+    func testPriorVerificationStillReadsActualBytesAfterCallbacks() throws {
+        let root = makeRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let bytes = Data("final full byte check".utf8)
+        let item = try makeItem(root: root, resourceID: UUID(), bytes: bytes)
+        try ImageAllMigrationArchive.write(header: header(migrationID: UUID(), count: 1), items: [item], to: root)
+        let prior = try ImageAllMigrationArchive.readVerifiedHeader(at: root).1
+        #if DEBUG
+        ImageAllMigrationArchiveDiagnostics.start()
+        #endif
+        XCTAssertThrowsError(try ImageAllMigrationArchive.visitVerifiedRecords(at: root,
+            priorVerification: prior, onHeader: { _ in }, onItem: { item in
+                let handle = try FileHandle(forWritingTo: root.appendingPathComponent(item.resources[0].relativePath!))
+                try handle.write(contentsOf: Data(repeating: 90, count: bytes.count)); try handle.close()
+            }))
+        #if DEBUG
+        XCTAssertEqual(ImageAllMigrationArchiveDiagnostics.snapshot().filter { $0.stage == "verify" }.count, 1)
+        XCTAssertEqual(ImageAllMigrationArchiveDiagnostics.snapshot().last?.resourceBytes, Int64(bytes.count))
+        #endif
+    }
+
+    func testPublishedCopyProofBindsFinalObjectsAndKeepsFinalFullRead() throws {
+        let root = makeRoot(), target = makeRoot()
+        defer { try? FileManager.default.removeItem(at: root); try? FileManager.default.removeItem(at: target) }
+        let bytes = Data("independent target proof".utf8)
+        let item = try makeItem(root: root, resourceID: UUID(), bytes: bytes)
+        try ImageAllMigrationArchive.write(header: header(migrationID: UUID(), count: 1), items: [item], to: root)
+        let source = try ImageAllMigrationArchive.readVerifiedHeader(at: root).1
+        #if DEBUG
+        ImageAllMigrationArchiveDiagnostics.start()
+        #endif
+        let copied = try ImageAllMigrationArchive.publishVerifiedCopyWithVerification(from: root, to: target,
+            sourceVerification: source)
+        #if DEBUG
+        let copyReads = ImageAllMigrationArchiveDiagnostics.snapshot().filter { $0.stage == "verify" }
+        XCTAssertEqual(copyReads.count, 1)
+        XCTAssertEqual(copyReads.first?.resourceBytes, Int64(bytes.count))
+        #endif
+        XCTAssertNoThrow(try copied.verification.validateStorageIdentity(at: copied.archiveURL))
+        XCTAssertThrowsError(try copied.verification.validateStorageIdentity(at: root))
+        #if DEBUG
+        ImageAllMigrationArchiveDiagnostics.start()
+        #endif
+        _ = try ImageAllMigrationArchive.visitVerifiedRecords(at: copied.archiveURL,
+            priorVerification: copied.verification, onHeader: { _ in }, onItem: { _ in })
+        #if DEBUG
+        let reads = ImageAllMigrationArchiveDiagnostics.snapshot().filter { $0.stage == "verify" }
+        XCTAssertEqual(reads.count, 1)
+        XCTAssertEqual(reads.first?.resourceBytes, Int64(bytes.count))
+        #endif
+        try bytes.write(to: copied.archiveURL.appendingPathComponent(item.resources[0].relativePath!), options: .atomic)
+        XCTAssertThrowsError(try copied.verification.validateStorageIdentity(at: copied.archiveURL))
+    }
+
+    func testCopyRejectsInvalidSourceProofBeforeCreatingTarget() throws {
+        for change in ["same-size", "truncate", "stale", "replace", "replace-root", "other-root", "target-proof"] {
+            let root = makeRoot(), target = makeRoot(), other = makeRoot()
+            let moved = root.appendingPathExtension("old")
+            defer { for url in [root, target, other, moved] { try? FileManager.default.removeItem(at: url) } }
+            let bytes = Data("source proof fixture".utf8)
+            let item = try makeItem(root: root, resourceID: UUID(), bytes: bytes)
+            try ImageAllMigrationArchive.write(header: header(migrationID: UUID(), count: 1), items: [item], to: root)
+            var proof = try ImageAllMigrationArchive.readVerifiedHeader(at: root).1
+            let file = root.appendingPathComponent(item.resources[0].relativePath!)
+            var source = root
+            if change == "other-root" { source = other }
+            else if change == "target-proof" {
+                proof = try ImageAllMigrationArchive.publishVerifiedCopyWithVerification(from: root, to: other).verification
+            } else if change == "replace-root" {
+                try FileManager.default.moveItem(at: root, to: moved)
+                try FileManager.default.copyItem(at: moved, to: root)
+            } else if change == "replace" { try bytes.write(to: file, options: .atomic) }
+            else {
+                let handle = try FileHandle(forWritingTo: file)
+                if change == "truncate" { try handle.truncate(atOffset: 1) }
+                else { try handle.write(contentsOf: Data(repeating: 90, count: bytes.count)) }
+                if change == "stale" { try handle.seek(toOffset: 0); try handle.write(contentsOf: bytes) }
+                try handle.close()
+            }
+            XCTAssertThrowsError(try ImageAllMigrationArchive.publishVerifiedCopyWithVerification(
+                from: source, to: target, sourceVerification: proof), change)
+            XCTAssertTrue(try FileManager.default.contentsOfDirectory(atPath: target.path).isEmpty, change)
+        }
+    }
+
+    func testCopyRejectsSourceChangingAfterCopyAndCleansStaging() throws {
+        for change in ["same-size", "stale", "replace", "interrupted"] {
+            let root = makeRoot(), target = makeRoot()
+            defer { try? FileManager.default.removeItem(at: root); try? FileManager.default.removeItem(at: target) }
+            let bytes = Data("source changes after copying".utf8)
+            let item = try makeItem(root: root, resourceID: UUID(), bytes: bytes)
+            try ImageAllMigrationArchive.write(header: header(migrationID: UUID(), count: 1), items: [item], to: root)
+            let proof = try ImageAllMigrationArchive.readVerifiedHeader(at: root).1
+            let file = root.appendingPathComponent(item.resources[0].relativePath!)
+            XCTAssertThrowsError(try ImageAllMigrationArchive.publishVerifiedCopyWithVerification(
+                from: root, to: target, sourceVerification: proof, afterCopy: {
+                    if change == "interrupted" { throw ImageAllMigrationArchiveError.publicationFailed }
+                    if change == "replace" { try bytes.write(to: file, options: .atomic) }
+                    else {
+                        let handle = try FileHandle(forWritingTo: file)
+                        try handle.write(contentsOf: Data(repeating: 90, count: bytes.count))
+                        if change == "stale" { try handle.seek(toOffset: 0); try handle.write(contentsOf: bytes) }
+                        try handle.close()
+                    }
+                }), change)
+            XCTAssertTrue(try FileManager.default.contentsOfDirectory(atPath: target.path).isEmpty, change)
+        }
+    }
+
+    func testScopedVerifiedContentsAvoidReadsAndRejectChangedObjects() throws {
+        for change in ["none", "damage", "stale", "replace", "interrupt"] {
+            let root = makeRoot()
+            defer { try? FileManager.default.removeItem(at: root) }
+            let bytes = Data(repeating: 42, count: 8192)
+            let item = try makeItem(root: root, resourceID: UUID(), bytes: bytes)
+            try ImageAllMigrationArchive.write(header: header(migrationID: UUID(), count: 1), items: [item], to: root)
+            let proof = try ImageAllMigrationArchive.verify(at: root)
+            let file = root.appendingPathComponent(item.resources[0].relativePath!)
+            ImageAllMigrationArchiveDiagnostics.start()
+            let visit = {
+                try ImageAllMigrationArchive.visitVerifiedRecords(at: root, priorVerification: proof,
+                    reuseVerifiedContents: true, onHeader: { _ in }, onItem: { _ in
+                        if change == "interrupt" { throw ImageAllMigrationArchiveError.publicationFailed }
+                        if change == "replace" { try bytes.write(to: file, options: .atomic) }
+                        if change == "damage" || change == "stale" {
+                            let handle = try FileHandle(forWritingTo: file)
+                            defer { try? handle.close() }
+                            try handle.write(contentsOf: Data(repeating: 90, count: bytes.count))
+                            if change == "stale" { try handle.seek(toOffset: 0); try handle.write(contentsOf: bytes) }
+                        }
+                    })
+            }
+            if change == "none" { XCTAssertEqual(try visit(), proof) }
+            else { XCTAssertThrowsError(try visit(), change) }
+            XCTAssertEqual(ImageAllMigrationArchiveDiagnostics.snapshot().reduce(Int64(0)) { $0 + $1.resourceBytes }, 0)
         }
     }
 

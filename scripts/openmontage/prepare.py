@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Prepare a relocatable local engine payload; run explicitly before building ImageAll."""
 import argparse, hashlib, json, os, pathlib, shutil, subprocess, tarfile
+from integration_contract import CONTRACT
 P = pathlib.Path
 root = P(__file__).resolve().parents[2]
 p = argparse.ArgumentParser()
@@ -12,7 +13,7 @@ if out.exists(): raise SystemExit('Runtime already exists; move it aside before 
 out.mkdir()
 engine = out/'engine'; engine.mkdir()
 archive = root/'Vendor/OpenMontage/source.tar.gz'
-assert hashlib.sha256(archive.read_bytes()).hexdigest() == '59438ce446c2916cf31a0952dddec1870cfd5b5fa9971bfb534031720aed097a'
+assert hashlib.sha256(archive.read_bytes()).hexdigest() == CONTRACT['sourceArchiveSHA256']
 with tarfile.open(archive) as t: t.extractall(engine, filter='data')
 from config_patch import apply
 apply(engine)

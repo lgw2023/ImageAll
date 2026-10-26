@@ -12563,7 +12563,7 @@ final class LibraryWorkspaceModelTests: XCTestCase {
         await model.start()
         await model.setMediaKind(.video)
         if isFeed { await model.refreshContextualTagFeed(generateRecentAnchors: false) }
-        let host = NSHostingView(rootView: LibraryWorkspaceView(model: model, loadsSharedPhoneProjections: false,
+        let host = NSHostingView(rootView: LibraryWorkspaceView(model: model,
             initialSelection: isFeed ? .contextualTagFeed : .all)
             .environmentObject(ToolbarDisplayModeSettingsModel()).frame(width: 1400, height: 900))
         let window = NSWindow(contentRect: NSRect(x: 50, y: 50, width: 1400, height: 900),
@@ -12656,7 +12656,7 @@ final class LibraryWorkspaceModelTests: XCTestCase {
         let model = LibraryWorkspaceModel(service: service, videoPlaybackProvider: GallerySyntheticVideoProvider(url: source),
             idlePrewarmInstallEventMonitor: false)
         await model.start()
-        let host = NSHostingView(rootView: LibraryWorkspaceView(model: model, loadsSharedPhoneProjections: false, initialSelection: .worldMap)
+        let host = NSHostingView(rootView: LibraryWorkspaceView(model: model, initialSelection: .worldMap)
             .environmentObject(ToolbarDisplayModeSettingsModel()).frame(width: 1400, height: 900))
         let window = NSWindow(contentRect: NSRect(x: 50, y: 50, width: 1400, height: 900),
             styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
@@ -12744,7 +12744,7 @@ final class LibraryWorkspaceModelTests: XCTestCase {
         await waitForCatalogScanToFinish(model)
         await model.setMediaKind(.video)
         if isReview { await model.enterReviewQueue(tagID: tag.id, displayName: tag.displayName) }
-        let host = NSHostingView(rootView: LibraryWorkspaceView(model: model, loadsSharedPhoneProjections: false, initialSelection: .all)
+        let host = NSHostingView(rootView: LibraryWorkspaceView(model: model, initialSelection: .all)
             .environmentObject(ToolbarDisplayModeSettingsModel()).frame(width: 1400, height: 900))
         let window = NSWindow(contentRect: NSRect(x: 50, y: 50, width: 1400, height: 900),
             styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)

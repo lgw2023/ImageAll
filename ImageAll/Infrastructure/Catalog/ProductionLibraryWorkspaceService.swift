@@ -2535,7 +2535,7 @@ struct ProductionLibraryWorkspaceService:
 
     func enqueueReconcile(sourceIDs: [UUID]) throws {
         let requested = Set(sourceIDs)
-        for source in try sourceRepository.fetchAllFolderSources()
+        for source in try sourceRepository.fetchAllFolderSources(includeManagedPhoneSources: false)
             where source.state == .active && requested.contains(source.id)
         {
             let command = try FolderReconcileJobFactory.makeEnqueueCommand(

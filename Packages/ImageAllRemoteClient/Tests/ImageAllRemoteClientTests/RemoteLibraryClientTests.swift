@@ -338,6 +338,7 @@ final class RemoteLibraryClientTests: XCTestCase {
         let receiver = Receiver()
         let transport = MockTransport { outgoing in
             XCTAssertEqual(outgoing.url?.path, RemoteHTTPPaths.localLibrarySnapshotChunk)
+            XCTAssertEqual(outgoing.timeoutInterval, 180, "final snapshot commit may exceed 15 seconds")
             XCTAssertEqual(outgoing.value(forHTTPHeaderField: "Authorization"), "Bearer secret")
             let body = try XCTUnwrap(outgoing.httpBody)
             XCTAssertLessThan(body.count, 200 * 1_024)

@@ -1,16 +1,16 @@
 # ImageAll 项目协作约束
 
-## 日常 App 更新与验收
+## Xcode 开发与验收
 
-项目所有者于 2026-09-17 明确要求：以后修改开发默认更新日常使用的 ImageAll App，并优先在该版本中验证实际界面与交互；只有任务本身需要隔离环境（例如网页独立开发、破坏性测试或故障注入）时才另建环境，并说明原因。不要仅交付独立演示或测试版本。替换前保留可恢复的 App，构建通过后更新；此偏好不扩大真实照片的写入、删除、下载或迁移授权。
+项目所有者于 2026-09-24 澄清：日常从 Xcode 打开、构建和运行 ImageAll，不需要另设或替换一个专门的日常 App。开发默认修改当前 Xcode 项目，并在该项目的构建与运行结果中验收；任务需要隔离环境（例如网页独立开发、破坏性测试或故障注入）时才另建环境并说明原因。此前 2026-09-17 关于默认替换日常 App 的要求由本条取代。此偏好不扩大真实照片的写入、删除、下载或迁移授权。
 
 ## 网页独立开发工作区
 
 网页开发使用 `/Volumes/SSD1/ImageAll-Web-Dev` 的 `lgw/imageall-web-dev` 分支。
 每轮修改前后核对 cwd、分支和主工作区状态。启动方式见 `WebCompanionApp/DEVELOPMENT.md`。
-`npm run dev` 仅运行 Vite 和合成 Host 浏览器窗口；禁止自动连接日常图库、覆盖或重启日常 App。
+`npm run dev` 仅运行 Vite 和合成 Host 浏览器窗口；禁止自动连接日常图库、覆盖或重启 Xcode 正在运行的 ImageAll。
 网页构建产物只留在本 worktree。若需运行 Swift Host，必须先满足 ADR-072 的数据、应用身份、
-端口和构建目录隔离；不能直接运行生产 composition root。主分支集成与日常 App 替换分别处理。
+端口和构建目录隔离；不能直接运行生产 composition root。主分支集成与 Xcode 运行验收分别处理。
 
 ## 代理职责
 
@@ -57,3 +57,16 @@
 “可作为测试数据”只表示以后可以用于明确授权的只读人工验证，不表示它们是可丢弃 fixture。当前阶段及任何自动化测试不得读取其内容或把输出写入这些路径；不得删除、移动、重命名、覆盖照片，不得写 sidecar、隐藏文件或元数据。不得直接遍历 `.photoslibrary` 包；Apple Photos 资产只能在相应阶段通过 PhotoKit 和用户授权读取。
 
 任何命令、测试或清理逻辑只要可能修改这些路径或其内容，都必须停止并取得项目所有者针对该具体操作的新授权。通用的“继续实施”“运行测试”或“清理测试产物”不构成这种授权。
+
+## OpenMontage 交付门禁
+
+涉及 OpenMontage 的 App 打包发布或手工替换时，使用 `scripts/openmontage/release.py` 完成发布验收，说明见
+`docs/OPENMONTAGE-RELEASE.md`。日常 Xcode 构建运行不要求另设 App；不得仅凭 Swift 构建通过发布或替换安装包。
+集成常量只修改 `scripts/openmontage/integration-contract.json`，重新生成并核对 Swift 契约。
+`Vendor/OpenMontage/Runtime` 是只读依赖种子；不要把源代码修复直接写入安装缓存或共享种子后作为交付。
+所有自动化使用独立合成任务目录和直接 XCTest bundle，不运行生产 Photos 测试宿主、不调用真实付费模型。
+
+## 当前 USB 任务范围
+
+继续 USB 导入工作前，以 [当前范围决议](docs/USB-IMPORT-NEXT-PHASE.md#当前任务范围2026-10-21-用户决定优先于下文历史记录)
+为准；旧交接和历史报告不重新引入已退出范围的工作。保留已导入 Mac 数据与真实历史记录。

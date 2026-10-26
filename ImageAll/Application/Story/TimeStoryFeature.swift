@@ -263,6 +263,7 @@ struct TimeStoryProject: Codable, Sendable, Equatable, Identifiable {
 
 struct TimeStoryProjectSummary: Sendable, Equatable, Identifiable {
     let id: UUID
+    let subjectTagID: UUID
     let title: String
     let subjectTagDisplayName: String
     let updatedAtMs: Int64
@@ -1280,6 +1281,7 @@ struct TimeStoryProjectStore: Sendable {
                 else { return nil }
                 return TimeStoryProjectSummary(
                     id: project.id,
+                    subjectTagID: project.subjectTagID,
                     title: project.title,
                     subjectTagDisplayName: project.subjectTagDisplayName,
                     updatedAtMs: project.updatedAtMs,
@@ -1762,25 +1764,14 @@ struct AVFoundationTimeStoryRenderer: TimeStoryRendering, Sendable {
             attributes: [
                 .font: typography.font(size: typography.captionSize),
                 .foregroundColor: NSColor.white,
-                .strokeColor: NSColor.black.withAlphaComponent(0.7),
-                .strokeWidth: -3.0,
             ]
         )
         let line = CTLineCreateWithAttributedString(attributed)
         let bounds = CTLineGetBoundsWithOptions(line, [.useOpticalBounds])
-        let padding: CGFloat = 20
-        let background = CGRect(
-            x: max(32, (outputSize.width - bounds.width) / 2 - padding),
-            y: 52,
-            width: min(outputSize.width - 64, bounds.width + padding * 2),
-            height: bounds.height + padding
-        )
-        context.setFillColor(NSColor.black.withAlphaComponent(0.5).cgColor)
-        context.fill(background)
-        context.textPosition = CGPoint(
-            x: (outputSize.width - bounds.width) / 2,
-            y: background.minY + padding / 2
-        )
+        // Only the glyphs cast a soft dark-gray halo; keep the photo unobscured.
+        context.setShadow(offset: .zero, blur: 3,
+                          color: NSColor(calibratedWhite: 40 / 255, alpha: 0.9).cgColor)
+        context.textPosition = CGPoint(x: (outputSize.width - bounds.width) / 2, y: 62)
         CTLineDraw(line, context)
     }
 

@@ -16,6 +16,10 @@
 		MB0000010000000000000004 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = MB0001010000000000000004 /* Assets.xcassets */; };
 		MB0000010000000000000005 /* ImageAllRemoteClient in Frameworks */ = {isa = PBXBuildFile; productRef = MB0003010000000000000001 /* ImageAllRemoteClient */; };
 		MB0000010000000000000006 /* ImageAllRemoteProtocol in Frameworks */ = {isa = PBXBuildFile; productRef = MB0003010000000000000002 /* ImageAllRemoteProtocol */; };
+		A51000010000000000000001 /* LocalSharePresentation.swift in Sources */ = {isa = PBXBuildFile; fileRef = A51000020000000000000001 /* LocalSharePresentation.swift */; };
+		A51000010000000000000002 /* LocalShareDashboard.swift in Sources */ = {isa = PBXBuildFile; fileRef = A51000020000000000000002 /* LocalShareDashboard.swift */; };
+		A51000010000000000000003 /* LocalPhotoGrid.swift in Sources */ = {isa = PBXBuildFile; fileRef = A51000020000000000000003 /* LocalPhotoGrid.swift */; };
+		A51000010000000000000004 /* USBImportTaskProbe.swift in Sources */ = {isa = PBXBuildFile; fileRef = A51000020000000000000004 /* USBImportTaskProbe.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -27,6 +31,10 @@
 		MB0001010000000000000004 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		MB0001010000000000000005 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
 		MB0001010000000000000006 /* ImageAllMobile.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = ImageAllMobile.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		A51000020000000000000001 /* LocalSharePresentation.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocalSharePresentation.swift; sourceTree = "<group>"; };
+		A51000020000000000000002 /* LocalShareDashboard.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocalShareDashboard.swift; sourceTree = "<group>"; };
+		A51000020000000000000003 /* LocalPhotoGrid.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocalPhotoGrid.swift; sourceTree = "<group>"; };
+		A51000020000000000000004 /* USBImportTaskProbe.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = USBImportTaskProbe.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -69,6 +77,10 @@
 				MB0001010000000000000003 /* RemoteCompanionViews.swift */,
                 VC2800020000000000000001,
 				MB0001010000000000000007 /* LocalLibraryView.swift */,
+				A51000020000000000000003 /* LocalPhotoGrid.swift */,
+				A51000020000000000000004 /* USBImportTaskProbe.swift */,
+				A51000020000000000000002 /* LocalShareDashboard.swift */,
+				A51000020000000000000001 /* LocalSharePresentation.swift */,
 			);
 			path = App;
 			sourceTree = "<group>";
@@ -165,6 +177,10 @@
 				MB0000010000000000000003 /* RemoteCompanionViews.swift in Sources */,
                 VC2800010000000000000001,
 				MB0000010000000000000007 /* LocalLibraryView.swift in Sources */,
+				A51000010000000000000003 /* LocalPhotoGrid.swift in Sources */,
+				A51000010000000000000004 /* USBImportTaskProbe.swift in Sources */,
+				A51000010000000000000002 /* LocalShareDashboard.swift in Sources */,
+				A51000010000000000000001 /* LocalSharePresentation.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

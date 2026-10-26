@@ -191,13 +191,33 @@ final class ImageAllMigrationTransferStoreTests: XCTestCase {
         let factPath = "facts/\(publishedFact.lastPathComponent)"
         let firstFactPart = Data(factBytes.prefix(factBytes.count / 2))
         let lastFactPart = Data(factBytes.suffix(factBytes.count - firstFactPart.count))
-        _ = try await resumed.append(
+        let incomingFact = try await resumed.allocateIncomingChunk(
             migrationID: migrationID, authenticatedDeviceID: deviceID,
-            relativePath: factPath, offset: 0,
-            bytes: firstFactPart, sha256: hash(firstFactPart)
-        )
+            relativePath: factPath, byteCount: firstFactPart.count)
+        try firstFactPart.write(to: incomingFact)
+        _ = try await resumed.commitIncomingChunk(
+            migrationID: migrationID, authenticatedDeviceID: deviceID,
+            relativePath: factPath, offset: 0, temporaryURL: incomingFact,
+            byteCount: firstFactPart.count, sha256: hash(firstFactPart))
         let readyDuringUpload = try await resumed.sealedArchives()
         XCTAssertTrue(readyDuringUpload.isEmpty)
+        let coldListing = try ImageAllMigrationTransferStore(root: receiver)
+        let coldPending = try await coldListing.sealedArchives()
+        XCTAssertTrue(coldPending.isEmpty, "pending facts marker must survive process restart")
+        let journal = package.deletingLastPathComponent().appendingPathComponent("session.json")
+        let journalBytes = try Data(contentsOf: journal)
+        var legacy = try XCTUnwrap(JSONSerialization.jsonObject(with: journalBytes) as? [String: Any])
+        legacy.removeValue(forKey: "factsUpdatePending")
+        try JSONSerialization.data(withJSONObject: legacy).write(to: journal)
+        let legacyReader = try ImageAllMigrationTransferStore(root: receiver)
+        let legacyPending = try await legacyReader.sealedArchives()
+        XCTAssertTrue(legacyPending.isEmpty, "legacy partial facts must remain hidden")
+        try journalBytes.write(to: journal)
+        do {
+            _ = try await resumed.append(migrationID: migrationID, authenticatedDeviceID: deviceID,
+                relativePath: "manifest.jsonl", offset: 0, bytes: Data([1]), sha256: hash(Data([1])))
+            XCTFail("pending facts must not unlock sealed media or manifest")
+        } catch ImageAllMigrationTransferError.sealed { }
         _ = try await resumed.append(
             migrationID: migrationID, authenticatedDeviceID: deviceID,
             relativePath: factPath, offset: Int64(firstFactPart.count),
@@ -207,6 +227,8 @@ final class ImageAllMigrationTransferStoreTests: XCTestCase {
             migrationID: migrationID, authenticatedDeviceID: deviceID
         )
         XCTAssertNotNil(updated.1.factsSHA256)
+        let readyAfterFacts = try await ImageAllMigrationTransferStore(root: receiver).sealedArchives()
+        XCTAssertEqual(readyAfterFacts.map(\.id), [migrationID])
         do {
             _ = try await resumed.append(
                 migrationID: migrationID, authenticatedDeviceID: deviceID,

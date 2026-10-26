@@ -4,6 +4,8 @@ from pathlib import Path
 def apply(engine: Path):
     import typography_patch
     typography_patch.apply(engine)
+    import caption_shadow_patch
+    caption_shadow_patch.apply(engine)
     import task_protocol_patch
     task_protocol_patch.apply(engine)
     import mixed_story_executor_patch

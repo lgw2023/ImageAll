@@ -90,3 +90,41 @@ func oldBrowsePageCannotReappearAfterRefresh(deny: Bool) async throws {
     #expect(browser.assets.map(\.localIdentifier) == (deny ? [] : ["c"]))
     #expect(!browser.hasMore)
 }
+
+@MainActor
+@Test func newBatchExcludesPriorScopeAndReplacesOnlyAfterVersionCheck() async throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let store = try LocalLibraryStore(url: root.appendingPathComponent("local.sqlite"))
+    let source = SyntheticBrowsingSource()
+    let browser = LocalLibraryBrowser(store: store, source: source, pageSize: 2)
+    try await browser.refresh()
+    let prior = try #require(browser.assets.first)
+    let addedAsset = try #require(browser.assets.last)
+    let collection = try await store.createCollection(name: "新内容集合")
+    _ = try await store.setMembership(assetID: addedAsset.id, collectionID: collection, included: true)
+    #expect(try await store.privateCollectionNameRevisions()[collection] != nil)
+    try await store.setShared(assetID: prior.id, shared: true)
+    let preview = try await browser.prepareBulkSharePreview(excludingAssetIDs: [prior.id])
+    #expect(preview.totalCount == 2)
+    #expect(try await store.sharedSelections().map(\.id) == [prior.id])
+    let changed = try await browser.confirmBulkSharePreview(preview, replacingSelection: true)
+    #expect(changed == 2)
+    #expect(try await store.privateCollectionNameRevisions()[collection] == nil)
+    #expect(Set(try await store.sharedSelections().map(\.localIdentifier)) == ["b", "c"])
+    let stale = try await browser.prepareBulkSharePreview(excludingAssetIDs: [prior.id])
+    try await store.setShared(assetID: prior.id, shared: true)
+    await #expect(throws: LocalLibraryError.sharePlanExpired) {
+        try await browser.confirmBulkSharePreview(stale, replacingSelection: true)
+    }
+    #expect(try await store.sharedSelections().count == 3)
+    try await store.setFavoriteTarget(assetID: prior.id, isFavorite: true)
+    let pending = try await store.pendingSharedOperations()
+    #expect(!pending.isEmpty)
+    let blocked = try await browser.prepareBulkSharePreview(excludingAssetIDs: [prior.id])
+    await #expect(throws: LocalLibraryError.migrationSyncPending) {
+        try await browser.confirmBulkSharePreview(blocked, replacingSelection: true)
+    }
+    #expect(try await store.sharedSelections().count == 3)
+    #expect(try await store.pendingSharedOperations().map(\.id) == pending.map(\.id))
+}

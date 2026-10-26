@@ -21,6 +21,12 @@ struct StoredFolderSourceRecord: Equatable, Sendable {
 struct GRDBFolderSourceAuthorizationRepository: Sendable {
     let database: CatalogDatabase
 
+    func isManagedPhoneSource(_ id: UUID) throws -> Bool {
+        try database.pool.read { db in
+            try Bool.fetchOne(db, sql: "SELECT EXISTS(SELECT 1 FROM phone_library_source WHERE source_id = ?)", arguments: [id.uuidString.lowercased()]) ?? false
+        }
+    }
+
     func lookupSource(id: UUID) throws -> FolderSourceLookupResult {
         try mapPersistence {
             try database.pool.read { db in
@@ -29,7 +35,7 @@ struct GRDBFolderSourceAuthorizationRepository: Sendable {
         }
     }
 
-    func fetchAllFolderSources() throws -> [StoredFolderSourceRecord] {
+    func fetchAllFolderSources(includeManagedPhoneSources: Bool = true) throws -> [StoredFolderSourceRecord] {
         try mapPersistence {
             try database.pool.read { db in
                 try Row.fetchAll(
@@ -37,6 +43,7 @@ struct GRDBFolderSourceAuthorizationRepository: Sendable {
                     sql: """
                     SELECT * FROM source
                     WHERE kind = 'folder'
+                      AND (\(includeManagedPhoneSources ? 1 : 0) = 1 OR id NOT IN (SELECT source_id FROM phone_library_source))
                     ORDER BY id ASC
                     """
                 ).map { row in
@@ -167,6 +174,7 @@ struct GRDBFolderSourceAuthorizationRepository: Sendable {
         jobID: UUID,
         nowMs: Int64
     ) throws {
+        guard try !isManagedPhoneSource(sourceID) else { throw FolderAuthorizationError.sourceKindMismatch }
         try mapPersistence {
             try database.pool.write { db in
                 switch try lookupSource(db, id: sourceID) {

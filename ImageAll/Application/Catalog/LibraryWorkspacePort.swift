@@ -5,17 +5,20 @@ struct LibrarySourceSummary: Identifiable, Equatable, Sendable {
     let kind: SourceKind
     let displayName: String
     let state: SourceState
+    let isPhoneImport: Bool
 
     init(
         id: UUID,
         kind: SourceKind = .folder,
         displayName: String,
-        state: SourceState
+        state: SourceState,
+        isPhoneImport: Bool = false
     ) {
         self.id = id
         self.kind = kind
         self.displayName = displayName
         self.state = state
+        self.isPhoneImport = isPhoneImport
     }
 }
 

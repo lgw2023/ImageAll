@@ -499,8 +499,8 @@ struct AppModelSettingsView: View {
             .padding(12)
             .tabItem { Label("通用", systemImage: "gearshape") }
 
-            RemoteHostSettingsView()
-                .tabItem { Label("移动 Host", systemImage: "iphone") }
+            DevicePhotoImportSettingsView()
+                .tabItem { Label("设备与导入", systemImage: "iphone") }
 
             OpenMontageIntegrationSettingsView()
                 .tabItem { Label("OpenMontage", systemImage: "film.stack") }

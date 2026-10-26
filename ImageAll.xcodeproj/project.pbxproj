@@ -7,6 +7,9 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		A11000202026102000000001 /* LibraryThumbnailByteBudgetTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A11000202026102000000002 /* LibraryThumbnailByteBudgetTests.swift */; };
+		PN1070010000000000000001 = {isa = PBXBuildFile; fileRef = PN1070020000000000000001; };
+		D10300010000000000000001 /* DevicePhotoImportSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = D10300020000000000000001 /* DevicePhotoImportSettingsView.swift */; };
         VC2700010000000000000002 /* LibraryVideoViewingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = VC2700020000000000000002; };
         VC2700010000000000000001 /* LibraryVideoViewer.swift in Sources */ = {isa = PBXBuildFile; fileRef = VC2700020000000000000001; };
 		MA1020010000000000000001 /* V041AddPhoneArchiveImportMigration.swift in Sources */ = {isa = PBXBuildFile; fileRef = MA1020020000000000000001 /* V041AddPhoneArchiveImportMigration.swift */; };
@@ -365,6 +368,9 @@
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
+		A11000202026102000000002 /* LibraryThumbnailByteBudgetTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LibraryThumbnailByteBudgetTests.swift; sourceTree = "<group>"; };
+		PN1070020000000000000001 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Import/PhoneNativeLibrary.swift; sourceTree = "<group>"; };
+		D10300020000000000000001 /* DevicePhotoImportSettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DevicePhotoImportSettingsView.swift; sourceTree = "<group>"; };
         VC2700020000000000000002 /* LibraryVideoViewingTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LibraryVideoViewingTests.swift; sourceTree = "<group>"; };
         VC2700020000000000000001 /* LibraryVideoViewer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LibraryVideoViewer.swift; sourceTree = "<group>"; };
 		MA1020020000000000000001 /* V041AddPhoneArchiveImportMigration.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = V041AddPhoneArchiveImportMigration.swift; sourceTree = "<group>"; };
@@ -770,6 +776,7 @@
 				MA1020020000000000000003 /* PhoneArchiveImportTests.swift */,
 				OO0006010000000000000003 /* Photos */,
 				JJ0001010000000000000101 /* LibraryWorkspaceModelTests.swift */,
+				A11000202026102000000002 /* LibraryThumbnailByteBudgetTests.swift */,
                 VC2700020000000000000002 /* LibraryVideoViewingTests.swift */,
 				IP0001010000000000000101 /* IdleThumbnailPrewarmTests.swift */,
 				TD0001010000000000000101 /* ToolbarDisplayModeTests.swift */,
@@ -868,6 +875,7 @@
 				AA0001010000000000000001 /* ImageAllApp.swift */,
 				RH000101000000000000000B /* RemoteHostSettingsView.swift */,
 				CM0001010000000000000005 /* AppModelSettingsView.swift */,
+				D10300020000000000000001 /* DevicePhotoImportSettingsView.swift */,
 				IP0001010000000000000003 /* IdleThumbnailPrewarmController.swift */,
 				IP0001010000000000000004 /* IdleThumbnailPrewarmSettingsModel.swift */,
 				TD0001010000000000000003 /* ToolbarDisplayModeSettingsModel.swift */,
@@ -1034,6 +1042,7 @@
 				SL0006010000000000000002 /* Similarity */,
 				EX0001010000000000000001 /* PortableCatalogExporter.swift */,
 				MA1020020000000000000002 /* VerifiedPhoneArchiveImporter.swift */,
+				PN1070020000000000000001 /* PhoneNativeLibrary.swift */,
 				B06200020000000000000001 /* MigrationIndependentBackup.swift */,
 				OO0006010000000000000002 /* Photos */,
 				KK0006010000000000000002 /* Personalization */,
@@ -1626,6 +1635,7 @@
                 OM9200010000000000000002,
 				TS0000010000000000000003 /* TimeStoryVerificationSupport.swift in Sources */,
 				CM0000010000000000000005 /* AppModelSettingsView.swift in Sources */,
+				D10300010000000000000001 /* DevicePhotoImportSettingsView.swift in Sources */,
 				IP0000010000000000000003 /* IdleThumbnailPrewarmController.swift in Sources */,
 				IP0000010000000000000004 /* IdleThumbnailPrewarmSettingsModel.swift in Sources */,
 				TD0000010000000000000001 /* ToolbarDisplayModeContracts.swift in Sources */,
@@ -1653,6 +1663,7 @@
 				EX0000010000000000000001 /* PortableCatalogExporter.swift in Sources */,
 				MA1020010000000000000001 /* V041AddPhoneArchiveImportMigration.swift in Sources */,
 				MA1020010000000000000002 /* VerifiedPhoneArchiveImporter.swift in Sources */,
+				PN1070010000000000000001 /* PhoneNativeLibrary.swift in Sources */,
 				B06200010000000000000001 /* MigrationIndependentBackup.swift in Sources */,
 				OO0000010000000000000001 /* PhotosLibraryContracts.swift in Sources */,
 				OO0000010000000000000002 /* PhotosLibraryConnectionService.swift in Sources */,
@@ -1864,6 +1875,7 @@
 				NN0000010000000000000101 /* FullLibrarySuggestionsJobTests.swift in Sources */,
 				ST0000010000000000000003 /* SuggestionThresholdTests.swift in Sources */,
 				JJ0000010000000000000101 /* LibraryWorkspaceModelTests.swift in Sources */,
+				A11000202026102000000001 /* LibraryThumbnailByteBudgetTests.swift in Sources */,
                 VC2700010000000000000002 /* LibraryVideoViewingTests.swift in Sources */,
 				IP0000010000000000000101 /* IdleThumbnailPrewarmTests.swift in Sources */,
 				TD0000010000000000000101 /* ToolbarDisplayModeTests.swift in Sources */,

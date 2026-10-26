@@ -133,11 +133,24 @@ public struct RemoteLibraryClient: Sendable {
         self.sendAuthorization = sendAuthorization
     }
 
+    /// Keep the pinned transport, but obtain credentials for each request and
+    /// recover bounded transient failures without restarting the whole export.
+    public func recoveringMigrationRequests(
+        beforeAttempt: @escaping @Sendable () async throws -> Void,
+        accessToken: @escaping @Sendable (String?) async throws -> String,
+        onRetry: @escaping @Sendable (Int) async -> Void = { _ in }
+    ) -> Self {
+        Self(endpoint: endpoint, transport: RemoteMigrationRecoveryTransport(
+            base: transport, beforeAttempt: beforeAttempt, accessToken: accessToken,
+            onRetry: onRetry, sleep: { try await Task.sleep(for: $0) }), sendAuthorization: sendAuthorization)
+    }
+
     public static func pinned(
         host: String,
         port: Int,
         accessToken: String,
-        certificateFingerprintSHA256: String
+        certificateFingerprintSHA256: String,
+        sendAuthorization: Bool = true
     ) throws -> RemoteLibraryClient {
         let endpoint = try RemoteHostEndpoint(
             host: host,
@@ -150,7 +163,8 @@ public struct RemoteLibraryClient: Sendable {
         )
         return RemoteLibraryClient(
             endpoint: endpoint,
-            transport: URLSessionRemoteHTTPTransport(session: session)
+            transport: URLSessionRemoteHTTPTransport(session: session),
+            sendAuthorization: sendAuthorization
         )
     }
 
@@ -182,8 +196,59 @@ public struct RemoteLibraryClient: Sendable {
         try await getJSON(path: RemoteHTTPPaths.migrationTransfer(migrationID))
     }
 
+    /// Read-only; no transfer begin, sealing, import or publication side effects.
+    public func importTaskStatus(_ query: RemoteImportTaskQuery) async throws -> RemoteImportTaskStatus {
+        var request = try makeRequest(
+            path: RemoteHTTPPaths.migrationTransfer(query.migrationID) + "/import-status", method: "GET")
+        request.setValue(query.taskID.uuidString, forHTTPHeaderField: "X-ImageAll-Task-ID")
+        request.setValue(query.sourceInstallID.uuidString, forHTTPHeaderField: "X-ImageAll-Source-Install-ID")
+        request.setValue(query.sourceEpoch.uuidString, forHTTPHeaderField: "X-ImageAll-Source-Epoch")
+        request.setValue(query.manifestSHA256, forHTTPHeaderField: "X-ImageAll-Manifest-SHA256")
+        let (data, response) = try await transport.data(for: request)
+        try Self.validate(response: response, data: data)
+        let value = try decoder.decode(RemoteImportTaskStatus.self, from: data)
+        guard value.query == query,
+              value.phase != .browsable || (value.sourceID != nil && (value.itemCount ?? -1) >= 0) else {
+            throw RemoteAPIError(code: .conflict, message: "Mac 导入状态与原任务不一致")
+        }
+        return value
+    }
+
+    public func exportCleanupReceipt(_ query: RemoteImportTaskQuery, nonce: UUID, hostID: UUID, deviceID: UUID) async throws -> RemoteExportCleanupReceipt {
+        var request = try makeRequest(
+            path: RemoteHTTPPaths.migrationTransfer(query.migrationID) + "/export-cleanup-receipt", method: "GET")
+        request.setValue(query.taskID.uuidString, forHTTPHeaderField: "X-ImageAll-Task-ID")
+        request.setValue(query.sourceInstallID.uuidString, forHTTPHeaderField: "X-ImageAll-Source-Install-ID")
+        request.setValue(query.sourceEpoch.uuidString, forHTTPHeaderField: "X-ImageAll-Source-Epoch")
+        request.setValue(query.manifestSHA256, forHTTPHeaderField: "X-ImageAll-Manifest-SHA256")
+        request.setValue(nonce.uuidString, forHTTPHeaderField: "X-ImageAll-Cleanup-Nonce")
+        request.timeoutInterval = RemotePhotoImportRequestBudget.maximumRequestSeconds
+        let (data, response) = try await transport.data(for: request)
+        try Self.validate(response: response, data: data)
+        let value = try decoder.decode(RemoteExportCleanupReceipt.self, from: data)
+        try value.validate(query: query, nonce: nonce, hostID: hostID, deviceID: deviceID)
+        return value
+    }
+
+    public func automaticCleanup(_ query: RemoteImportTaskQuery, nonce: UUID, hostID: UUID, deviceID: UUID) async throws -> RemoteExportCleanupReceipt {
+        var request = try makeRequest(
+            path: RemoteHTTPPaths.migrationTransfer(query.migrationID) + "/automatic-cleanup", method: "POST")
+        request.setValue(query.taskID.uuidString, forHTTPHeaderField: "X-ImageAll-Task-ID")
+        request.setValue(query.sourceInstallID.uuidString, forHTTPHeaderField: "X-ImageAll-Source-Install-ID")
+        request.setValue(query.sourceEpoch.uuidString, forHTTPHeaderField: "X-ImageAll-Source-Epoch")
+        request.setValue(query.manifestSHA256, forHTTPHeaderField: "X-ImageAll-Manifest-SHA256")
+        request.setValue(nonce.uuidString, forHTTPHeaderField: "X-ImageAll-Cleanup-Nonce")
+        request.timeoutInterval = RemotePhotoImportRequestBudget.maximumRequestSeconds
+        let (data, response) = try await transport.data(for: request)
+        try Self.validate(response: response, data: data)
+        let value = try decoder.decode(RemoteExportCleanupReceipt.self, from: data)
+        try value.validate(query: query, nonce: nonce, hostID: hostID, deviceID: deviceID)
+        return value
+    }
+
     public func uploadMigrationChunk(
-        migrationID: UUID, relativePath: String, offset: Int64, bytes: Data
+        migrationID: UUID, relativePath: String, offset: Int64, bytes: Data,
+        fileProgressOnly: Bool = false
     ) async throws -> ImageAllMigrationTransferProgress {
         guard !bytes.isEmpty,
               bytes.count <= ImageAllMigrationTransferStore.defaultMaximumChunkBytes else {
@@ -193,6 +258,10 @@ public struct RemoteLibraryClient: Sendable {
             path: RemoteHTTPPaths.migrationTransferChunks(migrationID), method: "PUT"
         )
         request.timeoutInterval = 90
+        if fileProgressOnly {
+            // Old receivers ignore this opt-in and return their full progress.
+            request.setValue("file", forHTTPHeaderField: "X-ImageAll-Progress-Scope")
+        }
         request.setValue(relativePath, forHTTPHeaderField: "X-ImageAll-File")
         request.setValue(String(offset), forHTTPHeaderField: "X-ImageAll-Offset")
         request.setValue(
@@ -213,13 +282,62 @@ public struct RemoteLibraryClient: Sendable {
         let receipt: ImageAllMigrationResourceVerificationReceipt = try await postJSON(
             path: RemoteHTTPPaths.migrationTransferVerifyResource(migrationID),
             body: encoder.encode(request))
-        guard receipt.migrationID == migrationID, receipt.deviceID == deviceID,
+        guard receipt.custodyVersion == nil, receipt.migrationID == migrationID, receipt.deviceID == deviceID,
               receipt.resource.relativePath == request.relativePath,
               receipt.resource.byteCount == request.byteCount,
               receipt.resource.sha256 == request.sha256.lowercased() else {
             throw RemoteAPIError(code: .conflict, message: "resource verification receipt mismatch")
         }
         return receipt
+    }
+
+    public func acceptMigrationResource(migrationID: UUID, deviceID: UUID,
+        request: ImageAllMigrationResourceVerificationRequest) async throws -> ImageAllMigrationResourceVerificationReceipt {
+        let receipt: ImageAllMigrationResourceVerificationReceipt = try await postJSON(
+            path: "/v1/migration-transfers/\(migrationID.uuidString.lowercased())/accept-resource", body: encoder.encode(request))
+        guard receipt.migrationID == migrationID, receipt.deviceID == deviceID,
+              receipt.resource.relativePath == request.relativePath, receipt.resource.byteCount == request.byteCount,
+              receipt.resource.sha256 == request.sha256.lowercased(),
+              receipt.custodyVersion == nil || receipt.custodyVersion == 1 else {
+            throw RemoteAPIError(code: .conflict, message: "resource custody receipt mismatch")
+        }
+        return receipt
+    }
+
+    /// Fetch once per resumed export. Only matching local descriptors can use
+    /// these authenticated durable receipts; never interpret this as completion.
+    /// Older receivers fall back to the existing per-resource verification path.
+    public func migrationResumeCheckpoint(
+        migrationID: UUID, deviceID: UUID, sourceInstallID: UUID, allowDurableCustody: Bool = false
+    ) async throws -> [String: ImageAllMigrationResourceVerificationReceipt] {
+        let checkpoint: ImageAllMigrationResumeCheckpoint
+        do {
+            checkpoint = try await getJSON(path: RemoteHTTPPaths.migrationTransferResume(migrationID),
+                queryItems: allowDurableCustody ? [.init(name: "custody", value: "1")] : [])
+        } catch let error as RemoteAPIError where error.code == .notFound {
+            return [:]
+        }
+        guard checkpoint.migrationID == migrationID, checkpoint.deviceID == deviceID,
+              checkpoint.sourceInstallID == sourceInstallID else {
+            throw RemoteAPIError(code: .conflict, message: "续传回执的 Mac 批次或来源身份不一致")
+        }
+        var receipts: [String: ImageAllMigrationResourceVerificationReceipt] = [:]
+        for receipt in checkpoint.resources {
+            let resource = receipt.resource
+            let parts = resource.relativePath.split(separator: "/", omittingEmptySubsequences: false)
+            let name = parts.last?.split(separator: ".", omittingEmptySubsequences: false) ?? []
+            guard receipt.migrationID == migrationID, receipt.deviceID == deviceID,
+                  receipt.custodyVersion == nil || (allowDurableCustody && receipt.custodyVersion == 1),
+                  parts.count == 2, parts[0] == "resources", name.count == 2,
+                  UUID(uuidString: String(name[0]))?.uuidString.lowercased() == String(name[0]),
+                  (1...12).contains(name[1].count), name[1].allSatisfy({ $0.isASCII && ($0.isLetter || $0.isNumber) }),
+                  resource.byteCount > 0, resource.sha256.count == 64,
+                  resource.sha256.allSatisfy({ $0.isASCII && $0.isHexDigit && !$0.isUppercase }),
+                  receipts.updateValue(receipt, forKey: resource.relativePath) == nil else {
+                throw RemoteAPIError(code: .conflict, message: "续传回执不完整或包含重复资源")
+            }
+        }
+        return receipts
     }
 
     public func sealMigrationTransfer(
@@ -239,7 +357,8 @@ public struct RemoteLibraryClient: Sendable {
     public func uploadMigrationFile(
         at file: URL, migrationID: UUID, relativePath: String,
         byteCount: Int64, sha256: String, sourceInstallID: UUID? = nil,
-        beforeChunk: @Sendable () async throws -> Void = {}
+        beforeChunk: @Sendable () async throws -> Void = {},
+        onCommittedBytes: @Sendable (Int64) async -> Void = { _ in }
     ) async throws -> ImageAllMigrationTransferProgress {
         guard byteCount > 0, sha256.count == 64,
               sha256.allSatisfy({ $0.isASCII && $0.isHexDigit }) else {
@@ -254,6 +373,7 @@ public struct RemoteLibraryClient: Sendable {
         try Task.checkCancellation()
         try await beforeChunk()
         var progress = try await beginMigrationTransfer(migrationID: migrationID, sourceInstallID: sourceInstallID)
+        let initialProgress = progress
         func committedOffset(_ value: ImageAllMigrationTransferProgress) throws -> Int64 {
             guard value.migrationID == migrationID,
                   value.maximumChunkBytes > 0,
@@ -295,28 +415,30 @@ public struct RemoteLibraryClient: Sendable {
             // their expected whole-file digest. Keep memory bounded independently
             // of a host's advertised maximum.
             let boundary = offset < committed ? committed : byteCount
-            let count = Int(min(Int64(min(progress.maximumChunkBytes, 64 * 1_024)), boundary - offset))
-            guard let bytes = try handle.read(upToCount: count), bytes.count == count else {
+            let count = Int(min(Int64(min(progress.maximumChunkBytes, ImageAllMigrationTransferStore.defaultMaximumChunkBytes)), boundary - offset))
+            guard let bytes = try Self.readMigrationBytes(handle, upToCount: count), bytes.count == count else {
                 throw RemoteAPIError(code: .conflict, message: "source file changed during transfer")
             }
             digest.update(data: bytes)
             if offset >= committed {
                 progress = try await uploadMigrationChunk(
-                    migrationID: migrationID, relativePath: relativePath, offset: offset, bytes: bytes
+                    migrationID: migrationID, relativePath: relativePath, offset: offset, bytes: bytes,
+                    fileProgressOnly: true
                 )
                 guard try committedOffset(progress) == offset + Int64(bytes.count) else {
                     throw RemoteAPIError(code: .conflict, message: "receiver did not commit chunk")
                 }
+                await onCommittedBytes(Int64(bytes.count))
             }
             offset += Int64(bytes.count)
         }
         try Task.checkCancellation()
         try await beforeChunk()
-        guard try handle.read(upToCount: 1)?.isEmpty != false,
+        guard try Self.readMigrationBytes(handle, upToCount: 1)?.isEmpty != false,
               Self.migrationHex(digest.finalize()) == sha256.lowercased() else {
             throw RemoteAPIError(code: .conflict, message: "source file digest changed during transfer")
         }
-        return progress
+        return progress.includingEarlierFiles(from: initialProgress)
     }
 
     private static func openMigrationFile(_ file: URL) throws -> FileHandle {
@@ -339,12 +461,19 @@ public struct RemoteLibraryClient: Sendable {
         digest.map { String(format: "%02x", $0) }.joined()
     }
 
+    /// Large resumed prefixes may be hashed without a suspending network call.
+    /// Drain Foundation's autoreleased NSData per read; ARC alone does not bound
+    /// those temporaries for the lifetime of the enclosing async task.
+    private static func readMigrationBytes(_ handle: FileHandle, upToCount count: Int) throws -> Data? {
+        try autoreleasepool { try handle.read(upToCount: count) }
+    }
+
     private static func migrationFileDigest(at file: URL) throws -> (bytes: Int64, sha256: String) {
         let handle = try openMigrationFile(file)
         defer { try? handle.close() }
         var digest = SHA256()
         var count: Int64 = 0
-        while let bytes = try handle.read(upToCount: 64 * 1_024), !bytes.isEmpty {
+        while let bytes = try readMigrationBytes(handle, upToCount: 64 * 1_024), !bytes.isEmpty {
             try Task.checkCancellation()
             digest.update(data: bytes)
             count += Int64(bytes.count)
@@ -352,11 +481,28 @@ public struct RemoteLibraryClient: Sendable {
         return (count, migrationHex(digest.finalize()))
     }
 
+    /// Read back a lost durable handoff ACK without Photos access or uploads.
+    public func migrationHandoffReceipt(migrationID: UUID) async throws -> ImageAllMigrationTransferSealReceipt? {
+        try await getJSON(path: "/v1/migration-transfers/\(migrationID.uuidString.lowercased())/handoff")
+    }
+
+    public func handoffMigrationTransfer(migrationID: UUID, manifestSHA256: String) async throws -> ImageAllMigrationTransferSealReceipt {
+        let receipt: ImageAllMigrationTransferSealReceipt = try await postJSON(
+            path: "/v1/migration-transfers/\(migrationID.uuidString.lowercased())/handoff",
+            body: encoder.encode(ImageAllMigrationHandoffRequest(manifestSHA256: manifestSHA256)))
+        guard receipt.hostProcessingVersion == 1, receipt.migrationID == migrationID,
+              receipt.manifestSHA256 == manifestSHA256 else {
+            throw RemoteAPIError(code: .conflict, message: "Mac 未确认接管任务，请更新 Mac 后重试。")
+        }
+        return receipt
+    }
+
     /// Finalize a resource-first transfer. Only the manifest and fact sidecars
     /// need remain on the phone. The receiver independently validates the whole
     /// archive before the returned receipt is compared with this exact plan.
     public func finishPreparedMigration(
         at planningRoot: URL, header: ImageAllMigrationHeader, items: [ImageAllMigrationItem],
+        handoffToMac: Bool = false,
         beforeChunk: @Sendable () async throws -> Void = {}
     ) async throws -> ImageAllMigrationTransferSealReceipt {
         try Task.checkCancellation()
@@ -407,7 +553,9 @@ public struct RemoteLibraryClient: Sendable {
         }
         try Task.checkCancellation()
         try await beforeChunk()
-        let receipt = try await sealMigrationTransfer(migrationID: header.migrationID)
+        let receipt = handoffToMac
+            ? try await handoffMigrationTransfer(migrationID: header.migrationID, manifestSHA256: manifestDigest.sha256)
+            : try await sealMigrationTransfer(migrationID: header.migrationID)
         guard receipt.migrationID == header.migrationID,
               receipt.manifestSHA256 == manifestDigest.sha256,
               receipt.itemCount == items.count, receipt.resourceCount == resourceCount,
@@ -1161,7 +1309,7 @@ public struct RemoteLibraryClient: Sendable {
         }
         var request = URLRequest(url: url)
         request.httpMethod = method
-        request.timeoutInterval = 15
+        request.timeoutInterval = RemotePhotoImportRequestBudget.processingSeconds(method: method, path: trimmed) ?? 15
         if trimmed.hasPrefix("/v1/migration-transfers/") {
             // Enforced by URLSession even if the network changes after the
             // caller's path check or while a chunk is in flight.

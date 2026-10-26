@@ -2,6 +2,8 @@ import AppKit
 import AVKit
 import SwiftUI
 import ImageIO
+import CoreText
+import Darwin
 
 private enum TimeStoryDurationText {
     static func format(_ seconds: Double) -> String {
@@ -114,6 +116,7 @@ final class TimeStoryWorkspaceModel: ObservableObject {
     @Published private(set) var loadedCandidateCount = 0
     @Published private(set) var isReadingCandidates = false
     @Published private(set) var projects: [TimeStoryProjectSummary] = []
+    @Published private(set) var usedFontFamilies: [String] = []
     @Published private(set) var candidateThumbnails: [UUID: NSImage] = [:]
     @Published private(set) var thumbnails: [UUID: NSImage] = [:]
     @Published private(set) var isBusy = false
@@ -121,6 +124,9 @@ final class TimeStoryWorkspaceModel: ObservableObject {
     @Published private(set) var packageExportProgress: TimeStoryPackageProgress?
     @Published private(set) var openMontageCapability: OpenMontageExecutorCapability?
     @Published private(set) var openMontageTask: OpenMontageStoryTaskSnapshot?
+    @Published private(set) var openMontageObservationIssue: String?
+    var openMontageProgressIsCurrent: Bool { openMontageObservationIssue == nil }
+
     @Published private(set) var lastExportURL: URL?
     @Published private(set) var lastPackageURL: URL?
     @Published private(set) var creativeStatus = "自动创作 · 返回方案后可人工调整"
@@ -128,7 +134,7 @@ final class TimeStoryWorkspaceModel: ObservableObject {
     @Published private(set) var isSubmittingRender = false
     @Published private(set) var isCreativeRunning = false
     var isInputLocked: Bool {
-        isBusy || isCreativeRunning || isSubmittingRender || openMontageTask?.phase.isTerminal == false
+        isBusy || isCreativeRunning || isStyleRunning || isSubmittingRender || openMontageTask?.phase.isTerminal == false
             || exportProgress != nil || packageExportProgress != nil
     }
     @Published private(set) var atelierStatus = "提交后等待创作方案，读取摘要后可继续制作成片。"
@@ -136,6 +142,13 @@ final class TimeStoryWorkspaceModel: ObservableObject {
     @Published private(set) var selectedAtelierRequestID: String?
     @Published var atelierFeedback = ""
     @Published var styleTemplates = StoryStyleTemplate.builtins
+    @Published private(set) var pendingHomeStyle: StoryStyleTemplate?
+    func selectHomeStyle(_ template: StoryStyleTemplate) {
+        guard !isInputLocked else { return }
+        if project != nil { applyStyle(template) }
+        else { pendingHomeStyle = template }
+    }
+    @Published private(set) var isStyleRunning = false
     @Published var styleStatus = "选择模板后校对文案，再制作。"
     @Published var styleResultURL: URL?
     private var stylePollingTask: Task<Void, Never>?
@@ -185,9 +198,12 @@ final class TimeStoryWorkspaceModel: ObservableObject {
     func renderStyle() async {
         guard let current = project, !isInputLocked else { return }
         isBusy = true
+        isStyleRunning = true
         styleStatus = "正在准备当前故事素材…"
         defer { isBusy = false }
         do {
+            _ = try await OpenMontageIntegrationControl.start(provider: runtime.creativeRootProvider)
+            try Task.checkCancellation()
             let receipt = try await styleExchange.publish(current)
             guard var edited = project, edited.id == current.id else { return }
             edited.styleReceipt = receipt
@@ -196,22 +212,31 @@ final class TimeStoryWorkspaceModel: ObservableObject {
             styleResultURL = nil
             styleStatus = "已提交，等待本地制作端。"
             pollStyle(receipt)
-        } catch { styleStatus = error.localizedDescription }
+        } catch { isStyleRunning = false; styleStatus = error.localizedDescription }
     }
     func refreshStyleResult() async {
-        guard let receipt = project?.styleReceipt else { checkStyleConnection(); return }
+        guard let receipt = project?.styleReceipt else { isStyleRunning = false; return }
+        isStyleRunning = true
         do {
             guard let result = try styleExchange.status(receipt) else {
                 _ = try styleExchange.capability()
                 styleStatus = "排队中，等待本地制作端。"; return
             }
             styleStatus = result.detail
+            isStyleRunning = !["succeeded", "failed", "cancelled"].contains(result.status)
             if result.status == "succeeded" {
                 styleResultURL = try await styleExchange.verifiedURL(receipt)
                 styleStatus = "成片已核验 · 9:16 · 30 fps · \(result.frames ?? 0) 帧"
             }
-        } catch { styleStatus = error.localizedDescription }
+        } catch { styleStatus = "模板状态待确认，不会重复提交。" + error.localizedDescription }
     }
+    private func recoverStyleTask() async {
+        stylePollingTask?.cancel()
+        styleResultURL = nil
+        await refreshStyleResult()
+        if isStyleRunning, let receipt = project?.styleReceipt { pollStyle(receipt) }
+    }
+
     private func pollStyle(_ receipt: StoryStyleReceipt) {
         stylePollingTask?.cancel()
         stylePollingTask = Task { [weak self] in
@@ -219,7 +244,7 @@ final class TimeStoryWorkspaceModel: ObservableObject {
                 guard let self, self.project?.styleReceipt == receipt else { return }
                 await self.refreshStyleResult()
                 if self.styleResultURL != nil { return }
-                if let result = try? self.styleExchange.status(receipt), result.status == "failed" { return }
+                if let result = try? self.styleExchange.status(receipt), ["succeeded", "failed", "cancelled"].contains(result.status) { return }
                 try? await Task.sleep(for: .seconds(2))
             }
         }
@@ -370,7 +395,7 @@ final class TimeStoryWorkspaceModel: ObservableObject {
         do {
             creativeStatus = try creativePlugin.status(receipt)
             isCreativeRunning = try creativePlugin.isPending(receipt)
-        } catch { isCreativeRunning = false; creativeStatus = error.localizedDescription }
+        } catch { isCreativeRunning = true; creativeStatus = "创作状态待确认；不会自动重发模型请求。" + error.localizedDescription }
     }
     func readCreativePlan() {
         guard let receipt = project?.creativeReceipt, let current = project else { return }
@@ -453,6 +478,7 @@ final class TimeStoryWorkspaceModel: ObservableObject {
         await refreshOpenMontageCapability()
         await recoverOpenMontageTask()
         refreshCreativeRequest()
+        await recoverStyleTask()
         selectedAtelierRequestID = project?.atelierVersions?.last?.requestID
         refreshAtelierStatus()
     }
@@ -505,6 +531,11 @@ final class TimeStoryWorkspaceModel: ObservableObject {
             let project = runtime.planner.makeFreeformProject(snapshot: snapshot, nowMs: now)
             readinessSnapshot = snapshot
             self.project = project
+            if let template = pendingHomeStyle {
+                // Draft creation owns the busy flag; apply the preset directly here.
+                self.project?.styleTemplate = .init(template: template, lines: [], shotIDs: [])
+                pendingHomeStyle = nil
+            }
             undoProjects = []; redoProjects = []
             message = "自由编排已就绪，拖入照片开始。"
             await loadThumbnails()
@@ -525,10 +556,12 @@ final class TimeStoryWorkspaceModel: ObservableObject {
             message = "故事项目已重新打开。"
             openMontagePollingTask?.cancel()
             openMontageTask = nil
+            openMontageObservationIssue = nil
             await refreshOpenMontageCapability()
             await recoverOpenMontageTask()
             creativePlan = nil
             refreshCreativeRequest()
+            await recoverStyleTask()
             selectedAtelierRequestID = project?.atelierVersions?.last?.requestID
             atelierProposal = nil
             refreshAtelierStatus()
@@ -989,8 +1022,10 @@ final class TimeStoryWorkspaceModel: ObservableObject {
         let frozenProject = project
         isSubmittingRender = true
         openMontageTask = nil
+        openMontageObservationIssue = nil
         let client = runtime.openMontageTasks
-        message = "正在准备素材并发布 OpenMontage 制作任务…"
+        let rootProvider = runtime.creativeRootProvider
+        message = "正在连接并核对本地制作版本…"
         let (progressStream, progressContinuation) =
             AsyncStream<OpenMontageStoryTaskSnapshot>.makeStream()
         let progressTask = Task { @MainActor [weak self] in
@@ -1003,6 +1038,8 @@ final class TimeStoryWorkspaceModel: ObservableObject {
         }
         openMontageSubmissionTask = Task { [weak self] in
             do {
+                _ = try await OpenMontageIntegrationControl.start(provider: rootProvider)
+                try Task.checkCancellation()
                 let snapshot = try await client.submit(
                     project: frozenProject,
                     aspect: aspect,
@@ -1022,6 +1059,45 @@ final class TimeStoryWorkspaceModel: ObservableObject {
             await progressTask.value
             self?.openMontageSubmissionTask = nil
             self?.isSubmittingRender = false
+        }
+    }
+
+    func retryOpenMontageTask() {
+        guard !isInputLocked, let previous = openMontageTask,
+              previous.phase == .failed || previous.phase == .cancelled else { return }
+        isSubmittingRender = true
+        let client = runtime.openMontageTasks
+        let provider = runtime.creativeRootProvider
+        openMontageSubmissionTask = Task { [weak self] in
+            defer { self?.isSubmittingRender = false; self?.openMontageSubmissionTask = nil }
+            do {
+                _ = try await OpenMontageIntegrationControl.start(provider: provider)
+                try Task.checkCancellation()
+                let snapshot = try await client.retryFrozenTask(taskID: previous.taskID)
+                self?.openMontageTask = snapshot
+                self?.openMontageObservationIssue = nil
+                self?.message = "已用同一份冻结素材创建重试任务；原失败记录保留。"
+                self?.startOpenMontagePolling(taskID: snapshot.taskID)
+            } catch { self?.message = error.localizedDescription }
+        }
+    }
+
+    func exportOpenMontageDiagnostic() {
+        let panel = NSSavePanel()
+        panel.title = "保存制作诊断（不含照片、密钥或提示词）"
+        panel.nameFieldStringValue = "ImageAll-制作诊断.json"
+        panel.allowedContentTypes = [.json]
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        let client = runtime.openMontageTasks
+        let taskID = openMontageTask?.taskID
+        Task { [weak self] in
+            do {
+                let data = try await client.diagnosticReport(taskID: taskID)
+                let access = url.startAccessingSecurityScopedResource()
+                defer { if access { url.stopAccessingSecurityScopedResource() } }
+                try data.write(to: url, options: .atomic)
+                self?.message = "诊断摘要已保存，不含照片、密钥或模型提示词。"
+            } catch { self?.message = error.localizedDescription }
         }
     }
 
@@ -1057,6 +1133,7 @@ final class TimeStoryWorkspaceModel: ObservableObject {
         do {
             connectionCheckResult = try await OpenMontageIntegrationControl.start(provider: runtime.creativeRootProvider)
             await refreshOpenMontageCapability()
+            await recoverOpenMontageTask()
             checkStyleConnection()
         } catch {
             connectionCheckResult = error.localizedDescription
@@ -1109,11 +1186,13 @@ final class TimeStoryWorkspaceModel: ObservableObject {
     }
 
     private func recoverOpenMontageTask() async {
-        guard let project, openMontageCapability?.state == .ready else { return }
+        guard let project else { return }
         do {
             guard let snapshot = try await runtime.openMontageTasks.latestTask(projectID: project.id)
             else { return }
+            guard self.project?.id == project.id else { return }
             openMontageTask = snapshot
+            openMontageObservationIssue = nil
             if !snapshot.phase.isTerminal {
                 startOpenMontagePolling(taskID: snapshot.taskID)
             }
@@ -1134,6 +1213,11 @@ final class TimeStoryWorkspaceModel: ObservableObject {
                     let snapshot = try await client.task(taskID: taskID)
                     guard self?.openMontageTask?.taskID == taskID else { return }
                     self?.openMontageTask = snapshot
+                    if !snapshot.phase.isTerminal {
+                        let connection = await client.capability()
+                        self?.openMontageObservationIssue = connection.state == .ready ? nil
+                            : "制作状态待确认：" + connection.detail + " 不会自动重复提交。"
+                    } else { self?.openMontageObservationIssue = nil }
                     self?.message = nil
                     if snapshot.phase.isTerminal {
                         self?.message = Self.openMontageTerminalMessage(snapshot)
@@ -1141,9 +1225,9 @@ final class TimeStoryWorkspaceModel: ObservableObject {
                     }
                 } catch {
                     guard self?.openMontageTask?.taskID == taskID else { return }
-                    self?.message = error.localizedDescription
+                    self?.openMontageObservationIssue = "制作状态无法读取：" + error.localizedDescription
                 }
-                try? await Task.sleep(for: .seconds(1))
+                try? await Task.sleep(for: .seconds(2))
             }
         }
     }
@@ -1217,7 +1301,15 @@ final class TimeStoryWorkspaceModel: ObservableObject {
     private func refreshProjects() async {
         let store = runtime.store
         do {
-            projects = try await Task.detached { try store.list() }.value
+            let (summaries, fonts) = try await Task.detached {
+                let summaries = try store.list()
+                let fonts = summaries.compactMap { summary in
+                    try? store.load(summary.id).typography?.family
+                }
+                return (summaries, fonts)
+            }.value
+            projects = summaries
+            usedFontFamilies = fonts
         } catch {
             message = error.localizedDescription
         }
@@ -1393,7 +1485,7 @@ struct TimeStoryWorkspaceView: View {
                             .font(.caption).foregroundStyle(.secondary)
                         HStack {
                             Button("制作视频") { Task { await model.renderStyle() } }.buttonStyle(.borderedProminent)
-                                .disabled(model.isBusy || selection.lines.count != project.shots.count)
+                                .disabled(model.isInputLocked || selection.lines.count != project.shots.count)
                                 .accessibilityIdentifier("renderStyleVideo")
                             Button(model.isStartingLocalEngine ? "启动中…" : "启动本地制作") { Task { await model.startLocalEngine() } }
                                 .disabled(model.isStartingLocalEngine).accessibilityIdentifier("storyStyleStartEngine")
@@ -1532,6 +1624,10 @@ struct TimeStoryWorkspaceView: View {
             VStack(spacing: 18) {
                 Image(systemName: "film.stack").font(.system(size: 42)).foregroundStyle(.secondary)
                 Text(snapshot.tagDisplayName).font(.title2.bold())
+                if let template = model.pendingHomeStyle {
+                    Label("将使用模板：" + template.name, systemImage: "wand.and.stars")
+                        .foregroundStyle(.tint)
+                }
                 Text("\(snapshot.candidates.count) 张素材可供浏览，按自己的顺序自由编排。")
                 Button("新建自由编排") { Task { await model.createDraft(for: TagListItem(
                     id: snapshot.tagID, displayName: snapshot.tagDisplayName, state: .active)) } }
@@ -1906,8 +2002,17 @@ struct TimeStoryWorkspaceView: View {
                     .font(.caption).foregroundStyle(.secondary)
             }
             Divider()
-            StoryTypographyEditor(value: project.resolvedTypography, onChange: model.setTypography)
-                .disabled(model.isInputLocked)
+            StoryTypographyEditor(
+                value: project.resolvedTypography,
+                currentChosenFamily: project.typography?.family,
+                usedFontFamilies: model.usedFontFamilies,
+                aspect: $productionAspect,
+                title: project.title,
+                caption: (project.shots.first { $0.id == selectedShotID } ?? project.shots.first)?.caption ?? "",
+                image: (project.shots.first { $0.id == selectedShotID } ?? project.shots.first).flatMap { model.thumbnails[$0.id] },
+                isEditingLocked: model.isInputLocked,
+                onChange: model.setTypography
+            )
             Divider()
             Text("创作意图").font(.headline)
             TextField("希望呈现什么内容与氛围", text: Binding(get: { model.project?.creativeIntent ?? "" }, set: { model.setCreativeIntent($0) }), axis: .vertical)
@@ -1999,7 +2104,7 @@ struct TimeStoryWorkspaceView: View {
                                     Button("按当前编排制作 · " + productionAspect.displayName) {
                                         model.submitToOpenMontage(aspect: productionAspect)
                                     }.buttonStyle(.borderedProminent)
-                                        .disabled(project.shots.isEmpty || model.isBusy || model.openMontageCapability?.state != .ready || model.openMontageTask?.phase.isTerminal == false)
+                                        .disabled(project.shots.isEmpty || model.isBusy || model.openMontageTask?.phase.isTerminal == false)
                                 } else if productionMode == "可编辑创作" {
                                     creativePanel(project)
                                 } else {
@@ -2040,23 +2145,33 @@ struct TimeStoryWorkspaceView: View {
             }
             if let task = model.openMontageTask {
                 Divider()
-                Text(task.phase.isTerminal && model.project?.creativeReceipt != nil ? "上次成片 · " + openMontagePhaseName(task.phase) : openMontagePhaseName(task.phase)).font(.headline)
+                Text(!model.openMontageProgressIsCurrent ? "制作状态待确认" : (task.phase.isTerminal && model.project?.creativeReceipt != nil ? "上次成片 · " + openMontagePhaseName(task.phase) : openMontagePhaseName(task.phase))).font(.headline)
                 if task.phase.isTerminal && model.project?.creativeReceipt != nil {
                     Text("以下是已有制作任务的结果，不代表本次自动创作成功。")
                         .font(.caption).foregroundStyle(.secondary)
                 }
                 if !task.phase.isTerminal {
-                    ProgressView(value: task.progress)
-                    Text("\(Int(task.progress * 100))% · \(task.aspect.displayName)").font(.caption.monospacedDigit())
+                    if model.openMontageProgressIsCurrent {
+                        ProgressView(value: task.progress)
+                        Text("\(Int(task.progress * 100))% · \(task.aspect.displayName)").font(.caption.monospacedDigit())
+                    }
                     Button("取消制作") { model.cancelOpenMontageTask() }
                 }
-                if let detail = task.detail { Text(detail).font(.caption).textSelection(.enabled) }
+                if let issue = model.openMontageObservationIssue {
+                    Text(issue).font(.caption).foregroundStyle(.orange)
+                    Button("重新连接并检查") { Task { await model.startLocalEngine() } }
+                } else if let detail = task.detail { Text(detail).font(.caption).textSelection(.enabled) }
                 if task.phase == .succeeded {
                     Button("打开成片") { model.openOpenMontageResult() }
                     Button("在 Finder 中显示") { model.revealOpenMontageResult() }
                     Button("另存成片…") { chooseOpenMontageResultDestination() }
                 }
             }
+            if let task = model.openMontageTask, task.phase == .failed || task.phase == .cancelled {
+                Button("用原素材重试本地制作") { model.retryOpenMontageTask() }
+                    .disabled(model.isInputLocked)
+            }
+            Button("保存制作诊断…") { model.exportOpenMontageDiagnostic() }
             Button("返回制作设置") { productionPage = "设置" }
         }
     }
@@ -2167,7 +2282,7 @@ struct TimeStoryWorkspaceView: View {
                     Text("方案已应用。切换右侧“镜头”调整字幕和时长，调整完成后在这里制作。")
                     Button("按调整后的编排制作 · " + receipt.aspect.displayName) {
                         model.submitToOpenMontage(aspect: receipt.aspect)
-                    }.disabled(model.openMontageCapability?.state != .ready || model.openMontageTask?.phase.isTerminal == false)
+                    }.disabled(model.openMontageTask?.phase.isTerminal == false)
                         .accessibilityIdentifier("storyCreativeRender")
                     Text((receipt.observations + receipt.uncertainties.map { "待核对：" + $0 }).joined(separator: "\n"))
                         .font(.caption).foregroundStyle(.secondary)
@@ -2188,7 +2303,7 @@ struct TimeStoryWorkspaceView: View {
                         Task { await model.publishAtelierRequest() }
                     }
                     .buttonStyle(.borderedProminent)
-                    .disabled(model.isBusy || project.shots.isEmpty || project.shots.count > 100 || candidates.isEmpty || model.openMontageCapability?.state != .ready)
+                    .disabled(model.isBusy || project.shots.isEmpty || project.shots.count > 100 || candidates.isEmpty)
                     .accessibilityIdentifier("storyAtelierPublish")
                     if let versions = project.atelierVersions, !versions.isEmpty {
                         ForEach(versions) { version in
@@ -2441,13 +2556,13 @@ struct TimeStoryWorkspaceView: View {
             if let task = model.openMontageTask {
                 VStack(alignment: .leading, spacing: 6) {
                     HStack {
-                        if !task.phase.isTerminal {
+                        if !task.phase.isTerminal && model.openMontageProgressIsCurrent {
                             ProgressView(value: task.progress)
                                 .frame(maxWidth: 180)
                             Text("\(Int(task.progress * 100))%")
                                 .font(.caption.monospacedDigit())
                         }
-                        Label(openMontagePhaseName(task.phase), systemImage: openMontagePhaseIcon(task.phase))
+                        Label(model.openMontageProgressIsCurrent ? openMontagePhaseName(task.phase) : "制作状态待确认", systemImage: openMontagePhaseIcon(task.phase))
                             .font(.caption.weight(.semibold))
                         Text(task.aspect.displayName)
                             .font(.caption)
@@ -2465,7 +2580,7 @@ struct TimeStoryWorkspaceView: View {
                     Text("任务 \(task.taskID.prefix(8))… · 本次内容已冻结；之后的项目编辑不会改变该任务。")
                         .font(.caption2.monospacedDigit())
                         .foregroundStyle(.secondary)
-                    if let detail = task.detail, !detail.isEmpty {
+                    if let detail = model.openMontageObservationIssue ?? task.detail, !detail.isEmpty {
                         Text(detail)
                             .font(.caption)
                             .foregroundStyle(task.phase == .failed ? .red : .secondary)
@@ -2721,10 +2836,10 @@ private struct TimeStoryTimelinePreview: View {
                         Text(caption)
                             .font(Font(project.resolvedTypography.font(size: project.resolvedTypography.captionSize * (previewWidth / 1920))))
                             .foregroundStyle(.white)
-                            .shadow(color: .black, radius: 3)
+                            .shadow(color: Color(white: 40 / 255).opacity(0.9), radius: 1.5 * previewWidth / 1920)
+                            .shadow(color: Color(white: 40 / 255).opacity(0.65), radius: 4 * previewWidth / 1920)
                             .padding(.horizontal, 12)
                             .padding(.vertical, 7)
-                            .background(.black.opacity(0.5), in: RoundedRectangle(cornerRadius: 6))
                             .padding(12)
                     }
                 }
@@ -2841,15 +2956,95 @@ struct StorySubjectPicker: View {
 }
 
 
+@MainActor
+enum StoryFontChoices {
+    static let featured = [
+        "Liyu Shoushu", "slideyouran", "Slidexiaxing", "JasonHandwriting7p",
+        "KouzanBrushFontGyousyoOTF", "南西初夏宋", "LXGW WenKai",
+        "LXGW XiHei CL", "LXGW Marker Gothic"
+    ]
+    static let common = ["PingFang SC", "Songti SC", "Kaiti SC", "Hiragino Sans GB", "Heiti SC", "Arial", "Avenir"]
+    static let names = [
+        "PingFang SC": "苹方", "Songti SC": "宋体", "Kaiti SC": "楷体",
+        "Hiragino Sans GB": "冬青黑体", "Heiti SC": "黑体",
+        "Liyu Shoushu": "漓雨手书", "slideyouran": "演示悠然小楷",
+        "Slidexiaxing": "演示夏行楷", "JasonHandwriting7p": "清松手写体 7",
+        "KouzanBrushFontGyousyoOTF": "衡山毛笔行书", "LXGW WenKai": "霞鹜文楷",
+        "LXGW XiHei CL": "霞鹜晰黑", "LXGW Marker Gothic": "霞鹜漫黑"
+    ]
+    private static let recentKey = "TimeStory.recentFontFamilies.v1"
+    private static var registeredFontPaths = Set<String>()
+
+    static func installedFamilies() -> [String] {
+        // New files in ~/Library/Fonts are not always activated in the running process.
+        var available = Set(NSFontManager.shared.availableFontFamilies)
+        guard let account = getpwuid(getuid()) else {
+            return available.filter { !$0.hasPrefix(".") }.sorted()
+        }
+        let fontDirectory = URL(fileURLWithPath: String(cString: account.pointee.pw_dir))
+            .appendingPathComponent("Library/Fonts", isDirectory: true)
+        if let urls = try? FileManager.default.contentsOfDirectory(at: fontDirectory, includingPropertiesForKeys: nil) {
+            for url in urls where ["ttf", "otf", "ttc"].contains(url.pathExtension.lowercased()) {
+                guard !registeredFontPaths.contains(url.path) else { continue }
+                let registered = CTFontManagerRegisterFontsForURL(url as CFURL, .process, nil)
+                if registered {
+                    registeredFontPaths.insert(url.path)
+                    let descriptors = CTFontManagerCreateFontDescriptorsFromURL(url as CFURL) as? [CTFontDescriptor] ?? []
+                    for descriptor in descriptors {
+                        if let family = CTFontDescriptorCopyAttribute(descriptor, kCTFontFamilyNameAttribute) as? String {
+                            available.insert(family)
+                        }
+                    }
+                }
+            }
+        }
+        available.formUnion(CTFontManagerCopyAvailableFontFamilyNames() as? [String] ?? [])
+        return available.filter { !$0.hasPrefix(".") }.sorted()
+    }
+
+    static func recentFamilies(defaults: UserDefaults = .standard) -> [String] {
+        defaults.stringArray(forKey: recentKey) ?? []
+    }
+
+    @discardableResult
+    static func record(_ family: String, defaults: UserDefaults = .standard) -> [String] {
+        let recent = ([family] + recentFamilies(defaults: defaults).filter { $0 != family }).prefix(12)
+        let result = Array(recent)
+        defaults.set(result, forKey: recentKey)
+        return result
+    }
+
+    static func ordered(_ available: [String], recent: [String], used: [String], current: String?) -> [String] {
+        let availableSet = Set(available)
+        var seen = Set<String>()
+        return ([current].compactMap { $0 } + recent + used + featured + common + available)
+            .filter { availableSet.contains($0) && seen.insert($0).inserted }
+    }
+
+    static func label(_ family: String) -> String {
+        names[family].map { "\($0) · \(family)" } ?? family
+    }
+}
+
 private struct StoryTypographyEditor: View {
     let value: StoryTypography
+    let currentChosenFamily: String?
+    let usedFontFamilies: [String]
+    @Binding var aspect: TimeStoryPackageAspect
+    let title: String
+    let caption: String
+    let image: NSImage?
+    let isEditingLocked: Bool
     let onChange: (StoryTypography) -> Void
-    @State private var families = NSFontManager.shared.availableFontFamilies.filter { !$0.hasPrefix(".") }.sorted()
-    private static let common = ["PingFang SC", "Songti SC", "Kaiti SC", "Hiragino Sans GB", "Heiti SC", "Arial", "Avenir"]
-    private static let names = ["PingFang SC": "苹方", "Songti SC": "宋体", "Kaiti SC": "楷体", "Hiragino Sans GB": "冬青黑体", "Heiti SC": "黑体"]
-    private func label(_ family: String) -> String { Self.names[family].map { "\($0) · \(family)" } ?? family }
+    @State private var previewCaption = true
+    @State private var enlarged = false
+    @State private var recentFamilies = StoryFontChoices.recentFamilies()
+    private func label(_ family: String) -> String { StoryFontChoices.label(family) }
     private var visibleFamilies: [String] {
-        let ordered = Self.common.filter { families.contains($0) } + families.filter { !Self.common.contains($0) }
+        let ordered = StoryFontChoices.ordered(
+            StoryFontChoices.installedFamilies(), recent: recentFamilies,
+            used: usedFontFamilies, current: currentChosenFamily
+        )
         return ordered.filter { fontSearch.isEmpty || label($0).localizedCaseInsensitiveContains(fontSearch) }
     }
     @State private var choosingFont = false
@@ -2857,6 +3052,7 @@ private struct StoryTypographyEditor: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             Text("文字样式").font(.headline)
+            Group {
             Button { choosingFont.toggle() } label: {
                 HStack { Text(label(value.family)).font(.custom(value.family, size: 15)); Spacer(); Image(systemName: "chevron.down") }
             }.accessibilityIdentifier("storyFontFamily")
@@ -2867,7 +3063,9 @@ private struct StoryTypographyEditor: View {
                             LazyVStack(alignment: .leading, spacing: 4) {
                                 ForEach(visibleFamilies, id: \.self) { family in
                                     Button {
-                                        var next = value; next.family = family; onChange(next); choosingFont = false
+                                        var next = value; next.family = family; onChange(next)
+                                        recentFamilies = StoryFontChoices.record(family)
+                                        choosingFont = false
                                     } label: {
                                         VStack(alignment: .leading, spacing: 3) {
                                             HStack { Text(label(family)).font(.caption); Spacer(); if value.family == family { Image(systemName: "checkmark") } }
@@ -2887,13 +3085,290 @@ private struct StoryTypographyEditor: View {
                 .accessibilityIdentifier("storyTitleFontSize")
             Stepper("字幕 \(Int(value.captionSize)) px", value: Binding(get: { value.captionSize }, set: { size in var next = value; next.captionSize = size; onChange(next) }), in: 16...80, step: 2)
                 .accessibilityIdentifier("storyCaptionFontSize")
-            VStack(spacing: 8) {
-                Text("时光里的故事").font(Font(value.font(size: value.titleSize * 0.4)))
-                Text("把这一刻，留给未来 · Aa 123").font(Font(value.font(size: value.captionSize * 0.4)))
-            }.foregroundStyle(.white).frame(maxWidth: .infinity).padding(16)
-                .background(Color(red: 0.055, green: 0.082, blue: 0.12), in: RoundedRectangle(cornerRadius: 8))
-            Text("全故事统一使用；字号按 1080 像素短边计算。使用本机已安装字体；缺失字形由系统补全。")
+            }.disabled(isEditingLocked)
+            previewControls
+            proportionalPreview
+                .frame(maxHeight: aspect == .portrait ? 340 : 240)
+            HStack {
+                Text("\(aspect.width) × \(aspect.height) · 等比例缩小").font(.caption).foregroundStyle(.secondary)
+                Spacer()
+                Button("放大查看", systemImage: "arrow.up.left.and.arrow.down.right") { enlarged = true }
+                    .accessibilityIdentifier("storyTypographyEnlarge")
+            }
+            Text("文字、位置和画布一起缩放；虚线为字幕安全边距。使用当前标题与所选镜头字幕，空白时显示示例。按本地制作标准排版；其他模板与自由创作以成片为准。")
                 .font(.caption).foregroundStyle(.secondary)
+        }
+        .sheet(isPresented: $enlarged) {
+            VStack(spacing: 16) {
+                HStack {
+                    Text("文字与画幅比例").font(.headline)
+                    Spacer()
+                    Button("完成") { enlarged = false }
+                }
+                previewControls
+                proportionalPreview.frame(maxWidth: .infinity, maxHeight: .infinity)
+                HStack(spacing: 24) {
+                    Stepper("标题 \(Int(value.titleSize)) px", value: Binding(get: { value.titleSize }, set: { size in var next = value; next.titleSize = size; onChange(next) }), in: 24...120, step: 2)
+                    Stepper("字幕 \(Int(value.captionSize)) px", value: Binding(get: { value.captionSize }, set: { size in var next = value; next.captionSize = size; onChange(next) }), in: 16...80, step: 2)
+                }.disabled(isEditingLocked)
+                Text("\(aspect.width) × \(aspect.height) · 调整字号即时预览，保持视频原比例")
+                    .font(.caption).foregroundStyle(.secondary)
+            }.padding(24).frame(width: 900, height: 700)
+        }
+    }
+
+    private var previewControls: some View {
+        VStack(spacing: 8) {
+            Picker("预览内容", selection: $previewCaption) {
+                Text("片头标题").tag(false)
+                Text("照片字幕").tag(true)
+            }.pickerStyle(.segmented).accessibilityIdentifier("storyTypographyPreviewMode")
+            Picker("视频画幅", selection: $aspect) {
+                ForEach(TimeStoryPackageAspect.allCases) { Text($0.displayName).tag($0) }
+            }.accessibilityIdentifier("storyTypographyAspect")
+                .disabled(isEditingLocked)
+        }
+    }
+
+    private var proportionalPreview: some View {
+        StoryTypographyCanvas(value: value, aspect: aspect, title: title, caption: caption,
+                              image: image, previewCaption: previewCaption)
+            .aspectRatio(CGFloat(aspect.width) / CGFloat(aspect.height), contentMode: .fit)
+            .accessibilityIdentifier("storyTypographyProportionalPreview")
+    }
+}
+
+/// Lay out at output resolution, then scale the entire canvas once, including all insets.
+private struct StoryTypographyCanvas: View {
+    let value: StoryTypography
+    let aspect: TimeStoryPackageAspect
+    let title: String
+    let caption: String
+    let image: NSImage?
+    let previewCaption: Bool
+
+    private var width: CGFloat { CGFloat(aspect.width) }
+    private var height: CGFloat { CGFloat(aspect.height) }
+    private var margin: CGFloat { (min(width, height) * 0.07).rounded() }
+
+    var body: some View {
+        GeometryReader { proxy in
+            let scale = min(proxy.size.width / width, proxy.size.height / height)
+            canvas
+                .frame(width: width, height: height)
+                .clipped()
+                .scaleEffect(scale, anchor: .topLeading)
+                .frame(width: width * scale, height: height * scale, alignment: .topLeading)
+                .frame(width: proxy.size.width, height: proxy.size.height)
+        }
+    }
+
+    private var canvas: some View {
+        ZStack {
+            Color(red: 0.055, green: 0.082, blue: 0.12)
+            if previewCaption {
+                if let image {
+                    Image(nsImage: image).resizable().scaledToFill()
+                        .frame(width: width, height: height).blur(radius: 28).opacity(0.58).clipped()
+                    Image(nsImage: image).resizable().scaledToFit().frame(width: width, height: height)
+                }
+                VStack {
+                    Spacer(minLength: 0)
+                    Text(caption.isEmpty ? "把这一刻，留给未来 · Aa 123" : caption)
+                        .font(Font(value.font(size: value.captionSize)))
+                        .lineSpacing(value.captionSize * 0.25)
+                        .multilineTextAlignment(.center)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .padding(.vertical, (min(width, height) * 0.018).rounded())
+                        .padding(.horizontal, (min(width, height) * 0.028).rounded())
+                        .shadow(color: Color(white: 40 / 255).opacity(0.9), radius: 1.5 * min(width, height) / 1080)
+                        .shadow(color: Color(white: 40 / 255).opacity(0.65), radius: 4 * min(width, height) / 1080)
+                }.padding(margin)
+            } else {
+                VStack(spacing: 0) {
+                    Text(title.isEmpty ? "时光里的故事" : title)
+                        .font(Font(value.font(size: value.titleSize)))
+                        .tracking(value.titleSize * 0.025)
+                        .lineSpacing(value.titleSize * 0.05)
+                        .multilineTextAlignment(.center)
+                        .fixedSize(horizontal: false, vertical: true)
+                    RoundedRectangle(cornerRadius: 3)
+                        .fill(Color(red: 242 / 255, green: 200 / 255, blue: 121 / 255))
+                        .frame(width: (min(width, height) * 0.11).rounded(), height: 3)
+                        .padding(.top, (min(width, height) * 0.035).rounded())
+                }.frame(maxWidth: width - margin * 2).padding(margin)
+            }
+            Rectangle().strokeBorder(.white.opacity(0.3), style: StrokeStyle(lineWidth: 2, dash: [12, 10]))
+                .padding(margin)
+                .allowsHitTesting(false)
+        }.foregroundStyle(.white)
+    }
+}
+
+/// The story landing page reads saved project metadata and reusable styles only.
+struct TimeStoryHomeView: View {
+    let projects: [TimeStoryProjectSummary]
+    let templates: [StoryStyleTemplate]
+    let drafts: [TimeStoryProject]
+    let isLoading: Bool
+    let error: String?
+    let pendingTemplate: StoryStyleTemplate?
+    let onCreate: () -> Void
+    let onOpen: (TimeStoryProjectSummary) -> Void
+    let onResume: (TimeStoryProject) -> Void
+    let onTemplate: (StoryStyleTemplate) -> Void
+    let onRefresh: () -> Void
+
+    private let columns = [GridItem(.adaptive(minimum: 260), spacing: 16)]
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 28) {
+                hero
+                if let error {
+                    HStack {
+                        Label(error, systemImage: "exclamationmark.triangle").foregroundStyle(.orange)
+                        Spacer()
+                        Button("重试", action: onRefresh)
+                    }
+                }
+                if let pendingTemplate {
+                    Label("已选「\(pendingTemplate.name)」· 从上方选择故事主体后套用", systemImage: "checkmark.circle")
+                        .foregroundStyle(.tint)
+                }
+                if !drafts.isEmpty { draftSection }
+                historySection
+                templateSection
+            }
+            .padding(28)
+            .frame(maxWidth: 1240)
+            .frame(maxWidth: .infinity, alignment: .top)
+        }
+        .background(Color(nsColor: .windowBackgroundColor))
+        .accessibilityIdentifier("timeStoryHome")
+    }
+
+    private var hero: some View {
+        HStack(spacing: 24) {
+            VStack(alignment: .leading, spacing: 10) {
+                Text("STORY STUDIO").font(.caption.weight(.semibold)).tracking(3).foregroundStyle(.tint)
+                Text("把回忆，接着讲下去").font(.system(size: 30, weight: .bold))
+                Text("继续上次的故事，或从一个喜欢的模板开始。")
+                    .font(.body).foregroundStyle(.secondary)
+                HStack(spacing: 18) {
+                    Label("\(projects.count) 个已保存故事", systemImage: "clock.arrow.circlepath")
+                    Label("\(templates.count) 个可用模板", systemImage: "square.grid.2x2")
+                }.font(.caption).foregroundStyle(.secondary).padding(.top, 6)
+            }
+            Spacer()
+            Button(action: onCreate) {
+                Label("新建故事", systemImage: "plus").padding(.horizontal, 12).padding(.vertical, 8)
+            }
+            .buttonStyle(.borderedProminent).controlSize(.large)
+            .accessibilityIdentifier("timeStoryHomeCreate")
+        }
+        .padding(28)
+        .background(LinearGradient(colors: [Color.accentColor.opacity(0.12), Color.orange.opacity(0.06)], startPoint: .topLeading, endPoint: .bottomTrailing), in: RoundedRectangle(cornerRadius: 18))
+    }
+
+    private var draftSection: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            sectionTitle("当前草稿", subtitle: "本次打开的工作区 · 点击继续编排", icon: "pencil.and.outline")
+            LazyVGrid(columns: columns, spacing: 16) {
+                ForEach(drafts.sorted { $0.updatedAtMs > $1.updatedAtMs }) { draft in
+                    Button { onResume(draft) } label: {
+                        VStack(alignment: .leading, spacing: 10) {
+                            Label(draft.title, systemImage: "film.stack").font(.headline).lineLimit(1)
+                            Text("\(draft.subjectTagDisplayName) · \(draft.shots.count) 个镜头").foregroundStyle(.secondary)
+                            Text("继续编排 →").font(.caption.weight(.semibold)).foregroundStyle(.tint)
+                        }.frame(maxWidth: .infinity, alignment: .leading).padding(18)
+                            .background(Color.accentColor.opacity(0.07), in: RoundedRectangle(cornerRadius: 12))
+                    }.buttonStyle(.plain)
+                }
+            }
+        }
+    }
+
+    private var historySection: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack {
+                sectionTitle("历史任务", subtitle: "已保存的故事项目 · 最近修改优先", icon: "clock.arrow.circlepath")
+                Spacer()
+                if isLoading { ProgressView().controlSize(.small) }
+                Button("刷新", systemImage: "arrow.clockwise", action: onRefresh).disabled(isLoading)
+            }
+            if projects.isEmpty && !isLoading {
+                HStack(spacing: 16) {
+                    Image(systemName: "tray").font(.title).foregroundStyle(.secondary)
+                    VStack(alignment: .leading, spacing: 5) {
+                        Text("还没有已保存的故事").font(.headline)
+                        Text("在编辑器保存故事后，就能从这里继续编辑和查看制作结果。")
+                            .foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    Button("创建第一个故事", action: onCreate)
+                }.padding(22).background(.background, in: RoundedRectangle(cornerRadius: 12))
+            }
+            LazyVGrid(columns: columns, spacing: 16) {
+                ForEach(projects) { saved in
+                    Button { onOpen(saved) } label: {
+                        VStack(alignment: .leading, spacing: 12) {
+                            HStack {
+                                Image(systemName: "film.stack.fill").font(.title2).foregroundStyle(.tint)
+                                Spacer()
+                                Text("已保存").font(.caption).foregroundStyle(.secondary)
+                            }
+                            Text(saved.title).font(.headline).lineLimit(2)
+                            Text(saved.subjectTagDisplayName + " · " + TimeStoryDurationText.format(saved.durationSeconds))
+                                .font(.callout).foregroundStyle(.secondary)
+                            HStack {
+                                Text(Date(timeIntervalSince1970: Double(saved.updatedAtMs) / 1000), style: .date)
+                                    .foregroundStyle(.secondary)
+                                Spacer()
+                                Text("打开故事 →").foregroundStyle(.tint)
+                            }.font(.caption)
+                        }.frame(maxWidth: .infinity, alignment: .leading).padding(18)
+                            .background(.background, in: RoundedRectangle(cornerRadius: 12))
+                    }.buttonStyle(.plain).accessibilityIdentifier("timeStoryHomeProject-" + saved.id.uuidString)
+                }
+            }
+        }
+    }
+
+    private var templateSection: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            sectionTitle("固化模板", subtitle: "内置样式与个人模板 · 选择主体后套用，继续自由调整", icon: "square.grid.2x2")
+            LazyVGrid(columns: columns, spacing: 16) {
+                ForEach(templates) { template in
+                    VStack(alignment: .leading, spacing: 14) {
+                        ZStack {
+                            LinearGradient(colors: template.isPoem ? [.indigo.opacity(0.25), .purple.opacity(0.08)] : [.orange.opacity(0.22), .pink.opacity(0.08)], startPoint: .topLeading, endPoint: .bottomTrailing)
+                            VStack(spacing: 8) {
+                                Image(systemName: template.isPoem ? "text.below.photo" : "text.rectangle").font(.system(size: 32, weight: .light))
+                                Text(template.isPoem ? "让文字留在画面里" : "一句话，带出一段回忆").font(.caption)
+                            }.foregroundStyle(template.isPoem ? Color.indigo : Color.brown)
+                        }.frame(height: 110).clipShape(RoundedRectangle(cornerRadius: 8))
+                        HStack {
+                            Text(template.name).font(.headline).lineLimit(1)
+                            Spacer()
+                            Text(StoryStyleTemplate.builtins.contains(where: { $0.id == template.id }) ? "内置" : "个人")
+                                .font(.caption).foregroundStyle(.secondary)
+                        }
+                        Text(template.isPoem ? "照片内叠加手写诗句，保留画面的完整节奏。" : "简短文字卡淡出到照片，为每段回忆写下开场。")
+                            .font(.callout).foregroundStyle(.secondary).frame(minHeight: 38, alignment: .top)
+                        Button { onTemplate(template) } label: {
+                            Label("使用此模板", systemImage: "wand.and.stars").frame(maxWidth: .infinity)
+                        }.buttonStyle(.bordered).accessibilityIdentifier("timeStoryHomeTemplate-" + template.id)
+                    }.padding(18).background(.background, in: RoundedRectangle(cornerRadius: 12))
+                }
+            }
+        }
+    }
+
+    private func sectionTitle(_ title: String, subtitle: String, icon: String) -> some View {
+        VStack(alignment: .leading, spacing: 5) {
+            Label(title, systemImage: icon).font(.title3.bold())
+            Text(subtitle).font(.caption).foregroundStyle(.secondary)
         }
     }
 }

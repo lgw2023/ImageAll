@@ -83,7 +83,9 @@ public final class RemoteEventSocket: @unchecked Sendable {
         delegate.owner = self
         let configuration = URLSessionConfiguration.ephemeral
         configuration.timeoutIntervalForRequest = 15
-        configuration.timeoutIntervalForResource = 60
+        // An event stream is deliberately long-lived. A one-minute resource
+        // deadline churns healthy sockets even while keepalive events arrive.
+        // Retain Foundation's default; transport failures still trigger recovery.
         let session = URLSession(
             configuration: configuration,
             delegate: delegate,
@@ -177,6 +179,7 @@ public final class RemoteEventSocket: @unchecked Sendable {
         hasReportedDisconnect = true
         isRunning = false
         let callback = stateHandler
+        let activeTask = task
         let activeSession = session
         task = nil
         session = nil
@@ -184,6 +187,7 @@ public final class RemoteEventSocket: @unchecked Sendable {
         stateHandler = nil
         lifecycle.invalidate()
         lock.unlock()
+        activeTask?.cancel(with: .goingAway, reason: nil)
         activeSession?.invalidateAndCancel()
         callback?(.disconnected)
     }

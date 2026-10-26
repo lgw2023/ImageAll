@@ -7,6 +7,23 @@ import GRDB
 import XCTest
 
 final class TimeStoryFeatureTests: XCTestCase {
+    @MainActor
+    func testStoryFontChoicesPrioritizeUsedAndInstalledFonts() throws {
+        let suite = "StoryFontChoices-" + UUID().uuidString
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        XCTAssertEqual(StoryFontChoices.record("Songti SC", defaults: defaults), ["Songti SC"])
+        XCTAssertEqual(StoryFontChoices.record("Liyu Shoushu", defaults: defaults), ["Liyu Shoushu", "Songti SC"])
+
+        let available = ["Arial", "Liyu Shoushu", "Songti SC", "南西初夏宋", "PingFang SC"]
+        let ordered = StoryFontChoices.ordered(
+            available, recent: StoryFontChoices.recentFamilies(defaults: defaults),
+            used: ["Songti SC", "Missing Font"], current: nil
+        )
+        XCTAssertEqual(ordered, ["Liyu Shoushu", "Songti SC", "南西初夏宋", "PingFang SC", "Arial"])
+        XCTAssertEqual(StoryFontChoices.label("Liyu Shoushu"), "漓雨手书 · Liyu Shoushu")
+    }
+
     func testOpenMontageConfigurationAndDetachGate() throws {
         let suite = "OpenMontageConfig-" + UUID().uuidString
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
@@ -116,6 +133,10 @@ final class TimeStoryFeatureTests: XCTestCase {
         try store.save(project)
         XCTAssertEqual(try store.load(project.id).styleTemplate, project.styleTemplate)
         XCTAssertEqual(try store.load(project.id).shots, shots)
+        let homeEntry = try XCTUnwrap(store.list().first)
+        XCTAssertEqual(homeEntry.id, project.id)
+        XCTAssertEqual(homeEntry.subjectTagID, project.subjectTagID)
+        XCTAssertEqual(homeEntry.title, project.title)
         let catalog = StoryStyleCatalog(directory: root.appendingPathComponent("templates-library"))
         let variant = try catalog.saveVariant(project.styleTemplate!.template, name: "个人样式")
         XCTAssertNotEqual(variant.id, project.styleTemplate!.template.id)
@@ -1590,6 +1611,161 @@ final class TimeStoryFeatureTests: XCTestCase {
         XCTAssertEqual(taskDirectories.count, 1)
     }
 
+    @MainActor
+    func testWorkspaceRecoversOfflineTasksAndMarksProgressUnconfirmed() async throws {
+        let root = try temporaryDirectory("offline-workspace")
+        let database = try CatalogDatabase.open(at: root.appendingPathComponent("catalog.sqlite"))
+        let project = renderProject(first: UUID(), second: UUID())
+        let media = CountingStoryThumbnailLoader(data: try pngData(color: .red, portrait: false))
+        let exporter = StoryRenderPackageExporter(media: media, validator: PassingStoryValidator())
+        let roots = FixtureOpenMontageRootProvider(root: root)
+        let client = FileOpenMontageStoryTaskClient(rootProvider: roots, packageExporter: exporter, installationID: "fixture")
+        let runtime = TimeStoryFeatureRuntime(
+            candidates: TimeStoryCandidateProvider(database: database, query: GRDBAssetCatalogQueryRepository(database: database)),
+            planner: TimeStoryPlanner(), store: TimeStoryProjectStore(applicationSupportDirectory: root),
+            validator: PassingStoryValidator(), renderer: AVFoundationTimeStoryRenderer(media: media, temporaryDirectory: root),
+            packageExporter: exporter, openMontageTasks: client, creativeRootProvider: roots, media: media, clock: SystemJobClock())
+        try runtime.store.save(project)
+        try writeOpenMontageExecutorFixture(at: root, now: Date())
+        let task = try await client.submit(project: project, aspect: .landscape) { _ in }
+        try FileManager.default.removeItem(at: root.appendingPathComponent("executor/heartbeat.json"))
+        let model = TimeStoryWorkspaceModel(runtime: runtime, tag: TagListItem(id: project.subjectTagID, displayName: project.subjectTagDisplayName, state: .active))
+        await model.open(project.id)
+        XCTAssertEqual(model.openMontageTask?.taskID, task.taskID)
+        XCTAssertEqual(model.openMontageCapability?.state, .offline)
+        for _ in 0..<30 where model.openMontageObservationIssue == nil { try await Task.sleep(for: .milliseconds(100)) }
+        XCTAssertFalse(model.openMontageProgressIsCurrent)
+        XCTAssertTrue(model.isInputLocked, "Unconfirmed task must not enable duplicate submission")
+        var templateProject = project
+        let receipt = StoryStyleReceipt(requestID: "template-" + UUID().uuidString.lowercased(), requestSHA256: String(repeating: "a", count: 64), implementationSHA256: String(repeating: "b", count: 64))
+        templateProject.styleReceipt = receipt
+        let templateModel = TimeStoryWorkspaceModel(verificationRuntime: runtime,
+            tag: TagListItem(id: project.subjectTagID, displayName: project.subjectTagDisplayName, state: .active), project: templateProject, thumbnails: [:])
+        let resultURL = root.appendingPathComponent("templates/requests/\(receipt.requestID)/result.json")
+        try FileManager.default.createDirectory(at: resultURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+        var result: [String: Any] = ["requestID": receipt.requestID, "requestSHA256": receipt.requestSHA256, "implementationSHA256": receipt.implementationSHA256, "status": "rendering", "detail": "synthetic rendering"]
+        try writeJSON(result, to: resultURL)
+        await templateModel.refreshStyleResult()
+        XCTAssertTrue(templateModel.isStyleRunning)
+        XCTAssertTrue(templateModel.isInputLocked)
+        result["status"] = "failed"
+        try writeJSON(result, to: resultURL)
+        await templateModel.refreshStyleResult()
+        XCTAssertFalse(templateModel.isStyleRunning)
+        XCTAssertFalse(templateModel.isInputLocked)
+    }
+
+    func testFrozenRetryPreservesOriginalRejectsChangedAssetsAndRedactsDiagnostics() async throws {
+        let root = try temporaryDirectory("retry")
+        let now = Date()
+        try writeOpenMontageExecutorFixture(at: root, now: now)
+        let first = UUID(), second = UUID()
+        let client = makeOpenMontageClient(root: root, projectAssetImages: [first: try pngData(color: .red, portrait: false), second: try pngData(color: .blue, portrait: true)], now: now)
+        let original = try await client.submit(project: renderProject(first: first, second: second), aspect: .landscape) { _ in }
+        let oldRoot = root.appendingPathComponent("tasks/\(original.taskID)")
+        let completionURL = oldRoot.appendingPathComponent("submission/complete.json")
+        let completeBytes = try Data(contentsOf: completionURL)
+        let complete = try jsonObject(at: completionURL)
+        let digest = try XCTUnwrap(complete["manifestSHA256"] as? String)
+        try writeOpenMontageStatus(at: oldRoot, snapshot: original, digest: digest, sequence: 1, state: "failed", stage: "terminal", progress: 0, terminal: true, error: ["code": "RENDER_FAILED", "stage": "rendering", "message": "secret-key private-photo-location prompt", "retryable": false], now: now)
+        let report = try await client.diagnosticReport(taskID: original.taskID)
+        let text = String(decoding: report, as: UTF8.self)
+        XCTAssertFalse(text.contains("secret-key")); XCTAssertFalse(text.contains(root.path))
+        XCTAssertTrue(text.contains("RENDER_FAILED"))
+        let files = try XCTUnwrap(complete["files"] as? [[String: Any]])
+        let asset = try XCTUnwrap(files.first { ($0["path"] as? String)?.hasSuffix(".jpg") == true }?["path"] as? String)
+        let assetURL = oldRoot.appendingPathComponent("submission/\(asset)")
+        let assetBytes = try Data(contentsOf: assetURL)
+        try Data("changed".utf8).write(to: assetURL)
+        do { _ = try await client.retryFrozenTask(taskID: original.taskID); XCTFail("Changed frozen media must be rejected") } catch {}
+        try assetBytes.write(to: assetURL)
+        let retry = try await client.retryFrozenTask(taskID: original.taskID)
+        XCTAssertNotEqual(retry.taskID, original.taskID)
+        XCTAssertEqual(retry.projectRevision, original.projectRevision)
+        XCTAssertEqual(try Data(contentsOf: completionURL), completeBytes)
+        let newRoot = root.appendingPathComponent("tasks/\(retry.taskID)")
+        XCTAssertEqual(try Data(contentsOf: newRoot.appendingPathComponent("submission/\(asset)")), assetBytes)
+        XCTAssertEqual(try jsonObject(at: newRoot.appendingPathComponent("retry.json"))["retryOfTaskID"] as? String, original.taskID)
+        do { _ = try await client.retryFrozenTask(taskID: retry.taskID); XCTFail("Active task cannot retry") } catch {}
+    }
+
+    // Invoked by release_gate.py with a newly-created, explicitly marked synthetic root.
+    func testBundledReleasePublishSyntheticTask() async throws {
+        guard let directory = ProcessInfo.processInfo.environment["IMAGEALL_RELEASE_GATE_ROOT"] else { throw XCTSkip("Release gate only") }
+        let root = URL(fileURLWithPath: directory)
+        guard FileManager.default.fileExists(atPath: root.appendingPathComponent("synthetic-release-gate.json").path) else { throw XCTSkip("Missing synthetic marker") }
+        let first = UUID(), second = UUID()
+        var project = renderProject(first: first, second: second)
+        project.showsProjectTitle = false
+        project.showsChapterTitles = false
+        let client = makeOpenMontageClient(root: root, projectAssetImages: [first: try pngData(color: .red, portrait: false), second: try pngData(color: .blue, portrait: true)], now: Date())
+        let snapshot = try await client.submit(project: project, aspect: .landscape) { _ in }
+        try writeJSON(["taskID": snapshot.taskID, "projectID": project.id.uuidString], to: root.appendingPathComponent("gate-task.json"))
+    }
+
+    func testBundledReleaseTemplateRoundTrip() async throws {
+        guard let directory = ProcessInfo.processInfo.environment["IMAGEALL_RELEASE_GATE_ROOT"] else { throw XCTSkip("Release gate only") }
+        let root = URL(fileURLWithPath: directory)
+        guard FileManager.default.fileExists(atPath: root.appendingPathComponent("synthetic-release-gate.json").path) else { throw XCTSkip("Missing synthetic marker") }
+        let first = UUID(), second = UUID()
+        var project = renderProject(first: first, second: second)
+        project.styleTemplate = .init(template: StoryStyleTemplate.builtins[0], lines: ["合成红色", "合成蓝色"], shotIDs: project.shots.map(\.id))
+        let exchange = StoryStyleExchange(rootProvider: FixtureOpenMontageRootProvider(root: root), exporter: StoryRenderPackageExporter(media: FixtureStoryMediaLoader(images: [first: try pngData(color: .red, portrait: false), second: try pngData(color: .blue, portrait: true)]), validator: PassingStoryValidator()))
+        let receipt = try await exchange.publish(project)
+        for _ in 0..<120 {
+            if let result = try exchange.status(receipt), ["succeeded", "failed", "cancelled"].contains(result.status) {
+                XCTAssertEqual(result.status, "succeeded")
+                let url = try await exchange.verifiedURL(receipt)
+                XCTAssertTrue(FileManager.default.fileExists(atPath: url.path))
+                return
+            }
+            try await Task.sleep(for: .seconds(1))
+        }
+        XCTFail("Bundled template render timed out")
+    }
+
+    func testBundledReleaseVerifiesResultWhileExecutorOffline() async throws {
+        guard let directory = ProcessInfo.processInfo.environment["IMAGEALL_RELEASE_GATE_ROOT"] else { throw XCTSkip("Release gate only") }
+        let root = URL(fileURLWithPath: directory)
+        guard FileManager.default.fileExists(atPath: root.appendingPathComponent("synthetic-release-gate.json").path) else { throw XCTSkip("Missing synthetic marker") }
+        let reference = try jsonObject(at: root.appendingPathComponent("gate-task.json"))
+        let taskID = try XCTUnwrap(reference["taskID"] as? String)
+        let projectID = try XCTUnwrap(UUID(uuidString: try XCTUnwrap(reference["projectID"] as? String)))
+        let client = makeOpenMontageClient(root: root, projectAssetImages: [:], now: Date())
+        let capability = await client.capability()
+        XCTAssertNotEqual(capability.state, .ready)
+        let latest = try await client.latestTask(projectID: projectID)
+        XCTAssertEqual(latest?.taskID, taskID)
+        XCTAssertEqual(latest?.phase, .succeeded)
+        let result = try await client.verifiedResult(taskID: taskID)
+        XCTAssertEqual(result.width, 1920); XCTAssertEqual(result.height, 1080)
+        XCTAssertGreaterThan(result.totalFrames, 0)
+    }
+
+    func testOpenMontageIntakeRejectionIsVisibleButZeroDigestCannotReportSuccess() async throws {
+        let root = try temporaryDirectory("openmontage-rejection")
+        let now = Date(timeIntervalSince1970: 1_789_747_200)
+        try writeOpenMontageExecutorFixture(at: root, now: now)
+        let first = UUID(), second = UUID()
+        let client = makeOpenMontageClient(root: root, projectAssetImages: [
+            first: try edgeMarkedPNG(width: 80, height: 60),
+            second: try edgeMarkedPNG(width: 60, height: 80),
+        ], now: now)
+        let submitted = try await client.submit(project: renderProject(first: first, second: second), aspect: .landscape) { _ in }
+        let taskRoot = root.appendingPathComponent("tasks/\(submitted.taskID)")
+        let error: [String: Any] = ["code": "COMPLETION_INVALID", "stage": "intake", "message": "invalid envelope", "retryable": false]
+        try writeOpenMontageStatus(at: taskRoot, snapshot: submitted, digest: String(repeating: "0", count: 64), sequence: 1, state: "succeeded", stage: "terminal", progress: 1, terminal: true, error: error, now: now)
+        do {
+            _ = try await client.task(taskID: submitted.taskID)
+            XCTFail("Unverified identity must never authorize success")
+        } catch {}
+        try writeOpenMontageStatus(at: taskRoot, snapshot: submitted, digest: String(repeating: "0", count: 64), sequence: 2, state: "rejected", stage: "terminal", progress: 0, terminal: true, error: error, now: now)
+        let rejected = try await client.task(taskID: submitted.taskID)
+        XCTAssertEqual(rejected.phase, .failed)
+        XCTAssertNil(rejected.result)
+        XCTAssertTrue(rejected.detail?.contains("尚未开始渲染") == true)
+    }
+
     func testOpenMontageLifecycleCancelRecoveryAndRevisionIsolation() async throws {
         let root = try temporaryDirectory("openmontage-lifecycle")
         let fixedNow = Date(timeIntervalSince1970: 1_789_747_200)
@@ -2243,6 +2419,7 @@ final class TimeStoryFeatureTests: XCTestCase {
         let before = model.project
         let id = project.shots[0].id
         model.setCaption(id, caption: "不应写入")
+        model.selectHomeStyle(StoryStyleTemplate.builtins[0])
         model.setDuration(id, seconds: 8)
         model.setCreativeIntent("不应改动")
         model.moveShot(id, before: nil)
@@ -2255,6 +2432,15 @@ final class TimeStoryFeatureTests: XCTestCase {
         XCTAssertFalse(model.isInputLocked)
         model.setCaption(id, caption: "取消后允许编辑")
         XCTAssertEqual(model.project?.shots[0].caption, "取消后允许编辑")
+        let retainedShots = model.project?.shots
+        model.selectHomeStyle(StoryStyleTemplate.builtins[0])
+        XCTAssertEqual(model.project?.styleTemplate?.template, StoryStyleTemplate.builtins[0])
+        XCTAssertEqual(model.project?.shots, retainedShots)
+        let fresh = TimeStoryWorkspaceModel(runtime: runtime,
+            tag: TagListItem(id: project.subjectTagID, displayName: project.subjectTagDisplayName, state: .active))
+        fresh.selectHomeStyle(StoryStyleTemplate.builtins[1])
+        XCTAssertNil(fresh.project)
+        XCTAssertEqual(fresh.pendingHomeStyle, StoryStyleTemplate.builtins[1])
     }
 
     @MainActor

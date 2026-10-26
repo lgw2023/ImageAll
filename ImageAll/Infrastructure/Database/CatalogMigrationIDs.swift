@@ -101,6 +101,8 @@ enum CatalogMigrationID {
     static let v063ProtectMigrationLocations = "v063_protect_migration_locations"
     static let v062AddIndependentMigrationBackup = "v062_add_independent_migration_backup"
 
+    static let v064PhoneNativeLibrary = "v064_phone_native_library"
+
     static let knownOrdered: [String] = [
         v001CreateCatalogCore,
         v002AddStage1CatalogQuerySupport,
@@ -165,5 +167,6 @@ enum CatalogMigrationID {
         v061AddPhoneAlbumCatalog,
         v062AddIndependentMigrationBackup,
         v063ProtectMigrationLocations,
+        v064PhoneNativeLibrary,
     ]
 }

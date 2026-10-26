@@ -1,7 +1,22 @@
 import AppKit
 import Darwin
+import CryptoKit
 
 // Launch Services delivers a URL to the separate local helper, never a shell command.
+func verifyRuntime(_ installed: URL, resources: URL) throws {
+    let data = try Data(contentsOf: resources.appendingPathComponent("runtime-integrity.json"))
+    let files = try JSONDecoder().decode([String: String].self, from: data)
+    for (relative, expected) in files {
+        let file = installed.appendingPathComponent(relative)
+        guard !relative.hasPrefix("/"), !relative.split(separator: "/").contains(".."),
+              file.resolvingSymlinksInPath().path.hasPrefix(installed.resolvingSymlinksInPath().path + "/") else {
+            throw NSError(domain: "Unsafe runtime integrity path", code: 1)
+        }
+        let digest = SHA256.hash(data: try Data(contentsOf: file)).map { String(format: "%02x", $0) }.joined()
+        guard digest == expected else { throw NSError(domain: "制作组件缓存校验失败，请重新安装完整 App；未启动任务", code: 2) }
+    }
+}
+
 func launch(rootPath: String, runtimePath: String, token: String) {
 let taskRoot = URL(fileURLWithPath: rootPath, isDirectory: true)
 let runtimeParent = URL(fileURLWithPath: runtimePath, isDirectory: true)
@@ -33,6 +48,7 @@ do {
         do { try fm.moveItem(at: staging, to: installed) }
         catch { try? fm.removeItem(at: staging); if !fm.fileExists(atPath: installed.path) { throw error } }
     }
+    try verifyRuntime(installed, resources: resources)
     let process = Process()
     process.executableURL = installed.appendingPathComponent("python/bin/python3.12")
     process.arguments = [installed.appendingPathComponent("engine/scripts/story_executor.py").path, "start", "--task-root", taskRoot.path, "--detach"]
@@ -77,7 +93,7 @@ do {
     try JSONEncoder().encode(configuration).write(to: configFile, options: .atomic)
     var environment = process.environment ?? [:]
     environment["OPENMONTAGE_CONFIG_PATH"] = configFile.path
-    do {
+    if request["localOnly"] != "true" {
         let stored = try OpenMontageCredentials.load()
         let credentials = request["servicesEnabled"] == "true" ? stored : stored.filter { $0.key == "OPENMONTAGE_MODEL_API_KEY" }
         try OpenMontageServiceField.validate(credentials)

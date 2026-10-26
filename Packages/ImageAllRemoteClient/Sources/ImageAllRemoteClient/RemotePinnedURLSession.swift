@@ -16,7 +16,7 @@ public enum RemotePinnedURLSessionFactory {
         let delegate = PinningDelegate(expectedFingerprint: normalized)
         let config = URLSessionConfiguration.ephemeral
         config.timeoutIntervalForRequest = timeout
-        config.timeoutIntervalForResource = max(timeout * 4, 120)
+        config.timeoutIntervalForResource = max(timeout * 4, RemotePhotoImportRequestBudget.pinnedResourceSeconds)
         return URLSession(configuration: config, delegate: delegate, delegateQueue: nil)
     }
 

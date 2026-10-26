@@ -2,7 +2,7 @@
 import copy,json,os,sys,tempfile,threading,unittest,uuid
 from pathlib import Path
 from http.server import BaseHTTPRequestHandler,HTTPServer
-sys.path.insert(0,str(Path(__file__).resolve().parents[2]/'Vendor/OpenMontage/Runtime/engine'))
+sys.path.insert(0,os.environ.get('IMAGEALL_TEST_ENGINE',str(Path(__file__).resolve().parents[2]/'Vendor/OpenMontage/Runtime/engine')))
 from PIL import Image
 from lib import story_auto_creative as auto
 from lib import story_creative_plugin as legacy
@@ -12,12 +12,14 @@ class AutoTests(unittest.TestCase):
         calls=[]
         class Handler(BaseHTTPRequestHandler):
             fail=False
+            unsupported_fact=False
             def log_message(self,*args): pass
             def do_POST(self):
                 body=json.loads(self.rfile.read(int(self.headers['Content-Length'])));calls.append(body)
                 plan=json.loads(body['messages'][0]['content'][0]['text'].split('\nPLAN SHAPE\n')[1])
                 plan['shots'][1]['caption']='合成蓝色画面的停留';plan['shots'][1]['durationFrames']=90
                 plan['observations']=['两张合成色块'];plan['shots'][0]['rationale']='保留锁定';plan['shots'][1]['rationale']='放慢节奏'
+                if self.unsupported_fact: plan['shots'][1]['factRefs']=['asset-1.placeName']
                 self.send_response(500 if self.fail else 200);self.send_header('Content-Type','application/json');self.end_headers()
                 self.wfile.write(json.dumps(dict(id='synthetic',object='chat.completion',created=1,model='fixture',choices=[dict(index=0,message=dict(role='assistant',content=json.dumps(plan)),finish_reason='stop')])).encode())
         server=HTTPServer(('127.0.0.1',0),Handler);threading.Thread(target=server.serve_forever,daemon=True).start()
@@ -42,6 +44,11 @@ class AutoTests(unittest.TestCase):
                 self.assertTrue((directory/'ready.json').exists(),legacy.read(directory/'auto-status.json'))
                 plan=legacy.read(directory/'plan.json');self.assertEqual(plan['shots'][1]['durationFrames'],90);self.assertEqual(len(calls),1)
                 self.assertEqual(sum(x['type']=='image_url' for x in calls[0]['messages'][0]['content']),2)
+                prompt=calls[0]['messages'][0]['content'][0]['text']
+                scoped=json.loads(prompt.split('\nREQUEST\n')[1].split('\nPLAN SHAPE\n')[0])
+                self.assertEqual([s['allowedFactRefs'] for s in scoped['allowedFactRefsByShot']],[[],[]])
+                known=copy.deepcopy(req);known['facts'][0]['captureTimeMs']=1234
+                self.assertEqual(auto.allowed_fact_refs(known)[0]['allowedFactRefs'],['asset-0.captureTimeMs'])
                 digest=legacy.digest((directory/'request.json').read_bytes())
                 bad=copy.deepcopy(plan);bad['shots'][0]['caption']='changed'
                 with self.assertRaises(ValueError):auto.validate_plan(req,digest,bad)
@@ -59,6 +66,14 @@ class AutoTests(unittest.TestCase):
                 req['externalSendAllowed']=False;publish();auto.run(directory);self.assertEqual(len(calls),1)
                 req['externalSendAllowed']=True;req['modelAuthorization']['model']='wrong';publish();auto.run(directory);self.assertEqual(len(calls),1)
                 req['modelAuthorization']['model']='fixture';publish();Handler.fail=True;auto.run(directory);self.assertEqual(len(calls),2);self.assertFalse((directory/'ready.json').exists())
+                Handler.fail=False;Handler.unsupported_fact=True;auto.run(directory)
+                self.assertEqual(len(calls),3)
+                rejected=legacy.read(directory/'auto-status.json')
+                self.assertEqual(rejected['errorCode'],'UNSUPPORTED_FACT')
+                self.assertEqual(rejected['validationDetails'],dict(affectedShotCount=1,invalidReferenceCount=1))
+                self.assertNotIn('检查设置',rejected['message'])
+                self.assertFalse((directory/'ready.json').exists())
+                self.assertEqual(legacy.read(directory/'model-audit.json')['calls'],1)
                 self.assertFalse(any(b'synthetic-key' in f.read_bytes() for f in directory.rglob('*') if f.is_file()))
         finally:
             server.shutdown();server.server_close()
