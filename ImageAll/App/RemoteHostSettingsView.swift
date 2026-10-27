@@ -701,22 +701,37 @@ struct RemoteHostSettingsView: View {
     var body: some View {
         ScrollView {
             VStack(spacing: 16) {
-                settingsCard { DevicePhotoConnectionCard() }
-                phoneImportWorkflowCard
-                hostOverviewCard
-
-                if let statusMessage = model.statusMessage {
-                    statusBanner(statusMessage)
-                        .transition(.move(edge: .top).combined(with: .opacity))
+                settingsCard {
+                    VStack(alignment: .leading, spacing: 16) {
+                        HStack {
+                            Label("从 iPhone 导入", systemImage: "iphone.and.arrow.forward")
+                                .font(.title3.weight(.semibold))
+                            Spacer()
+                            Toggle("允许连接", isOn: Binding(
+                                get: { model.isEnabled }, set: { model.setEnabled($0) }
+                            ))
+                            .toggleStyle(.switch)
+                            .disabled(model.isApplyingConfiguration)
+                        }
+                        DevicePhotoConnectionCard()
+                        Divider()
+                        PhoneArchiveImportCard()
+                        if let statusMessage = model.statusMessage {
+                            Text(statusMessage).font(.caption).foregroundStyle(.secondary)
+                        }
+                    }
                 }
-
-                localEndpointCard
-                publicEndpointCard
-                accessAccountsCard
                 pairingCard
                 pairedDevicesCard
-                phoneSharesCard
-                phoneArchiveCard
+                publicEndpointCard
+                accessAccountsCard
+                localEndpointCard
+                settingsCard {
+                    DisclosureGroup("连接服务诊断") { hostOverviewCard }
+                }
+                settingsCard {
+                    DisclosureGroup("旧版分享目录") { phoneSharesCard }
+                }
             }
             .frame(maxWidth: 680)
             .padding(.horizontal, 24)
@@ -731,28 +746,6 @@ struct RemoteHostSettingsView: View {
                 projection: projection,
                 deviceName: model.devices.first(where: { $0.deviceID == projection.deviceID })?.deviceName
             )
-        }
-    }
-
-    private var phoneImportWorkflowCard: some View {
-        settingsCard {
-            VStack(alignment: .leading, spacing: 12) {
-                sectionHeading("从 iPhone 导入照片与整理信息",
-                    subtitle: "照片和信息属于同一批次，手机原件保留",
-                    systemImage: "square.and.arrow.down")
-                Label("1. 手机授权与选片", systemImage: "photo.on.rectangle")
-                    .font(.callout.weight(.medium))
-                Text("在手机 ImageAll 的“此 iPhone”授予照片访问权限，选中照片加入“待分享”。相簿名称和层级需要完整照片权限；标记包括 ImageAll 标签与集合。")
-                    .font(.footnote).foregroundStyle(.secondary)
-                Label("2. 配对并设置保存位置", systemImage: "link")
-                    .font(.callout.weight(.medium))
-                Text("先启用下方手机连接服务并选择接收目录。有线导入：手机开启 USB，在上方发起连接并在手机确认 Mac 身份，无需扫码。网络连接：开始配对并用手机“Mac 图库”扫码。")
-                    .font(.footnote).foregroundStyle(.secondary)
-                Label("3. 一起传输与导入", systemImage: "tray.and.arrow.down")
-                    .font(.callout.weight(.medium))
-                Text("手机“待分享”点击“导入所选照片与信息到 Mac”。收到批次后，在 Mac 点击“导入照片与信息”，再查看照片、来源相簿和红心。不要把目录已收到当作原件已导入。")
-                    .font(.footnote).foregroundStyle(.secondary)
-            }
         }
     }
 
@@ -1189,10 +1182,6 @@ struct RemoteHostSettingsView: View {
         }
     }
 
-    private var phoneArchiveCard: some View {
-        settingsCard { PhoneArchiveImportCard() }
-    }
-
     private func projectionTime(_ milliseconds: Int64?) -> String {
         guard let milliseconds else { return "时间未知" }
         return Date(timeIntervalSince1970: TimeInterval(milliseconds) / 1_000)
@@ -1405,6 +1394,7 @@ final class PhoneArchiveImportModel: ObservableObject {
     @Published private(set) var transferTargetPath: String? =
         RemoteHostProcessHolder.migrationTransferTargetURL()?.path
     @Published private(set) var hostJobs: [ImageAllMigrationHostJob] = []
+    @Published private(set) var legacyReceiveError: String?
     @Published private(set) var sealedTransfers: [ImageAllMigrationTransferSealedArchive] = []
     @Published private(set) var galleryOriginalURLs: [UUID: URL] = [:]
     @Published var preview: PhoneArchivePreview?
@@ -1416,11 +1406,11 @@ final class PhoneArchiveImportModel: ObservableObject {
         batches.first { $0.id == selectedBatchID }
     }
 
-    func refresh() async {
+    func refresh(includeLegacy: Bool = true) async {
         guard !isBusy, !isRefreshing else { return }
         isRefreshing = true
         defer { isRefreshing = false }
-        await refreshSealedTransfers()
+        await refreshSealedTransfers(includeLegacy: includeLegacy)
         guard let importer = PhoneArchiveImportProcessHolder.importer() else {
             message = "图库尚未就绪，请稍后重试。"
             return
@@ -1429,6 +1419,7 @@ final class PhoneArchiveImportModel: ObservableObject {
             let loaded = try await CatalogBlockingExecutor.shared.run(priority: .utility) {
                 try importer.importedBatches()
             }
+            if message == "图库尚未就绪，请稍后重试。" { message = nil }
             batches = loaded
             if let selectedBatchID, loaded.contains(where: { $0.id == selectedBatchID }) {
                 await select(selectedBatchID)
@@ -1438,7 +1429,7 @@ final class PhoneArchiveImportModel: ObservableObject {
                 selectedBatchID = nil
                 items = []
             }
-            await refreshSealedTransfers()
+            await refreshSealedTransfers(includeLegacy: includeLegacy)
         } catch {
             message = "读取导入记录失败：\(error.localizedDescription)"
         }
@@ -1512,20 +1503,31 @@ final class PhoneArchiveImportModel: ObservableObject {
         } catch { message = "容量上限未保存：\(error.localizedDescription)" }
     }
 
-    func refreshSealedTransfers() async {
+    func refreshSealedTransfers(includeLegacy: Bool = true) async {
         guard let target = RemoteHostProcessHolder.migrationTransferTargetURL() else {
             transferTargetPath = nil
             sealedTransfers = []
+            hostJobs = []
             return
         }
-        transferTargetPath = target.path
+        if transferTargetPath != target.path { transferTargetPath = target.path }
         let access = target.startAccessingSecurityScopedResource()
         defer { if access { target.stopAccessingSecurityScopedResource() } }
         do {
             let receiver = try PhoneHostImportReceivers.shared.receiver(at: target)
-            hostJobs = try await receiver.hostJobs()
-            let managed = Set(hostJobs.map(\.id))
-            sealedTransfers = try await receiver.sealedArchives().filter { !managed.contains($0.id) }
+            let refreshedJobs = try await receiver.hostJobs()
+            if hostJobs != refreshedJobs { hostJobs = refreshedJobs }
+            if message?.hasPrefix("读取网络接收记录失败：") == true { message = nil }
+            if includeLegacy {
+                let managed = Set(hostJobs.map(\.id))
+                do {
+                    sealedTransfers = try await receiver.sealedArchives().filter { !managed.contains($0.id) }
+                    legacyReceiveError = nil
+                } catch {
+                    sealedTransfers = []
+                    legacyReceiveError = "读取旧版接收记录失败：\(error.localizedDescription)"
+                }
+            }
         } catch {
             sealedTransfers = []
             message = "读取网络接收记录失败：\(error.localizedDescription)"
@@ -1902,6 +1904,22 @@ final class PhoneArchiveImportModel: ObservableObject {
 
     func showNativeLibraryStatus() {
         if let error = PhoneNativeLibraryProcess.lastError { message = error }
+    }
+
+    func browsePublishedLibrary() async {
+        guard !isBusy, let batch = selectedBatch,
+              let importer = PhoneArchiveImportProcessHolder.importer() else { return }
+        do {
+            guard let id = try await CatalogBlockingExecutor.shared.run(priority: .utility, {
+                try PhoneNativeLibraryPublisher(database: importer.database).sourceID(migrationID: batch.id)
+            }) else {
+                message = "此批照片尚未加入图库，请等待 Mac 处理完成。"
+                return
+            }
+            NotificationCenter.default.post(name: .phoneNativeLibraryOpen, object: id)
+            NSApp.activate(ignoringOtherApps: true)
+            NSApp.windows.first(where: { $0.canBecomeMain && $0.title != "设备与导入" && !$0.isSheet })?.makeKeyAndOrderFront(nil)
+        } catch { message = "无法打开已导入照片：\(error.localizedDescription)" }
     }
 
     func openNativeLibrary() async {
@@ -2387,63 +2405,245 @@ final class PhoneArchiveImportModel: ObservableObject {
 
 struct PhoneArchiveImportCard: View {
     @State private var showsMigrationAcceptance = false
+    @State private var showsReceiveOptions = false
     @StateObject private var model = PhoneArchiveImportModel()
+
+    private var visibleJobs: [ImageAllMigrationHostJob] {
+        let active = model.hostJobs.filter { $0.phase != .complete }
+        // Never let an older completed batch hide work or errors that still need attention.
+        return active.isEmpty ? Array(model.hostJobs.sorted { ($0.state?.updatedAtMs ?? 0) > ($1.state?.updatedAtMs ?? 0) }.prefix(1)) : active
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             HStack {
-                Label("iPhone 照片与信息导入", systemImage: "externaldrive.badge.plus")
-                    .font(.headline)
-                Spacer()
-                Button("刷新") { Task { await model.refresh() } }
-                    .buttonStyle(.bordered)
-                    .disabled(model.isBusy || model.isRefreshing)
-                Button("导入离线照片包…") { Task { await model.importChosenArchive() } }
-                    .buttonStyle(.bordered)
-                    .help("选择手机另行导出的离线包；USB 导入从手机“待分享”发起。")
-                    .disabled(model.isBusy || model.isRefreshing)
-            }
-            Text("在手机“待分享”发起导入。手机显示“传输完成 · 可以拔线”后，Mac 会独立完成核验、入库和收尾；只需保持目标磁盘连接。手机原件保留。旧版已封存批次仍可手动入库。")
-                .font(.footnote).foregroundStyle(.secondary)
-            HStack {
-                Button("选择照片接收目录") {
-                    Task { await model.chooseNetworkReceiveDirectory() }
-                }
-                .buttonStyle(.bordered)
-                .disabled(model.isBusy || model.isRefreshing)
-                Text(model.transferTargetPath ?? "尚未设置照片接收目录")
-                    .font(.caption).foregroundStyle(.secondary)
+                Text("保存到").foregroundStyle(.secondary)
+                Text(model.transferTargetPath ?? "请选择照片保存位置")
                     .lineLimit(1).truncationMode(.middle)
+                Spacer()
+                Button(model.transferTargetPath == nil ? "选择文件夹…" : "更改…") {
+                    Task { await model.chooseNetworkReceiveDirectory() }
+                }.disabled(model.isBusy || model.isRefreshing)
             }
-            HStack {
-                Picker("每批接收上限", selection: $model.transferMaximumGiB) {
-                    ForEach(RemoteHostProcessHolder.migrationTransferLimitOptions, id: \.self) { value in
-                        Text("\(value) GiB").tag(value)
-                    }
-                }
-                .frame(maxWidth: 250)
-                .disabled(model.isBusy || model.isRefreshing)
-                Button("应用上限") { Task { await model.applyTransferMaximum() } }
-                    .disabled(model.isBusy || model.isRefreshing || model.transferMaximumGiB == model.savedTransferMaximumGiB)
-            }
-            Text("上限包含资源、清单和整理信息，不是磁盘预留。请按目标卷余量选择；写入时仍至少保留 1 GiB。应用后可在手机重试受额度限制的批次；调低上限不会删除已接收数据。")
+            Text("在手机 ImageAll 点“导入新增内容”，确认后开始传输。")
+                .font(.callout)
+            Text("手机显示“传输完成 · 可以拔线”后即可断开；Mac 会继续处理，请保持 App 和保存磁盘可用。")
                 .font(.footnote).foregroundStyle(.secondary)
-            ForEach(model.hostJobs) { job in
-                VStack(alignment: .leading, spacing: 4) {
-                    HStack {
+            ForEach(visibleJobs) { job in
+                HStack(alignment: .top) {
+                    Image(systemName: job.phase == .complete ? "checkmark.circle.fill" : "tray.and.arrow.down")
+                        .foregroundStyle(job.phase == .complete ? Color.green : Color.accentColor)
+                    VStack(alignment: .leading, spacing: 4) {
                         Text("\(job.receipt.itemCount) 项 · \(hostJobTitle(job.phase))")
-                        Spacer()
-                        if job.phase == .needsAttention {
-                            Button("在 Mac 重试") {
-                                PhoneHostImportProcess.retry(job.id)
-                                Task { await model.refreshSealedTransfers() }
-                            }
+                            .font(.callout.weight(.medium))
+                        Text(job.phase == .complete ? "最近完成 · 照片已加入原来源" : "本批已接收，手机可以拔线")
+                            .font(.caption).foregroundStyle(.secondary)
+                        if let error = job.state?.error {
+                            Text(error).font(.caption).foregroundStyle(.red)
                         }
                     }
-                    if let error = job.state?.error { Text(error).font(.caption).foregroundStyle(.red) }
-                    Text("手机可断开 · \(job.id.uuidString)").font(.caption).foregroundStyle(.secondary)
+                    Spacer()
+                    if job.phase == .needsAttention {
+                        Button("重试") {
+                            PhoneHostImportProcess.retry(job.id)
+                            Task { await model.refreshSealedTransfers() }
+                        }
+                    }
                 }
             }
+            if model.isImporting {
+                ProgressView("Mac 正在处理，请保持保存磁盘连接…")
+            }
+            if let message = model.message {
+                Text(message).font(.footnote).foregroundStyle(.secondary)
+            }
+            HStack {
+                if !model.batches.isEmpty {
+                    Button("查看照片", systemImage: "photo.on.rectangle") {
+                        Task { await model.browsePublishedLibrary() }
+                    }.buttonStyle(.borderedProminent).disabled(model.isBusy)
+                }
+                Button("刷新状态") { Task { await model.refresh(includeLegacy: showsReceiveOptions) } }
+                    .disabled(model.isBusy || model.isRefreshing)
+                if model.isRefreshing { ProgressView().controlSize(.small) }
+            }
+            DisclosureGroup("导入记录与维护（\(model.batches.count) 批）") {
+                VStack(alignment: .leading, spacing: 14) {
+                    if model.batches.isEmpty {
+                        Text("尚无已导入的原件归档。")
+                            .font(.footnote).foregroundStyle(.secondary)
+                    } else {
+                        ForEach(model.batches) { batch in
+                            Button {
+                                Task { await model.select(batch.id) }
+                            } label: {
+                                HStack {
+                                    Image(systemName: model.selectedBatchID == batch.id
+                                          ? "checkmark.circle.fill" : "archivebox")
+                                    Text("\(batch.itemCount) 项 · \(batch.resourceCount) 个资源" +
+                                         (batch.factSnapshotSequence > 0 ? " · 整理快照已导入" : " · 整理快照待对账"))
+                                    Spacer()
+                                    Text(Date(timeIntervalSince1970: TimeInterval(batch.importedAtMs) / 1_000)
+                                        .formatted(date: .abbreviated, time: .shortened))
+                                        .foregroundStyle(.secondary)
+                                }
+                            }
+                            .buttonStyle(.plain)
+                            .padding(.vertical, 3)
+                            .disabled(model.isBusy)
+                        }
+                    }
+                    if let batch = model.selectedBatch {
+                        Divider()
+                        Text(batch.appleAlbumCoverage == .selectedAssetsOnly
+                             ? "来源 Photos 相册仅记录本次所选资产的可访问成员与文件夹路径。"
+                             : batch.appleAlbumCoverage == .unavailableLimitedAuthorization
+                               ? "导出时照片权限有限，来源 Photos 相册不可读取。媒体可恢复，相册完整性尚未验收；0 个相册不代表手机没有相册。"
+                               : "此旧归档未记录来源 Photos 相册；0 个来源相册不代表手机没有相册。")
+                            .font(.caption).foregroundStyle(.secondary)
+                        if let catalog = batch.appleAlbumCatalog {
+                            DisclosureGroup("来源用户相册目录（\(catalog.count) 个节点）") {
+                                Text("目录含空相册；成员数量是导出时观察值，未选照片没有复制。此处为独立归档，不改写系统 Photos 相册。")
+                                    .font(.caption).foregroundStyle(.secondary)
+                                ScrollView {
+                                    LazyVStack(alignment: .leading) {
+                                        ForEach(catalog) { node in
+                                            Label {
+                                                Text(model.sourceCollectionPath(node, catalog: catalog))
+                                                if let count = node.observedAssetCount {
+                                                    Text("来源可见成员 \(count)").font(.caption).foregroundStyle(.secondary)
+                                                }
+                                            } icon: { Image(systemName: node.kind == .folder ? "folder" : "rectangle.stack") }
+                                        }
+                                    }
+                                }.frame(maxHeight: 220)
+                            }
+                        }
+                        HStack {
+                            Text(batch.archivePath)
+                                .font(.caption).foregroundStyle(.secondary)
+                                .lineLimit(1).truncationMode(.middle)
+                            Spacer()
+                            Button("导入整理信息快照") { Task { await model.importFactSnapshot() } }
+                                .buttonStyle(.bordered)
+                                .disabled(model.isBusy)
+                            Button("核查 Mac 归档") { Task { await model.auditSelectedBatch() } }
+                                .buttonStyle(.bordered)
+                                .disabled(model.isBusy)
+                            Button("验证独立恢复") {
+                                Task { await model.verifySelectedBatchRecovery() }
+                            }
+                            .buttonStyle(.bordered)
+                            .disabled(model.isBusy)
+                        }
+                        DisclosureGroup("接收暂存收尾") {
+                            Text("停止手机连接服务后，可完整核验 Mac 副本并释放已登记的接收暂存。Mac 原件和完成记录保留。")
+                                .font(.caption).foregroundStyle(.secondary)
+                            Button("释放接收暂存") { Task { await model.releaseSelectedStagingPayload() } }
+                                .buttonStyle(.bordered)
+                                .disabled(model.isBusy)
+                        }
+                        DisclosureGroup("迁移验收与独立备份", isExpanded: $showsMigrationAcceptance) {
+                        if let record = model.latestValidationRecord {
+                            HStack {
+                                Text("候选验收记录 · \(Date(timeIntervalSince1970: TimeInterval(record.createdAtMs) / 1_000).formatted(date: .abbreviated, time: .shortened)) · 需复核")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                                Spacer()
+                                Button("复核记录") {
+                                    Task { await model.auditLatestValidationRecord() }
+                                }
+                                .buttonStyle(.bordered)
+                                .disabled(model.isBusy)
+                                Button("生成所选范围回执") {
+                                    Task { await model.issueCompletionReceipt() }
+                                }
+                                .buttonStyle(.bordered)
+                                .disabled(model.isBusy)
+                            }
+                        }
+                        if let receipt = model.latestCompletionReceipt {
+                            HStack {
+                                Text("所选范围回执 · \(receipt.itemCount) 项 · \(model.completionReceiptIsCurrent ? "当前复核通过" : "需复核")")
+                                    .font(.caption).foregroundStyle(.secondary)
+                                Spacer()
+                                Button("查看手机清理结果") { Task { await model.refreshPhoneRetirements() } }
+                                    .disabled(model.isBusy)
+                                Button("复核回执") {
+                                    Task { await model.auditLatestCompletionReceipt() }
+                                }
+                                .buttonStyle(.bordered)
+                                .disabled(model.isBusy)
+                            }
+                        }
+                        if model.latestCompletionReceipt != nil {
+                            HStack {
+                                Button("创建并核验独立备份") { Task { await model.verifyIndependentBackup(create: true) } }
+                                    .disabled(model.isBusy)
+                                if model.latestIndependentBackup != nil {
+                                    Button("复核独立备份") { Task { await model.verifyIndependentBackup(create: false) } }
+                                        .disabled(model.isBusy)
+                                    Button("预检手机清理范围") {
+                                        Task { await model.verifyIndependentBackup(create: false, prepareCleanup: true) }
+                                    }.disabled(model.isBusy)
+                                    Button("请求手机核对") {
+                                        Task { await model.verifyIndependentBackup(create: false, prepareCleanup: true, publishRecheck: true) }
+                                    }.disabled(model.isBusy)
+                                }
+                            }.buttonStyle(.bordered)
+                            if model.latestIndependentBackup != nil {
+                                Text(model.backupIsCurrent ? "独立备份：当前复核通过" : "独立备份：历史记录，需复核")
+                                    .font(.caption).foregroundStyle(.secondary)
+                            }
+                        }
+                        if let preview = model.sourceCleanupPreflight {
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text("手机清理预检记录").font(.headline)
+                                Button("查看手机复查结果") { Task { await model.refreshPhoneSourceReport() } }
+                                    .disabled(model.isBusy)
+                                Button("复核手机报告与双份副本") {
+                                    Task { await model.verifyIndependentBackup(create: false, recheckPhoneReport: true) }
+                                }.disabled(model.isBusy)
+                                Text("Mac 归档与独立备份已核验：\(preview.integrity.itemCount) 项。")
+                                Text("按归档事实：\(preview.favoriteProtectedMediaIDs.count) 项收藏受保护，\(preview.candidateMediaIDs.count) 项可供手机进一步核对。")
+                                Text("核验时间：\(Date(timeIntervalSince1970: Double(preview.checkedAtMs) / 1_000).formatted(date: .abbreviated, time: .standard))")
+                                    .font(.caption).foregroundStyle(.secondary)
+                                Text("尚未发送清理请求。手机仍须重新检查当前范围、原件版本和收藏，并在前台确认；不会自动清空最近删除。")
+                                    .font(.caption).foregroundStyle(.secondary)
+                            }.padding(.vertical, 6)
+                        }
+                        }
+                        Button("重新核查并加入图库", systemImage: "photo.on.rectangle") {
+                            Task { await model.openNativeLibrary() }
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .disabled(model.isBusy)
+                        Text("完成入库和核查后，照片会自动加入主界面的 iPhone 来源。相簿、红心、标签与集合随照片保留。")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                }.padding(.top, 10)
+            }
+            DisclosureGroup("接收选项与离线导入", isExpanded: $showsReceiveOptions) {
+                VStack(alignment: .leading, spacing: 12) {
+                    HStack {
+                        Picker("每批接收上限", selection: $model.transferMaximumGiB) {
+                            ForEach(RemoteHostProcessHolder.migrationTransferLimitOptions, id: \.self) { value in
+                                Text("\(value) GiB").tag(value)
+                            }
+                        }
+                        .frame(maxWidth: 250)
+                        .disabled(model.isBusy || model.isRefreshing)
+                        Button("应用上限") { Task { await model.applyTransferMaximum() } }
+                            .disabled(model.isBusy || model.isRefreshing || model.transferMaximumGiB == model.savedTransferMaximumGiB)
+                    }
+                    Text("上限包含资源、清单和整理信息，不是磁盘预留。请按目标卷余量选择；写入时仍至少保留 1 GiB。应用后可在手机重试受额度限制的批次；调低上限不会删除已接收数据。")
+                        .font(.footnote).foregroundStyle(.secondary)
+
+                    if let error = model.legacyReceiveError {
+                        Text(error).font(.caption).foregroundStyle(.orange)
+                    }
+                    Button("导入离线照片包…") { Task { await model.importChosenArchive() } }
+                        .disabled(model.isBusy || model.isRefreshing)
             ForEach(model.sealedTransfers) { transfer in
                 HStack {
                     Text("已封存 · 入库时复验 · \(transfer.id.uuidString)")
@@ -2456,181 +2656,28 @@ struct PhoneArchiveImportCard: View {
                     .disabled(model.isBusy || model.isRefreshing)
                 }
             }
-            if model.isRefreshing {
-                ProgressView("正在读取已封存批次…")
-            }
-            if model.sealedTransfers.isEmpty && !model.isRefreshing {
-                Text("等待手机发送照片包。手机显示接收完成后，点击本卡片“刷新”查看批次。")
-                    .font(.footnote).foregroundStyle(.secondary)
-            }
-            if model.isImporting {
-                HStack {
-                    ProgressView().controlSize(.small)
-                    Text("正在校验、复制并入库；请保持目标磁盘连接。")
-                        .font(.callout)
-                }
-                .accessibilityElement(children: .combine)
-            }
-            if let message = model.message {
-                Text(message).font(.footnote).foregroundStyle(.secondary)
-            }
-            if model.batches.isEmpty {
-                Text("尚无已导入的原件归档。")
-                    .font(.footnote).foregroundStyle(.secondary)
-            } else {
-                ForEach(model.batches) { batch in
-                    Button {
-                        Task { await model.select(batch.id) }
-                    } label: {
-                        HStack {
-                            Image(systemName: model.selectedBatchID == batch.id
-                                  ? "checkmark.circle.fill" : "archivebox")
-                            Text("\(batch.itemCount) 项 · \(batch.resourceCount) 个资源" +
-                                 (batch.factSnapshotSequence > 0 ? " · 整理快照已导入" : " · 整理快照待对账"))
-                            Spacer()
-                            Text(Date(timeIntervalSince1970: TimeInterval(batch.importedAtMs) / 1_000)
-                                .formatted(date: .abbreviated, time: .shortened))
-                                .foregroundStyle(.secondary)
-                        }
-                    }
-                    .buttonStyle(.plain)
-                    .padding(.vertical, 3)
-                    .disabled(model.isBusy)
-                }
-            }
-            if let batch = model.selectedBatch {
-                Divider()
-                Text(batch.appleAlbumCoverage == .selectedAssetsOnly
-                     ? "来源 Photos 相册仅记录本次所选资产的可访问成员与文件夹路径。"
-                     : batch.appleAlbumCoverage == .unavailableLimitedAuthorization
-                       ? "导出时照片权限有限，来源 Photos 相册不可读取。媒体可恢复，相册完整性尚未验收；0 个相册不代表手机没有相册。"
-                       : "此旧归档未记录来源 Photos 相册；0 个来源相册不代表手机没有相册。")
-                    .font(.caption).foregroundStyle(.secondary)
-                if let catalog = batch.appleAlbumCatalog {
-                    DisclosureGroup("来源用户相册目录（\(catalog.count) 个节点）") {
-                        Text("目录含空相册；成员数量是导出时观察值，未选照片没有复制。此处为独立归档，不改写系统 Photos 相册。")
-                            .font(.caption).foregroundStyle(.secondary)
-                        ScrollView {
-                            LazyVStack(alignment: .leading) {
-                                ForEach(catalog) { node in
-                                    Label {
-                                        Text(model.sourceCollectionPath(node, catalog: catalog))
-                                        if let count = node.observedAssetCount {
-                                            Text("来源可见成员 \(count)").font(.caption).foregroundStyle(.secondary)
-                                        }
-                                    } icon: { Image(systemName: node.kind == .folder ? "folder" : "rectangle.stack") }
-                                }
-                            }
-                        }.frame(maxHeight: 220)
-                    }
-                }
-                HStack {
-                    Text(batch.archivePath)
-                        .font(.caption).foregroundStyle(.secondary)
-                        .lineLimit(1).truncationMode(.middle)
-                    Spacer()
-                    Button("导入整理信息快照") { Task { await model.importFactSnapshot() } }
-                        .buttonStyle(.bordered)
-                        .disabled(model.isBusy)
-                    Button("核查 Mac 归档") { Task { await model.auditSelectedBatch() } }
-                        .buttonStyle(.bordered)
-                        .disabled(model.isBusy)
-                    Button("验证独立恢复") {
-                        Task { await model.verifySelectedBatchRecovery() }
-                    }
-                    .buttonStyle(.bordered)
-                    .disabled(model.isBusy)
-                }
-                DisclosureGroup("接收暂存收尾") {
-                    Text("停止手机连接服务后，可完整核验 Mac 副本并释放已登记的接收暂存。Mac 原件和完成记录保留。")
-                        .font(.caption).foregroundStyle(.secondary)
-                    Button("释放接收暂存") { Task { await model.releaseSelectedStagingPayload() } }
-                        .buttonStyle(.bordered)
-                        .disabled(model.isBusy)
-                }
-                DisclosureGroup("迁移验收与独立备份", isExpanded: $showsMigrationAcceptance) {
-                if let record = model.latestValidationRecord {
-                    HStack {
-                        Text("候选验收记录 · \(Date(timeIntervalSince1970: TimeInterval(record.createdAtMs) / 1_000).formatted(date: .abbreviated, time: .shortened)) · 需复核")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                        Spacer()
-                        Button("复核记录") {
-                            Task { await model.auditLatestValidationRecord() }
-                        }
-                        .buttonStyle(.bordered)
-                        .disabled(model.isBusy)
-                        Button("生成所选范围回执") {
-                            Task { await model.issueCompletionReceipt() }
-                        }
-                        .buttonStyle(.bordered)
-                        .disabled(model.isBusy)
-                    }
-                }
-                if let receipt = model.latestCompletionReceipt {
-                    HStack {
-                        Text("所选范围回执 · \(receipt.itemCount) 项 · \(model.completionReceiptIsCurrent ? "当前复核通过" : "需复核")")
-                            .font(.caption).foregroundStyle(.secondary)
-                        Spacer()
-                        Button("查看手机清理结果") { Task { await model.refreshPhoneRetirements() } }
-                            .disabled(model.isBusy)
-                        Button("复核回执") {
-                            Task { await model.auditLatestCompletionReceipt() }
-                        }
-                        .buttonStyle(.bordered)
-                        .disabled(model.isBusy)
-                    }
-                }
-                if model.latestCompletionReceipt != nil {
-                    HStack {
-                        Button("创建并核验独立备份") { Task { await model.verifyIndependentBackup(create: true) } }
-                            .disabled(model.isBusy)
-                        if model.latestIndependentBackup != nil {
-                            Button("复核独立备份") { Task { await model.verifyIndependentBackup(create: false) } }
-                                .disabled(model.isBusy)
-                            Button("预检手机清理范围") {
-                                Task { await model.verifyIndependentBackup(create: false, prepareCleanup: true) }
-                            }.disabled(model.isBusy)
-                            Button("请求手机核对") {
-                                Task { await model.verifyIndependentBackup(create: false, prepareCleanup: true, publishRecheck: true) }
-                            }.disabled(model.isBusy)
-                        }
-                    }.buttonStyle(.bordered)
-                    if model.latestIndependentBackup != nil {
-                        Text(model.backupIsCurrent ? "独立备份：当前复核通过" : "独立备份：历史记录，需复核")
-                            .font(.caption).foregroundStyle(.secondary)
-                    }
-                }
-                if let preview = model.sourceCleanupPreflight {
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text("手机清理预检记录").font(.headline)
-                        Button("查看手机复查结果") { Task { await model.refreshPhoneSourceReport() } }
-                            .disabled(model.isBusy)
-                        Button("复核手机报告与双份副本") {
-                            Task { await model.verifyIndependentBackup(create: false, recheckPhoneReport: true) }
-                        }.disabled(model.isBusy)
-                        Text("Mac 归档与独立备份已核验：\(preview.integrity.itemCount) 项。")
-                        Text("按归档事实：\(preview.favoriteProtectedMediaIDs.count) 项收藏受保护，\(preview.candidateMediaIDs.count) 项可供手机进一步核对。")
-                        Text("核验时间：\(Date(timeIntervalSince1970: Double(preview.checkedAtMs) / 1_000).formatted(date: .abbreviated, time: .standard))")
-                            .font(.caption).foregroundStyle(.secondary)
-                        Text("尚未发送清理请求。手机仍须重新检查当前范围、原件版本和收藏，并在前台确认；不会自动清空最近删除。")
-                            .font(.caption).foregroundStyle(.secondary)
-                    }.padding(.vertical, 6)
-                }
-                }
-                Button("在图库中查看", systemImage: "photo.on.rectangle") {
-                    Task { await model.openNativeLibrary() }
-                }
-                .buttonStyle(.borderedProminent)
-                .disabled(model.isBusy)
-                Text("完成入库和核查后，照片会自动加入主界面的 iPhone 来源。相簿、红心、标签与集合随照片保留。")
-                    .font(.caption).foregroundStyle(.secondary)
+
+                }.padding(.top, 10)
             }
         }
-        .task { await model.refresh() }
+        .task {
+            await model.refresh(includeLegacy: showsReceiveOptions)
+            while !Task.isCancelled {
+                do { try await Task.sleep(for: .seconds(3)) } catch { return }
+                guard !model.isBusy && !model.isRefreshing else { continue }
+                if model.message == "图库尚未就绪，请稍后重试。" {
+                    await model.refresh(includeLegacy: showsReceiveOptions)
+                } else {
+                    await model.refreshSealedTransfers(includeLegacy: false)
+                }
+            }
+        }
+        .onChange(of: showsReceiveOptions) { _, expanded in
+            if expanded { Task { await model.refreshSealedTransfers(includeLegacy: true) } }
+        }
         .onReceive(NotificationCenter.default.publisher(for: .phoneNativeLibraryChanged)) { _ in
             model.showNativeLibraryStatus()
-            Task { await model.refreshSealedTransfers() }
+            Task { await model.refresh(includeLegacy: showsReceiveOptions) }
         }
         .alert("无法设置照片接收目录", isPresented: Binding(
             get: { model.receiveDirectoryError != nil },
