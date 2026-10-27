@@ -14,6 +14,21 @@ public enum ImageAllUSBPairingConflict: Sendable, Equatable {
     }
 }
 
+/// Opening a tunnel is not authentication. Automatic resume additionally needs
+/// the saved credential; the pinned TLS/session refresh still authenticates it.
+public enum ImageAllUSBAutomaticResume {
+    public static func permits(hasStoredPairing: Bool, storedDeviceID: String?, storedUsesTLS: Bool,
+                               storedHostID: String?, storedFingerprint: String?, offer: RemotePairingOffer,
+                               nowMs: Int64 = Int64(Date().timeIntervalSince1970 * 1000)) -> Bool {
+        guard hasStoredPairing, storedDeviceID.flatMap(UUID.init(uuidString:)) != nil,
+              storedUsesTLS, offer.usesTLS, offer.expiresAtMs > nowMs,
+              offer.certificateFingerprintSHA256.count == 64,
+              offer.certificateFingerprintSHA256.allSatisfy({ $0.isASCII && $0.isHexDigit }) else { return false }
+        return ImageAllUSBPairingConflict.detect(hasStoredPairing: true, storedHostID: storedHostID,
+            storedFingerprint: storedFingerprint, offer: offer) == nil
+    }
+}
+
 /// User consent applies only to the offer and USB session shown in the dialog.
 public struct ImageAllUSBPairingConsent: Sendable {
     public let offer: RemotePairingOffer

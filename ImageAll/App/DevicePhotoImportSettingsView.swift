@@ -8,52 +8,117 @@ final class USBPhotoImportLink: ObservableObject {
     static let shared = USBPhotoImportLink()
     @Published private(set) var devices: [ImageAllUSBDevice] = []
     @Published var selectedDeviceID: Int?
-    @Published private(set) var status = "USB 照片传输尚未连接"
+    @Published private(set) var status = "插线并打开手机 ImageAll，将自动连接"
     @Published private(set) var isConnecting = false
     @Published private(set) var isReady = false
     private var tunnel: ImageAllUSBMacTunnel?
+    private var activeDevice: ImageAllUSBDevice?
+    private var monitor: Task<Void, Never>?
+    private var attemptID = UUID()
+    private var pausedSerial: String?
+    private var nextAttemptAt: TimeInterval = 0
+    private var retryDelay: TimeInterval = 2
+
+    /// App-owned, not Settings-owned: closing Settings must not stop discovery.
+    func startAutomaticConnection() {
+        guard monitor == nil else { return }
+        monitor = Task { [weak self] in
+            while !Task.isCancelled {
+                guard let self else { return }
+                await self.refresh()
+                let enabled = RemoteHostProcessHolder.isEnabled()
+                let running = await RemoteHostProcessHolder.isRunning()
+                if !enabled || !running {
+                    if self.tunnel != nil || self.isConnecting { self.stopTransport() }
+                    self.status = enabled ? "正在等待 Mac 连接服务…" : "连接已关闭"
+                } else if self.devices.count == 1, self.tunnel == nil, !self.isConnecting,
+                          self.pausedSerial == nil, ProcessInfo.processInfo.systemUptime >= self.nextAttemptAt {
+                    self.selectedDeviceID = self.devices.first?.id
+                    await self.connect(automatic: true)
+                }
+                do { try await Task.sleep(for: .seconds(2)) } catch { return }
+            }
+        }
+    }
 
     func refresh() async {
         do {
-            devices = try await Task.detached { try ImageAllUSBMux.devices() }.value
-            if !devices.contains(where: { $0.id == selectedDeviceID }) {
-                selectedDeviceID = devices.count == 1 ? devices.first?.id : nil
+            let found = try await Task.detached { try ImageAllUSBMux.devices() }.value
+            if devices != found { devices = found }
+            if let pausedSerial, !found.contains(where: { $0.serial == pausedSerial }) {
+                self.pausedSerial = nil; nextAttemptAt = 0; retryDelay = 2
+            }
+            if let activeDevice, !found.contains(activeDevice) {
+                stopTransport(); nextAttemptAt = 0; retryDelay = 2
+                status = "USB 已断开；重新插线后自动连接"
+            }
+            if !found.contains(where: { $0.id == selectedDeviceID }) {
+                selectedDeviceID = found.count == 1 ? found.first?.id : nil
+            }
+            if found.count > 1 && tunnel == nil {
+                status = "检测到多台设备，请选择要连接的 iPhone"
             }
         } catch { status = error.localizedDescription }
     }
-    func connect() async {
-        guard tunnel == nil, let device = devices.first(where: { $0.id == selectedDeviceID }) else { return }
-        guard await RemoteHostProcessHolder.isRunning(),
-              let offer = await RemoteHostProcessHolder.startPairingSession(), offer.usesTLS else {
-            status = "请先启用下方手机连接服务，并确认 Host 使用安全 TLS 身份。"; return
+
+    func connect(automatic: Bool = false) async {
+        guard tunnel == nil, !isConnecting,
+              let device = devices.first(where: { $0.id == selectedDeviceID }) else { return }
+        if !automatic { pausedSerial = nil; retryDelay = 2 }
+        isConnecting = true
+        let generation = UUID(); attemptID = generation
+        guard RemoteHostProcessHolder.isEnabled(), await RemoteHostProcessHolder.isRunning() else {
+            guard attemptID == generation else { return }
+            isConnecting = false; status = "请打开本页“允许连接”，再连接手机。"; return
+        }
+        // Reuse a still-valid offer so discovery does not invalidate a QR code
+        // or an identity confirmation already displayed on the phone.
+        var offer = await RemoteHostProcessHolder.currentOffer()
+        if offer == nil || offer!.expiresAtMs <= Int64(Date().timeIntervalSince1970 * 1000) + 10_000 {
+            offer = await RemoteHostProcessHolder.startPairingSession()
+        }
+        guard attemptID == generation else { return }
+        guard let offer, offer.usesTLS else {
+            isConnecting = false; status = "Mac 安全连接服务尚未就绪"; scheduleRetry(); return
         }
         do {
             let session = try ImageAllUSBMacTunnel(device: device, offer: offer)
-            tunnel = session; isConnecting = true; status = "请在手机“待分享”开启 USB，并确认此 Mac 的连接请求"
-            let owner = self
-            Task {
+            tunnel = session; activeDevice = device
+            status = "正在连接 iPhone；首次连接请在手机确认 Mac 身份"
+            Task { [weak self] in
                 do {
                     try await Task.detached {
-                        try session.run {
+                        try session.run { [weak self] in
                             Task { @MainActor in
-                                guard owner.tunnel === session else { return }
-                                owner.isReady = true; owner.isConnecting = false
-                                owner.status = "USB 有线通道已连接 · 请在手机选择照片并导入"
+                                guard let self, self.tunnel === session else { return }
+                                self.isReady = true; self.isConnecting = false; self.retryDelay = 2
+                                self.status = "USB 通道已连接 · 请在手机开始导入"
                             }
                         }
                     }.value
                 } catch {
-                    guard owner.tunnel === session else { return }
-                    owner.status = error.localizedDescription
+                    guard let self, self.tunnel === session else { return }
+                    self.status = "等待手机 ImageAll；打开后将自动重连"
                 }
-                guard owner.tunnel === session else { return }
-                owner.tunnel = nil; owner.isReady = false; owner.isConnecting = false
+                guard let self, self.tunnel === session else { return }
+                self.tunnel = nil; self.activeDevice = nil; self.isReady = false; self.isConnecting = false
+                self.scheduleRetry()
             }
-        } catch { status = error.localizedDescription }
+        } catch { isConnecting = false; status = error.localizedDescription; scheduleRetry() }
+    }
+    private func scheduleRetry() {
+        nextAttemptAt = ProcessInfo.processInfo.systemUptime + retryDelay
+        retryDelay = min(15, retryDelay * 2)
+    }
+    private func stopTransport() {
+        attemptID = UUID()
+        let previous = tunnel; tunnel = nil; activeDevice = nil
+        isReady = false; isConnecting = false; previous?.stop()
     }
     func disconnect() {
-        tunnel?.stop(); tunnel = nil; isReady = false; isConnecting = false
-        status = "USB 已断开，传输暂停；不会自动改用无线网络"
+        pausedSerial = activeDevice?.serial ?? devices.first(where: { $0.id == selectedDeviceID })?.serial
+        stopTransport()
+        status = "自动连接已暂停；点“连接 iPhone”或重新插线可恢复"
     }
 }
 
@@ -93,45 +158,38 @@ struct DevicePhotoImportSettingsView: View {
 }
 
 struct DevicePhotoConnectionCard: View {
-    @StateObject private var discovery = ConnectedPhotoDeviceDiscovery()
     @ObservedObject private var usb = USBPhotoImportLink.shared
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Label("连接的设备", systemImage: "cable.connector").font(.headline)
-            if discovery.devices.isEmpty {
-                Text("尚未发现有线照片设备。可以连接并解锁 iPhone，也可以直接使用已配对手机的网络连接。")
-                    .font(.callout).foregroundStyle(.secondary)
-            } else {
-                ForEach(discovery.devices) { device in
-                    HStack {
-                        Label(device.name, systemImage: "iphone.gen3")
-                        Spacer()
-                        Label("USB 已连接", systemImage: "checkmark.circle.fill").foregroundStyle(.green)
-                    }
-                }
-            }
-            Text("照片、相簿、红心与标记统一通过 iPhone 上的 ImageAll 读取和导入。开启 USB 有线通道后，数据沿线缆传输；手机仍需确认照片访问权限和此 Mac 身份。")
-                .font(.footnote).foregroundStyle(.secondary)
-            if !usb.devices.isEmpty {
-                Picker("有线传输设备", selection: $usb.selectedDeviceID) {
-                    Text("请选择设备").tag(Optional<Int>.none)
-                    ForEach(usb.devices) { device in Text(device.displayName).tag(Optional(device.id)) }
-                }.disabled(usb.isReady || usb.isConnecting)
-            }
+        VStack(alignment: .leading, spacing: 8) {
             HStack {
-                Button("刷新 USB") { Task { await usb.refresh() } }
-                if usb.isReady || usb.isConnecting {
-                    Button("断开 USB") { usb.disconnect() }
+                if !usb.devices.isEmpty {
+                    Picker("手机", selection: $usb.selectedDeviceID) {
+                        Text("请选择设备").tag(Optional<Int>.none)
+                        ForEach(usb.devices) { device in
+                            Text(device.displayName).tag(Optional(device.id))
+                        }
+                    }.disabled(usb.isReady || usb.isConnecting)
                 } else {
-                    Button("通过 USB 连接手机 App") { Task { await usb.connect() } }
+                    Label("连接并解锁 iPhone", systemImage: "cable.connector")
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+                Button("刷新") { Task { await usb.refresh() } }
+                if usb.isReady || usb.isConnecting {
+                    Button("断开") { usb.disconnect() }
+                } else {
+                    Button("连接 iPhone") { Task { await usb.connect() } }
                         .disabled(usb.selectedDeviceID == nil)
                 }
             }
-            Label(usb.status, systemImage: usb.isReady ? "cable.connector" : "info.circle")
+            Text(usb.isReady ? "USB 已连接 · 请在手机开始导入" : usb.status)
                 .font(.footnote).foregroundStyle(.secondary)
+            if !usb.isReady && !usb.isConnecting {
+                Text("打开手机 ImageAll 即可自动连接；首次使用在手机确认 Mac 身份。")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
         }
-        .task { discovery.start(); await usb.refresh() }
-        .onDisappear { discovery.stop() }
+        .task { usb.startAutomaticConnection(); await usb.refresh() }
         .accessibilityIdentifier("connectedPhotoDevicesCard")
     }
 }

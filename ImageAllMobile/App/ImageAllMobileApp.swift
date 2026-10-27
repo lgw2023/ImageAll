@@ -56,6 +56,16 @@ private struct ImageAllMobileRootView: View {
             RemoteCompanionRootView(model: model)
                 .tabItem { Label("Mac 图库", systemImage: "desktopcomputer") }
         }
+        .sheet(isPresented: Binding(
+            get: { model.requiresUSBIdentityConfirmation },
+            set: { _ in }
+        )) {
+            NavigationStack {
+                Form { USBPhoneConnectionSection(model: model) }
+                    .navigationTitle("确认 Mac 身份")
+            }
+            .interactiveDismissDisabled()
+        }
         .onChange(of: scenePhase) { _, phase in
             model.setScenePhase(phase)
             if phase == .background { localModel.pauseActiveImport(reason: .appBackground) }
@@ -149,7 +159,7 @@ private final class USBPairingLifecycleProbe: ObservableObject {
             let companion = RemoteCompanionModel(defaults: defaults, credentialVault: vault)
             model = companion
             self.companion = companion
-            companion.enableUSB()
+            if !companion.usbSelected { companion.enableUSB() }
             let candidate = RemotePairingOffer(hostID: UUID(), hostDisplayName: "Synthetic lifecycle Mac",
                 listenPort: 8787, usesTLS: true, certificateFingerprintSHA256: String(repeating: "a", count: 64),
                 pairingToken: "synthetic-only", expiresAtMs: Int64(Date().addingTimeInterval(300).timeIntervalSince1970 * 1000))

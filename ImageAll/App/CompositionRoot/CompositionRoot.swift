@@ -639,6 +639,7 @@ struct CompositionRoot {
             ),
             hostAppVersion: BundleAppVersionProvider().currentVersion()
         )
+        USBPhotoImportLink.shared.startAutomaticConnection()
         PhoneArchiveImportProcessHolder.recoverPreparedOutboundMacTagDecisions()
         workspaceModel.videoAnalysisService = FolderVideoAnalysisService(
             database: runtime.database, sourceAccess: sourceAccess, clock: clock, photosSource: photosAccess)

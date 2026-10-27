@@ -10,6 +10,8 @@ public final class ImageAllUSBPhoneTunnel {
     public var onReady: ((UInt16, RemotePairingOffer) -> Void)?
     public var onClosed: ((String) -> Void)?
     private var deviceListener: NWListener?
+    private var retiringListeners: [ObjectIdentifier: NWListener] = [:]
+    private var wantsListener = false
     private var localListener: NWListener?
     private var control: NWConnection?
     private var pending: ImageAllUSBHello?
@@ -25,16 +27,40 @@ public final class ImageAllUSBPhoneTunnel {
     private var diagnosticTask: Task<Void, Never>?
     #endif
     public init() {}
+    public var isListening: Bool {
+        guard let deviceListener else { return false }
+        if case .ready = deviceListener.state { return true }
+        return false
+    }
 
     public func start() throws {
-        guard deviceListener == nil else { return }
+        wantsListener = true
+        // NWListener cancellation is asynchronous. A foreground return can
+        // arrive before the prior listener has released its fixed USB port.
+        guard deviceListener == nil, retiringListeners.isEmpty else { return }
         let listener = try Self.loopbackListener(port: .init(rawValue: ImageAllUSBHello.devicePort)!)
-        listener.newConnectionHandler = { [weak self] connection in
-            Task { @MainActor in self?.accept(connection) }
+        listener.newConnectionHandler = { [weak self, weak listener] connection in
+            Task { @MainActor in
+                guard let self, let listener, self.deviceListener === listener else {
+                    connection.cancel(); return
+                }
+                self.accept(connection)
+            }
         }
-        listener.stateUpdateHandler = { [weak self] state in
-            if case .failed(let error) = state {
-                Task { @MainActor in self?.stop(); self?.onClosed?(error.localizedDescription) }
+        listener.stateUpdateHandler = { [weak self, weak listener] state in
+            Task { @MainActor in
+                guard let self, let listener else { return }
+                switch state {
+                case .cancelled:
+                    self.retiringListeners.removeValue(forKey: ObjectIdentifier(listener))
+                    if self.wantsListener && self.deviceListener == nil && self.retiringListeners.isEmpty {
+                        do { try self.start() } catch { self.onClosed?(error.localizedDescription) }
+                    }
+                case .failed(let error):
+                    guard self.deviceListener === listener else { return }
+                    self.stop(); self.onClosed?(error.localizedDescription)
+                default: break
+                }
             }
         }
         deviceListener = listener
@@ -83,7 +109,12 @@ public final class ImageAllUSBPhoneTunnel {
 
     public func reject() { closeSession("已拒绝 USB 连接") }
     public func stop() {
-        deviceListener?.cancel(); deviceListener = nil
+        wantsListener = false
+        if let listener = deviceListener {
+            deviceListener = nil
+            retiringListeners[ObjectIdentifier(listener)] = listener
+            listener.cancel()
+        }
         closeSession("USB 连接已停止")
     }
     private static func loopbackListener(port: NWEndpoint.Port) throws -> NWListener {

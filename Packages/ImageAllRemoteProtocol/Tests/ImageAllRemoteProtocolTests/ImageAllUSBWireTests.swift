@@ -30,6 +30,28 @@ final class ImageAllUSBWireTests: XCTestCase, @unchecked Sendable {
         XCTAssertEqual(ImageAllUSBPairingConflict.detect(hasStoredPairing: true, storedHostID: candidate.hostID.uuidString, storedFingerprint: String(repeating: "b", count: 64), offer: candidate), .differentCertificate)
         XCTAssertEqual(ImageAllUSBPairingConflict.detect(hasStoredPairing: true, storedHostID: nil, storedFingerprint: nil, offer: candidate), .missingSavedIdentity)
     }
+    func testAutomaticResumeRequiresCompleteExistingTrustAndLiveOffer() {
+        let candidate = offer(), device = UUID().uuidString
+        func allowed(paired: Bool = true, deviceID: String? = nil, tls: Bool = true,
+                     hostID: String? = nil, pin: String? = nil, now: Int64 = 0) -> Bool {
+            ImageAllUSBAutomaticResume.permits(hasStoredPairing: paired,
+                storedDeviceID: deviceID ?? device, storedUsesTLS: tls,
+                storedHostID: hostID ?? candidate.hostID.uuidString,
+                storedFingerprint: pin ?? candidate.certificateFingerprintSHA256,
+                offer: candidate, nowMs: now)
+        }
+        XCTAssertTrue(allowed())
+        XCTAssertFalse(allowed(paired: false), "First pairing must be confirmed")
+        XCTAssertFalse(allowed(deviceID: "missing"))
+        XCTAssertFalse(allowed(tls: false))
+        XCTAssertFalse(allowed(hostID: UUID().uuidString))
+        XCTAssertFalse(allowed(pin: String(repeating: "b", count: 64)))
+        XCTAssertFalse(allowed(pin: ""))
+        XCTAssertFalse(allowed(now: candidate.expiresAtMs))
+        XCTAssertFalse(ImageAllUSBAutomaticResume.permits(hasStoredPairing: true,
+            storedDeviceID: device, storedUsesTLS: true, storedHostID: nil,
+            storedFingerprint: nil, offer: candidate))
+    }
     func testReplacementConsentCannotApplyToChangedClosedOrExpiredUSBRequest() {
         let candidate = offer(), transportID = UUID()
         let consent = ImageAllUSBPairingConsent(offer: candidate, transportID: transportID)
@@ -94,6 +116,33 @@ final class ImageAllUSBWireTests: XCTestCase, @unchecked Sendable {
         await fulfillment(of: [closed], timeout: 5)
     }
     @MainActor
+    func testRestartedListenerAcceptsOnlyCurrentSession() async throws {
+        let tunnel = ImageAllUSBPhoneTunnel()
+        defer { tunnel.stop() }
+        let ready = expectation(description: "new listener remains usable")
+        var closedReason = ""
+        tunnel.onClosed = { closedReason = $0 }
+        tunnel.onOffer = { _ in try? tunnel.approve() }
+        tunnel.onReady = { _, _ in ready.fulfill() }
+        try tunnel.start()
+        tunnel.stop()
+        try tunnel.start()
+        for _ in 0..<100 where !tunnel.isListening {
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        XCTAssertTrue(tunnel.isListening, closedReason)
+        let control = NWConnection(host: "127.0.0.1",
+            port: .init(rawValue: ImageAllUSBHello.devicePort)!, using: .tcp)
+        defer { control.cancel() }
+        control.start(queue: .main)
+        try await send(try ImageAllUSBHello(role: .control,
+            sessionKey: String(repeating: "3", count: 64), offer: offer()).framed(), to: control)
+        await fulfillment(of: [ready], timeout: 5)
+        let ack = try await receive(control, count: 1)
+        XCTAssertEqual(ack, Data([1]))
+    }
+
+    @MainActor
     func testControlHeartbeatSurvivesMainActorBlockedPastMacDeadline() async throws {
         let tunnel = ImageAllUSBPhoneTunnel()
         defer { tunnel.stop() }
@@ -143,6 +192,10 @@ final class ImageAllUSBWireTests: XCTestCase, @unchecked Sendable {
     private func blockUIThread(seconds: TimeInterval) { Thread.sleep(forTimeInterval: seconds) }
 
     private func send(_ data: Data, to connection: NWConnection) async throws {
+        let deadline = Task.detached {
+            do { try await Task.sleep(for: .seconds(5)); connection.cancel() } catch { }
+        }
+        defer { deadline.cancel() }
         try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
             connection.send(content: data, completion: .contentProcessed { error in
                 if let error { continuation.resume(throwing: error) } else { continuation.resume() }

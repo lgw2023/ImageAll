@@ -41,6 +41,7 @@ final class RemoteCompanionModel: ObservableObject {
     @Published private(set) var migrationPhase = "准备目录与整理信息"
     @Published private(set) var sourceRevalidation = LocalShareSourceRevalidationProgress()
     private let usbBridge = ImageAllUSBPhoneTunnel()
+    private var usbManuallyPaused = false
     private var usbLoopbackPort: UInt16?
     private var usbOffer: RemotePairingOffer?
     private(set) var transportGeneration = UUID()
@@ -202,6 +203,17 @@ final class RemoteCompanionModel: ObservableObject {
         return ImageAllUSBPairingConflict.detect(hasStoredPairing: hasStoredPairing,
             storedHostID: defaults.string(forKey: DefaultsKey.hostID),
             storedFingerprint: defaults.string(forKey: DefaultsKey.fingerprint), offer: offer)
+    }
+    private func canAutomaticallyResumeUSB(_ offer: RemotePairingOffer) -> Bool {
+        ImageAllUSBAutomaticResume.permits(hasStoredPairing: hasStoredPairing,
+            storedDeviceID: defaults.string(forKey: DefaultsKey.deviceID),
+            storedUsesTLS: defaults.bool(forKey: DefaultsKey.usesTLS),
+            storedHostID: defaults.string(forKey: DefaultsKey.hostID),
+            storedFingerprint: defaults.string(forKey: DefaultsKey.fingerprint), offer: offer)
+    }
+    var requiresUSBIdentityConfirmation: Bool {
+        guard let offer = usbPendingOffer else { return false }
+        return !canAutomaticallyResumeUSB(offer)
     }
     var savedPairingHostID: String { defaults.string(forKey: DefaultsKey.hostID) ?? "未保存" }
     var savedPairingFingerprint: String { defaults.string(forKey: DefaultsKey.fingerprint) ?? "未保存" }
@@ -376,7 +388,7 @@ final class RemoteCompanionModel: ObservableObject {
         statusMessage = initialStatusMessage
         hasStoredPairing = storedRefreshToken != nil
         startNetworkMonitoring()
-        if defaults.bool(forKey: DefaultsKey.usbMode) { enableUSB() }
+        if defaults.object(forKey: DefaultsKey.usbMode) == nil || defaults.bool(forKey: DefaultsKey.usbMode) { enableUSB() }
     }
 
     deinit {
@@ -385,6 +397,7 @@ final class RemoteCompanionModel: ObservableObject {
     }
 
     func enableUSB() {
+        usbManuallyPaused = false
         usbBridge.stop(); usbLoopbackPort = nil; usbOffer = nil; usbPendingOffer = nil
         usbSelected = true; transportGeneration = UUID()
         defaults.set(true, forKey: DefaultsKey.usbMode)
@@ -393,8 +406,13 @@ final class RemoteCompanionModel: ObservableObject {
             guard let self else { return }
             self.transportGeneration = UUID()
             self.usbPendingOffer = hello.offer
-            self.usbStatus = self.usbPairingConflict == nil
-                ? "收到 Mac 有线连接请求，请确认身份" : self.usbPairingConflictText
+            if let offer = hello.offer, self.canAutomaticallyResumeUSB(offer) {
+                self.usbStatus = "正在自动连接已配对的 Mac"
+                self.approveUSB()
+            } else {
+                self.usbStatus = self.usbPairingConflict == nil
+                    ? "首次连接此 Mac，请确认身份" : self.usbPairingConflictText
+            }
         }
         usbBridge.onReady = { [weak self] port, offer in
             guard let self else { return }
@@ -418,7 +436,7 @@ final class RemoteCompanionModel: ObservableObject {
             self.transportGeneration = UUID(); self.disconnect()
             self.usbStatus = reason
         }
-        do { try usbBridge.start(); usbStatus = "等待 Mac 从“设备与导入”发起 USB 连接" }
+        do { try usbBridge.start(); usbStatus = "插线并打开 Mac ImageAll 后将自动连接" }
         catch { usbStatus = error.localizedDescription }
     }
     func approveUSB() {
@@ -450,7 +468,10 @@ final class RemoteCompanionModel: ObservableObject {
         #if DEBUG
         usbExplicitRejectionCount += 1
         #endif
+        usbManuallyPaused = true
         usbBridge.reject()
+        usbBridge.stop()
+        usbStatus = "USB 自动连接已暂停"
     }
     func useNetworkConnection() {
         usbSelected = false; transportGeneration = UUID()
@@ -745,8 +766,9 @@ final class RemoteCompanionModel: ObservableObject {
         isForeground = isActive
         if !isActive { restoreMigrationIdleTimer() }
         if usbSelected {
-            if isActive { enableUSB() }
-            else { usbBridge.stop() }
+            if isActive {
+                if !usbManuallyPaused { enableUSB() }
+            } else { usbBridge.stop() }
         }
         if isActive {
             resumeEventRecoveryIfNeeded()

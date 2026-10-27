@@ -4495,10 +4495,14 @@ struct USBPhoneConnectionSection: View {
             } else if !model.usbSelected {
                 Button("开启 USB 有线连接") { model.enableUSB() }
             } else {
-                Button("重新等待 USB 连接") { model.enableUSB() }.disabled(model.isConnected)
+                if model.isConnected {
+                    Button("暂停 USB 自动连接") { model.rejectUSB() }
+                } else {
+                    Button("恢复自动连接") { model.enableUSB() }
+                }
                 Button("改用网络连接") { model.useNetworkConnection() }
             }
-            Text("USB 传输需要手机 App 保持前台。首次确认后沿用安全配对；拔线即暂停，已接收进度保留。")
+            Text("插线并打开双端 ImageAll，已配对 Mac 自动连接。首次连接需确认身份；连接后仍由你开始导入。")
                 .font(.caption).foregroundStyle(.secondary)
         }
         // A Form row can activate every automatic-style button in the row.
