@@ -604,6 +604,9 @@ final class LocalLibraryModel: ObservableObject {
         try FileManager.default.createDirectory(at: saved.directory, withIntermediateDirectories: true)
         try saved.save(shareTaskRecord)
         try JSONEncoder().encode(ledger).write(to: ledgerURL, options: [.atomic, .completeFileProtection])
+        // Verify deferred-task retention before replacing the visible selection.
+        // resetReceivedShareTask repeats this safely after the selection commit.
+        try cleanupQueue()?.retain(shareTaskRecord)
         let count = try await browser.confirmBulkSharePreview(preview, replacingSelection: true)
         resetReceivedShareTask()
         guard shareTask.phase == .idle else { throw LocalShareTaskRecoveryError.unavailable }
@@ -1917,6 +1920,25 @@ struct LocalLibraryView: View {
             }
         }
         .navigationTitle("此 iPhone")
+        .safeAreaInset(edge: .top, spacing: 0) {
+            if model.authorization == .authorized || model.authorization == .limited {
+                NavigationLink {
+                    if model.shareTask.phase == .received {
+                        LocalNewContentImportView(model: model, remoteModel: remoteModel)
+                    } else {
+                        LocalShareScopeView(model: model, remoteModel: remoteModel)
+                    }
+                } label: {
+                    Label(model.shareTask.phase == .received ? "导入新增内容" : "导入到 Mac",
+                          systemImage: "square.and.arrow.up")
+                        .font(.headline).frame(maxWidth: .infinity).padding(.vertical, 8)
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(model.exportCleanupBusy || model.shareSelectionEditing)
+                .accessibilityIdentifier("library.import")
+                .padding(.horizontal).padding(.vertical, 8).background(.bar)
+            }
+        }
         .toolbar {
             ToolbarItem(placement: .topBarLeading) {
                 NavigationLink("待分享") {
@@ -2066,9 +2088,23 @@ private struct LocalLibraryBackupView: View {
     }
 }
 
+private struct LocalNewContentImportView: View {
+    @ObservedObject var model: LocalLibraryModel
+    @ObservedObject var remoteModel: RemoteCompanionModel
+    @State private var prepared = false
+
+    var body: some View {
+        LocalBulkShareView(model: model, newBatch: true, onPrepared: { prepared = true })
+            .navigationDestination(isPresented: $prepared) {
+                LocalShareScopeView(model: model, remoteModel: remoteModel)
+            }
+    }
+}
+
 private struct LocalBulkShareView: View {
     @ObservedObject var model: LocalLibraryModel
     var newBatch = false
+    var onPrepared: (() -> Void)? = nil
     @State private var preview: LocalBulkSharePreview?
     @State private var busy = false
     @State private var message: String?
@@ -2077,8 +2113,11 @@ private struct LocalBulkShareView: View {
     var body: some View {
         Form {
             Section("范围") {
-                Text("读取当前系统允许访问的非隐藏照片和视频，预览数量后再决定是否加入待分享。有限照片权限只覆盖你已授权的项目，不代表整个 iPhone 图库。")
-                Text(newBatch ? "仅选择既有任务范围之外的内容，不按拍摄日期筛选。先保留原任务记录，再用预览范围准备下一次导入；此步不读取或发送原件。" : "本步骤不读取原件、不从 iCloud 下载、不发送目录。确认后，所选范围会用于之后你手动发起的同步与归档；新增照片不会自动加入。已有待分享项目保留。")
+                Text(newBatch
+                     ? "预览之前导入任务范围之外的照片和视频，确认数量后再发送到 Mac。已有任务记录和手机原件保留。"
+                     : "读取当前系统允许访问的非隐藏照片和视频，预览数量后再决定是否加入待分享。有限照片权限只覆盖你已授权的项目，不代表整个 iPhone 图库。")
+                Text(newBatch ? "需要完整照片权限；不含隐藏项目，不按拍摄日期筛选。预览不会传输原件。" : "本步骤不读取原件、不从 iCloud 下载、不发送目录。确认后，所选范围会用于之后你手动发起的同步与归档；新增照片不会自动加入。已有待分享项目保留。")
+                    .font(.footnote).foregroundStyle(.secondary)
             }
             Section {
                 Button(busy ? "正在核对…" : "预览已授权范围") {
@@ -2094,6 +2133,10 @@ private struct LocalBulkShareView: View {
                 if let preview {
                     LabeledContent("照片", value: "\(preview.photoCount)")
                     LabeledContent("视频", value: "\(preview.videoCount)")
+                    if newBatch && preview.totalCount == 0 {
+                        Text("暂无新增内容。之前的任务和选择保持不变，可返回 Mac 浏览已导入照片。")
+                            .foregroundStyle(.secondary)
+                    }
                     Button("确认将这 \(preview.totalCount) 项加入待分享") {
                         busy = true
                         work = Task {
@@ -2101,10 +2144,13 @@ private struct LocalBulkShareView: View {
                             do {
                                 let added = try await (newBatch ? model.confirmNewBatchPreview(preview) : model.confirmBulkSharePreview(preview))
                                 message = newBatch ? "已准备 \(added) 项新内容；返回待分享后开始导入。原任务记录已保留。" : "已新增 \(added) 项到待分享，其余已在范围内。尚未同步目录或传输原件。"
+                                onPrepared?()
                             } catch LocalLibraryError.migrationSyncPending {
                                 message = "还有待同步的整理修改，请先完成同步后再准备新批次。原有选择保留。"
                             } catch {
-                                message = "未批量加入：授权、来源或分享范围已变化，请重新预览。原有选择保留。"
+                                message = model.shareTaskPersistenceError != nil
+                                    ? "任务记录未能保存。请解锁 iPhone 后重新打开 ImageAll，再核对待分享数量并重新预览；尚未开始传输。"
+                                    : "准备未完成，请重新预览并核对待分享数量；尚未开始传输。"
                             }
                         }
                     }
@@ -2113,7 +2159,7 @@ private struct LocalBulkShareView: View {
                 if let message { Text(message) }
             }
         }
-        .navigationTitle(newBatch ? "准备新增内容" : "批量准备分享范围")
+        .navigationTitle(newBatch ? "导入新增内容" : "批量准备分享范围")
         .onDisappear {
             work?.cancel()
             model.cancelBulkSharePreview()
@@ -2249,6 +2295,7 @@ private struct LocalShareScopeView: View {
     @State private var savedStreamingArchives: [LocalStreamingArchive] = []
     @State private var isStreamingArchive = false
     @State private var confirmsVerifiedSubsetSeal = false
+    @State private var confirmsRepeatSelection = false
     private var includeAlbumCatalog: Bool { model.shareIncludeAlbumCatalog }
     @State private var streamTask: Task<Void, Never>?
     @State private var isUploadingArchive = false
@@ -2314,6 +2361,7 @@ private struct LocalShareScopeView: View {
                     LocalShareItem(id: $0.id, localIdentifier: $0.localIdentifier,
                                    isVideo: $0.kind == "video", date: $0.creationDate)
                 },
+                canPrepareNewContent: model.shareTask.phase == .received,
                 open: { shareSheet = $0 }, perform: performPrimaryAction) {
                 if model.canReleaseExportPayload || model.exportCleanupBusy {
                     Section("导出暂存") {
@@ -2390,12 +2438,13 @@ private struct LocalShareScopeView: View {
                                     .foregroundStyle(.secondary)
                             }.font(.footnote)
                         }
+                    case .newContent:
+                        LocalBulkShareView(model: model, newBatch: true, onPrepared: { shareSheet = nil })
                     case .more:
                         List {
                             if model.shareTask.phase == .received {
                                 Section {
-                                    NavigationLink("仅准备上次任务范围之外的内容") { LocalBulkShareView(model: model, newBatch: true) }
-                                    Button("按当前选择开始下一次导入") { model.resetReceivedShareTask(); shareSheet = nil }
+                                    Button("再次导入当前选择…") { confirmsRepeatSelection = true }
                                 }
                             }
                             Section {
@@ -2443,6 +2492,12 @@ private struct LocalShareScopeView: View {
             // Auxiliary source/cleanup checks remain tied to their visible UI.
             streamTask?.cancel()
             cleanupSourceCheckMessage = nil; cleanupSourceReport = nil; confirmsSourceRetirement = false
+        }
+        .confirmationDialog("再次导入当前选择？", isPresented: $confirmsRepeatSelection, titleVisibility: .visible) {
+            Button("沿用当前选择") { model.resetReceivedShareTask(); shareSheet = nil }
+            Button("取消", role: .cancel) {}
+        } message: {
+            Text("这会保留当前所选项目。只导入新照片和视频，请使用待分享首页的“导入新增内容”。")
         }
         .onChange(of: scenePhase) { _, phase in
             if phase == .background {

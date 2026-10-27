@@ -3,12 +3,13 @@ import Photos
 import UIKit
 
 enum LocalShareSheet: String, Identifiable {
-    case selection, connection, more, advanced, macNextStep
+    case selection, connection, newContent, more, advanced, macNextStep
     var id: String { rawValue }
     var title: String {
         switch self {
         case .selection: "已选内容"
         case .connection: "连接目标 Mac"
+        case .newContent: "导入新增内容"
         case .more: "更多操作"
         case .advanced: "高级迁移"
         case .macNextStep: "Mac 导入与浏览"
@@ -29,12 +30,23 @@ struct LocalShareDashboard<Options: View>: View {
     let busy: Bool
     let conflictCount: Int
     var previewItems: [LocalShareItem] = []
+    var canPrepareNewContent = false
     let open: (LocalShareSheet) -> Void
     let perform: () -> Void
     @ViewBuilder let options: () -> Options
 
     var body: some View {
         List {
+            if canPrepareNewContent {
+                Section {
+                    Button { open(.newContent) } label: {
+                        Label("导入新增内容", systemImage: "plus.circle.fill").font(.headline)
+                    }
+                    .disabled(busy).accessibilityIdentifier("share.newContent")
+                    Text("预览上次任务范围之外的照片与视频，确认数量后再发送。")
+                        .font(.footnote).foregroundStyle(.secondary)
+                }
+            }
             Section {
                 Button { open(.selection) } label: {
                     HStack(spacing: 14) {
@@ -280,7 +292,7 @@ struct LocalShareMacNextStep: View {
             } else if macOwnsProcessing {
                 Section("Mac 会独立完成") {
                     Label("手机可以拔线或关闭 App", systemImage: "cable.connector")
-                    Text("只需保持 Mac 目标磁盘连接。在 Mac“设置 → 设备与导入”查看核验、入库和收尾进度；遇到问题也在 Mac 重试。")
+                    Text("保持 Mac ImageAll 运行、目标磁盘连接。在 Mac“设置 → 设备与导入”查看核验、入库和收尾进度；遇到问题也在 Mac 重试，无需再点一次导入。")
                 }
             } else {
             Section("需要在 Mac 入库时") {
@@ -433,6 +445,7 @@ struct LocalShareUIProbeView: View {
                                     return count
                                 }) { Text("仅合成数据，不读取照片或连接 Mac。") }
                             case .macNextStep: LocalShareMacNextStep()
+                            case .newContent: Text("合成预览，不读取照片或创建任务。")
                             default: Text("合成入口：\(page.title)。关闭弹层后任务状态保留。")
                             }
                         }

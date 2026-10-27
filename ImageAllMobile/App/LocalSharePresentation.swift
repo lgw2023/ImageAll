@@ -347,7 +347,7 @@ struct LocalSharePresentation {
         }
         if task.phase == .running || task.phase == .pausing {
             let title = task.phase == .pausing ? "正在暂停" : (transferPhase == "传输原件" ? "正在传输" : "正在准备与核对")
-            return state(title, "本次 \(task.itemCount) 项 → \(task.target)。请保持 App 在前台。",
+            return state(title, "本次 \(task.itemCount) 项 → \(task.target)。请保持 App 在前台与连接，出现“传输完成 · 可以拔线”后再断开。",
                          task.phase == .pausing ? "正在暂停…" : "暂停导入", .pause,
                          enabled: task.phase != .pausing)
         }
@@ -450,7 +450,15 @@ struct LocalShareCleanupQueue {
         var registered = try ids()
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         let taskJournal = journal(record.taskID)
-        try FileManager.default.createDirectory(at: taskJournal.directory, withIntermediateDirectories: false)
+        var taskDirectoryInfo = stat()
+        if lstat(taskJournal.directory.path, &taskDirectoryInfo) == 0 {
+            guard taskDirectoryInfo.st_mode & S_IFMT == S_IFDIR else {
+                throw LocalShareTaskRecoveryError.invalidRecord
+            }
+        } else {
+            guard errno == ENOENT else { throw LocalShareTaskRecoveryError.unavailable }
+            try FileManager.default.createDirectory(at: taskJournal.directory, withIntermediateDirectories: false)
+        }
         if let existing = try taskJournal.load() {
             guard existing.statusQuery == record.statusQuery, existing.exportStagingName == record.exportStagingName,
                   existing.hostID == record.hostID, existing.fingerprint == record.fingerprint else {

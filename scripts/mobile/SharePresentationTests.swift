@@ -41,6 +41,14 @@ struct SharePresentationTests {
         precondition(resolve(task).title == "Mac 已接收 · 状态待核对")
         precondition(resolve(task).action == .macNextStep)
         print("PASS: 接收回执只引导 Mac 入库，不显示最终完成")
+        precondition(resolve(task, connected: false).action == .connect)
+        precondition(!resolve(task, connected: false).title.contains("可以拔线"))
+        task.macOwnsProcessing = true
+        let handedOff = resolve(task, connected: false)
+        precondition(handedOff.title == "传输完成 · 可以拔线" && handedOff.action == .macNextStep)
+        task.phase = .running
+        precondition(resolve(task).action == .pause && !resolve(task).title.contains("可以拔线"))
+        print("PASS: 仅持久交接后的任务离线仍显示可拔线，传输中及旧接收状态不误报")
         task.begin(itemCount: 2_889, target: "Fixture Mac", intent: .sealReceived)
         task.requestPause(.appBackground)
         task.requestPause(.userRequested)
